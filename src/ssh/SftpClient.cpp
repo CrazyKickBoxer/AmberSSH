@@ -1,5 +1,7 @@
 #include "SftpClient.h"
 
+#include "../utility/Hash.h"
+
 #include <ws2tcpip.h>
 
 #include <libssh2.h>
@@ -559,6 +561,240 @@ std::string SftpPermString(uint32_t perms, bool dir, bool link)
         if (perms & (1u << (8 - i)))
             s[static_cast<size_t>(1 + i)] = rwx[i];
     return s;
+}
+
+
+// ------------------------------------------------------- resume + metadata
+// The resumable forms. Both take an offset the CALLER has decided is safe:
+// see SyncPlan.h's DecideResume, which refuses to append unless the source's
+// size and mtime were recorded when the partial was written and still match.
+// Keeping that judgement out of here is deliberate — a transport that decides
+// for itself when to append is one that will eventually append to the wrong
+// file.
+bool SftpClient::DownloadFrom(const std::string& remote, const std::wstring& local,
+                              uint64_t offset, const Progress& cb, std::string& err)
+{
+    LIBSSH2_SFTP_HANDLE* h = libssh2_sftp_open_ex(
+        m_sftp, remote.c_str(), static_cast<unsigned>(remote.size()),
+        LIBSSH2_FXF_READ, 0, LIBSSH2_SFTP_OPENFILE);
+    if (!h)
+    {
+        err = SftpErr("open failed");
+        return false;
+    }
+    uint64_t total = 0;
+    {
+        LIBSSH2_SFTP_ATTRIBUTES at;
+        if (libssh2_sftp_fstat_ex(h, &at, 0) == 0 && (at.flags & LIBSSH2_SFTP_ATTR_SIZE))
+            total = at.filesize;
+    }
+    if (offset > 0)
+    {
+        if (total > 0 && offset >= total)
+        {
+            libssh2_sftp_close(h);
+            err = "the resume offset is past the end of the remote file";
+            return false;
+        }
+        libssh2_sftp_seek64(h, offset);
+    }
+    // "ab" rather than "wb": appending is the whole point, and "wb" would
+    // truncate the very bytes being resumed from.
+    FILE* f = _wfopen(local.c_str(), offset > 0 ? L"ab" : L"wb");
+    if (!f)
+    {
+        libssh2_sftp_close(h);
+        err = "cannot write local file";
+        return false;
+    }
+    std::vector<char> buf(256 * 1024);
+    uint64_t done = offset;
+    bool ok = true;
+    for (;;)
+    {
+        ssize_t n = libssh2_sftp_read(h, buf.data(), buf.size());
+        if (n == 0)
+            break;
+        if (n < 0)
+        {
+            err = SftpErr("read failed");
+            ok = false;
+            break;
+        }
+        if (fwrite(buf.data(), 1, static_cast<size_t>(n), f) !=
+            static_cast<size_t>(n))
+        {
+            // A short write is a full disk. Reporting it rather than carrying
+            // on is the difference between a failed download and a silently
+            // truncated file.
+            err = "local write failed (disk full?)";
+            ok = false;
+            break;
+        }
+        done += static_cast<uint64_t>(n);
+        if (cb && !cb(done, total))
+        {
+            err = "cancelled";
+            ok = false;
+            break;
+        }
+    }
+    fclose(f);
+    libssh2_sftp_close(h);
+    // A cancelled or failed RESUME keeps its partial file — that is what the
+    // next attempt continues from. A failed fresh download deletes it, since
+    // a zero-progress stub is worth nothing.
+    if (!ok && offset == 0)
+        DeleteFileW(local.c_str());
+    return ok;
+}
+
+bool SftpClient::UploadFrom(const std::wstring& local, const std::string& remote,
+                            uint64_t offset, const Progress& cb, std::string& err)
+{
+    FILE* f = _wfopen(local.c_str(), L"rb");
+    if (!f)
+    {
+        err = "cannot read local file";
+        return false;
+    }
+    _fseeki64(f, 0, SEEK_END);
+    const uint64_t total = static_cast<uint64_t>(_ftelli64(f));
+    if (offset > total)
+    {
+        fclose(f);
+        err = "the resume offset is past the end of the local file";
+        return false;
+    }
+    _fseeki64(f, static_cast<__int64>(offset), SEEK_SET);
+    // Resuming opens WITHOUT truncating and seeks; a fresh upload truncates.
+    const long flags = offset > 0
+                           ? (LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT)
+                           : (LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC);
+    LIBSSH2_SFTP_HANDLE* h = libssh2_sftp_open_ex(
+        m_sftp, remote.c_str(), static_cast<unsigned>(remote.size()), flags,
+        LIBSSH2_SFTP_S_IRUSR | LIBSSH2_SFTP_S_IWUSR | LIBSSH2_SFTP_S_IRGRP |
+            LIBSSH2_SFTP_S_IROTH,
+        LIBSSH2_SFTP_OPENFILE);
+    if (!h)
+    {
+        fclose(f);
+        err = SftpErr("remote open failed");
+        return false;
+    }
+    if (offset > 0)
+        libssh2_sftp_seek64(h, offset);
+    std::vector<char> buf(256 * 1024);
+    uint64_t done = offset;
+    bool ok = true;
+    size_t r;
+    while (ok && (r = fread(buf.data(), 1, buf.size(), f)) > 0)
+    {
+        char* p = buf.data();
+        size_t left = r;
+        while (left > 0)
+        {
+            ssize_t w = libssh2_sftp_write(h, p, left);
+            if (w < 0)
+            {
+                err = SftpErr("write failed");
+                ok = false;
+                break;
+            }
+            p += w;
+            left -= static_cast<size_t>(w);
+            done += static_cast<uint64_t>(w);
+        }
+        if (ok && cb && !cb(done, total))
+        {
+            err = "cancelled";
+            ok = false;
+        }
+    }
+    fclose(f);
+    libssh2_sftp_close(h);
+    return ok;
+}
+
+bool SftpClient::SetTimes(const std::string& path, int64_t mtime, int64_t atime,
+                          std::string& err)
+{
+    if (!m_sftp)
+    {
+        err = "not connected";
+        return false;
+    }
+    LIBSSH2_SFTP_ATTRIBUTES at = {};
+    at.flags = LIBSSH2_SFTP_ATTR_ACMODTIME;
+    at.atime = static_cast<unsigned long>(atime > 0 ? atime : mtime);
+    at.mtime = static_cast<unsigned long>(mtime);
+    if (libssh2_sftp_stat_ex(m_sftp, path.c_str(),
+                             static_cast<unsigned>(path.size()),
+                             LIBSSH2_SFTP_SETSTAT, &at) != 0)
+    {
+        err = SftpErr("could not set the remote timestamp");
+        return false;
+    }
+    return true;
+}
+
+bool SftpClient::SetMode(const std::string& path, uint32_t mode, std::string& err)
+{
+    if (mode == 0)
+        return true;              // nothing to preserve: not a failure
+    return Chmod(path, mode, err);
+}
+
+bool SftpClient::RemoteSha256(const std::string& path, std::string& hexOut,
+                              bool& available, std::string& err)
+{
+    hexOut.clear();
+    available = false;
+    if (!m_session)
+    {
+        err = "not connected";
+        return false;
+    }
+    // A file name is remote data going onto a command line, so it is
+    // single-quoted with POSIX escaping — the same treatment the Guardian
+    // gives a directory it re-enters.
+    std::string quoted = "'";
+    for (char c : path)
+    {
+        if (c == '\'')
+            quoted += "'\\''";
+        else if (static_cast<unsigned char>(c) < 0x20)
+        {
+            err = "the remote name contains control characters";
+            return false;
+        }
+        else
+            quoted += c;
+    }
+    quoted += "'";
+    // Which hashing command exists varies — GNU coreutils, BusyBox, macOS
+    // and the BSDs all differ — so all three are tried and the failure is
+    // kept quiet, leaving output that holds a digest or nothing.
+    const std::string cmd =
+        "if command -v sha256sum >/dev/null 2>&1; then sha256sum -- " + quoted +
+        "; elif command -v shasum >/dev/null 2>&1; then shasum -a 256 -- " + quoted +
+        "; elif command -v sha256 >/dev/null 2>&1; then sha256 " + quoted +
+        "; else echo AMBER_NO_SHA256; fi";
+    std::string out;
+    if (!Exec(cmd, out, err))
+        return false;             // no shell channel: the caller decides
+    if (out.find("AMBER_NO_SHA256") != std::string::npos)
+    {
+        err = "the remote host has no sha256 command";
+        return false;
+    }
+    if (!ParseRemoteSha256(out, hexOut))
+    {
+        err = "the remote hash command produced no digest";
+        return false;
+    }
+    available = true;
+    return true;
 }
 
 } // namespace amber

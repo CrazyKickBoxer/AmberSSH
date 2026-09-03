@@ -65,6 +65,28 @@ public:
                   const Progress& cb, std::string& err);
     bool Upload(const std::wstring& local, const std::string& remote,
                 const Progress& cb, std::string& err);
+    // Resumable forms. `offset` bytes are assumed already present at the
+    // destination and are skipped; 0 behaves exactly like the calls above.
+    // The caller decides whether resuming is safe (see SyncPlan.h,
+    // DecideResume) — these two only do what they are told, because a
+    // transport that decides for itself when to append is a transport that
+    // will one day append to the wrong file.
+    bool DownloadFrom(const std::string& remote, const std::wstring& local,
+                      uint64_t offset, const Progress& cb, std::string& err);
+    bool UploadFrom(const std::wstring& local, const std::string& remote,
+                    uint64_t offset, const Progress& cb, std::string& err);
+    // Applies a file's modification time and, when non-zero, its Unix mode.
+    // Silently unsupported servers are reported, not ignored.
+    bool SetTimes(const std::string& path, int64_t mtime, int64_t atime,
+                  std::string& err);
+    bool SetMode(const std::string& path, uint32_t mode, std::string& err);
+    // SHA-256 of a remote file, computed BY THE REMOTE when a shell is
+    // available. `available` comes back false when the profile is SFTP-only
+    // or the host has no usable hashing command — the caller then decides
+    // whether to read the file back and hash it locally, or report that
+    // verification could not be performed. It never invents a digest.
+    bool RemoteSha256(const std::string& path, std::string& hexOut,
+                      bool& available, std::string& err);
     // Whole file into memory (previews). maxBytes caps the read.
     bool ReadFile(const std::string& remote, std::string& out, size_t maxBytes,
                   std::string& err);

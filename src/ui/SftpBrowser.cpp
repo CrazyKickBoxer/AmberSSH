@@ -4,6 +4,8 @@
 
 #include "../platform/Notify.h"
 #include "../ssh/SftpClient.h"
+#include "../ssh/SyncPlan.h"
+#include "../utility/Hash.h"
 
 #include <windows.h>
 #include <commctrl.h>
@@ -313,10 +315,56 @@ struct Transfer
     std::string remote;
     std::wstring name;
     std::atomic<uint64_t> done{ 0 }, total{ 0 };
-    std::atomic<int> state{ 0 };     // 0 queued 1 running 2 done 3 failed 4 cancelled
+    // Kept as the original small ints because the queue list and the taskbar
+    // read them from the UI thread while the worker writes them; the values
+    // map onto amber::XferState, which is what the new columns display.
+    // 0 queued 1 running 2 done 3 failed 4 cancelled 5 verifying 6 paused
+    std::atomic<int> state{ 0 };
     std::atomic<bool> cancel{ false };
     std::string error;
     bool refreshLocal = false, refreshRemote = false;
+
+    // ---- Stage 6 ---------------------------------------------------------
+    // Rate and ETA are derived from these rather than stored, so a stalled
+    // transfer's numbers decay instead of freezing at their last good value.
+    std::atomic<double> startedAt{ 0.0 };
+    std::atomic<uint64_t> resumeFrom{ 0 };
+    std::string resumeWhy;               // why it resumed, or why it did not
+    std::atomic<int> verify{ 0 };        // amber::VerifyState
+    std::string verifyDetail;            // the digests, or why there is none
+    std::atomic<int> attempts{ 0 };
+    bool verifyRequested = false;
+    // Recorded when a partial is first written, and the whole basis on which
+    // a later resume is allowed (see SyncPlan.h, DecideResume).
+    uint64_t srcSizeAtStart = 0;
+    int64_t srcMtimeAtStart = 0;
+    bool haveSrcRecord = false;
+    // Metadata to put back on the destination after the bytes land.
+    int64_t preserveMtime = 0;
+    uint32_t preserveMode = 0;
+
+    amber::XferState State() const
+    {
+        switch (state.load())
+        {
+        case 1:  return amber::XferState::Running;
+        case 2:  return amber::XferState::Done;
+        case 3:  return amber::XferState::Failed;
+        case 4:  return amber::XferState::Cancelled;
+        case 5:  return amber::XferState::Verifying;
+        case 6:  return amber::XferState::Paused;
+        default: return amber::XferState::Queued;
+        }
+    }
+    amber::VerifyState Verify() const
+    {
+        return static_cast<amber::VerifyState>(verify.load());
+    }
+    // Only true when any REQUIRED verification actually passed.
+    bool Succeeded() const
+    {
+        return amber::TransferSucceeded(State(), Verify(), verifyRequested);
+    }
 };
 
 struct LocalEntry
@@ -447,14 +495,30 @@ struct Tab
     std::string pendingOpen;       // remote file to open once connected
     uint64_t nextXfer = 1;
     bool connected = false;
+    // ---- Stage 6 ---------------------------------------------------------
+    // Queue-wide switches. Atomic because the worker thread reads them in the
+    // middle of a transfer to decide whether to stop.
+    std::atomic<bool> paused{ false };
+    bool verifyTransfers = false;      // ask for a SHA-256 check on each one
+    bool preserveMeta = true;          // timestamps, and mode where it maps
+    amber::RetryPolicy retry;
+    // Comparison / sync settings. The direction is explicit and deletion is
+    // off, every time: a compare must never become a mirror by default.
+    amber::SyncDirection syncDir = amber::SyncDirection::LocalToRemote;
+    bool syncDelete = false;
+    std::vector<std::string> excludes{ ".git/", "node_modules/", "*.tmp",
+                                       "Thumbs.db", ".DS_Store" };
 };
+
+static constexpr UINT WM_APP_COMPARE_DONE = WM_APP + 21;
 
 enum
 {
     IdTabs = 200, IdLPath, IdLList, IdRPath, IdRList, IdQueue, IdStatus,
     IdBtnUpload, IdBtnDownload, IdBtnRefresh, IdBtnMkdir, IdBtnRename,
     IdBtnDelete, IdBtnOpen, IdBtnNewTab, IdBtnCloseTab, IdBtnCancel, IdBtnPerms,
-    IdBtnClearQueue,
+    IdBtnClearQueue, IdBtnPauseQueue, IdBtnRetryFailed, IdBtnVerify, IdBtnCompare,
+    IdBtnSyncDir, IdBtnExcludes, IdBtnSyncDelete,
     // context menu
     IdCtxOpen = 300, IdCtxCopy, IdCtxRename, IdCtxDelete, IdCtxMkdir, IdCtxPerms,
     IdCtxRefresh, IdCtxCopyPath,
@@ -503,6 +567,15 @@ public:
     void NavigateLocal(Tab& t, const std::wstring& path);
     void QueueDownload(Tab& t, const SftpEntry& e, const std::wstring& localDir);
     void QueueUpload(Tab& t, const std::wstring& localPath, const std::string& remoteDir);
+    // ---- Stage 6 ---------------------------------------------------------
+    // One file with both paths given. The existing two enqueue by directory
+    // and recurse, which is right for a drag or a button; a sync plan has
+    // already decided every exact path and must not re-walk anything.
+    void QueuePair(Tab& t, bool download, const std::wstring& local,
+                   const std::string& remote, uint64_t bytes);
+    void CompareFolders(Tab& t);
+    void ShowPlan(Tab& t, const amber::SyncPlan& plan, bool truncated);
+    void EditExcludes(Tab& t);
     void RunTransfer(Tab& t, std::shared_ptr<Transfer> x);
     void OpenRemote(Tab& t, const SftpEntry& e);
     void CopySelection(bool fromRemote);
@@ -616,6 +689,11 @@ void Browser::EnsureWindow(HWND own)
         { L"Permissions", IdBtnPerms }, { L"Refresh  Ctrl+R", IdBtnRefresh },
         { L"New Tab  Ctrl+T", IdBtnNewTab }, { L"Close Tab  Ctrl+W", IdBtnCloseTab },
         { L"Cancel Transfer", IdBtnCancel }, { L"Clear Done", IdBtnClearQueue },
+        { L"Pause Queue", IdBtnPauseQueue }, { L"Retry Failed", IdBtnRetryFailed },
+        { L"Verify: off", IdBtnVerify }, { L"Compare Folders", IdBtnCompare },
+        { L"Sync: local → remote", IdBtnSyncDir },
+        { L"Exclusions...", IdBtnExcludes },
+        { L"Delete extraneous: no", IdBtnSyncDelete },
     };
     // Owner-drawn so every skin's shape language reaches them; hover is
     // tracked by a subclass, as in the connection manager.
@@ -667,7 +745,9 @@ void Browser::EnsureWindow(HWND own)
     col(rlist, 0, L"Name", 260); col(rlist, 1, L"Size", 90, LVCFMT_RIGHT); col(rlist, 2, L"Modified", 130);
     col(rlist, 3, L"Permissions", 100); col(rlist, 4, L"Owner", 70);
     col(queue, 0, L"Transfer", 300); col(queue, 1, L"Dir", 40); col(queue, 2, L"Size", 90, LVCFMT_RIGHT);
-    col(queue, 3, L"Progress", 90, LVCFMT_RIGHT); col(queue, 4, L"Status", 260);
+    col(queue, 3, L"Progress", 80, LVCFMT_RIGHT);
+    col(queue, 4, L"Speed", 90, LVCFMT_RIGHT); col(queue, 5, L"ETA", 70, LVCFMT_RIGHT);
+    col(queue, 6, L"Status", 340);
 
     // Column headers are the one part of a list view the visual style paints
     // itself, and it paints them light. Make them owner-drawn so they follow
@@ -908,23 +988,53 @@ void Browser::FillQueue(Tab& t)
         LVITEMW it = { LVIF_TEXT }; it.iItem = ListView_GetItemCount(queue);
         it.pszText = const_cast<wchar_t*>(L""); ListView_InsertItem(queue, &it);
     }
-    static const wchar_t* kState[] = { L"queued", L"transferring", L"done", L"failed", L"cancelled" };
+    const double now = static_cast<double>(GetTickCount64()) / 1000.0;
     for (int i = 0; i < n; ++i)
     {
         Transfer& x = *t.xfers[(size_t)i];
-        uint64_t done = x.done.load(), total = x.total.load();
-        int st = x.state.load();
+        const uint64_t done = x.done.load(), total = x.total.load();
+        const int st = x.state.load();
         wchar_t pct[16];
         if (total > 0) swprintf_s(pct, L"%3.0f%%", 100.0 * (double)done / (double)total);
         else swprintf_s(pct, st == 2 ? L"100%%" : L"--");
-        std::wstring stText = kState[std::clamp(st, 0, 4)];
-        if (st == 3 && !x.error.empty()) stText += L": " + Widen(x.error);
-        std::wstring sz = SizeText(total ? total : done);
+
+        // The state column carries everything the user needs to judge the
+        // item: what it is doing, whether verification passed, how many
+        // attempts it took, and the reason it resumed or restarted.
+        std::wstring stText = Widen(amber::XferStateName(x.State()));
+        if (x.verifyRequested && x.Verify() != amber::VerifyState::NotRequested)
+            stText += L" \u00b7 " + Widen(amber::VerifyStateName(x.Verify()));
+        const int tries = x.attempts.load();
+        if (tries > 1)
+            stText += L" \u00b7 try " + std::to_wstring(tries);
+        if (st == 3 && !x.error.empty())
+            stText += L": " + Widen(x.error);
+        else if (x.Verify() == amber::VerifyState::Failed)
+            stText += L": " + Widen(x.verifyDetail);
+        else if (x.resumeFrom.load() > 0)
+            stText += L" \u00b7 " + Widen(x.resumeWhy);
+
+        // Speed and ETA, derived rather than stored so a stalled transfer's
+        // numbers decay instead of freezing at their last good reading.
+        std::wstring rate = L"-", eta = L"-";
+        if (st == 1)
+        {
+            const double started = x.startedAt.load();
+            const double elapsed = started > 0.0 ? now - started : 0.0;
+            const uint64_t moved = done > x.resumeFrom.load()
+                                       ? done - x.resumeFrom.load()
+                                       : 0;
+            rate = Widen(amber::FormatRate(amber::TransferRate(moved, elapsed)));
+            eta = Widen(amber::FormatEta(amber::TransferEta(done, total, elapsed)));
+        }
+        const std::wstring sz = SizeText(total ? total : done);
         ListView_SetItemText(queue, i, 0, const_cast<wchar_t*>(x.name.c_str()));
         ListView_SetItemText(queue, i, 1, const_cast<wchar_t*>(x.download ? L"\u2190" : L"\u2192"));
         ListView_SetItemText(queue, i, 2, const_cast<wchar_t*>(sz.c_str()));
         ListView_SetItemText(queue, i, 3, pct);
-        ListView_SetItemText(queue, i, 4, const_cast<wchar_t*>(stText.c_str()));
+        ListView_SetItemText(queue, i, 4, const_cast<wchar_t*>(rate.c_str()));
+        ListView_SetItemText(queue, i, 5, const_cast<wchar_t*>(eta.c_str()));
+        ListView_SetItemText(queue, i, 6, const_cast<wchar_t*>(stText.c_str()));
     }
 }
 
@@ -958,35 +1068,195 @@ void Browser::NavigateLocal(Tab& t, const std::wstring& path)
     RefreshLocal(t);
 }
 
+// One transfer, start to finish: resume decision, bytes, metadata,
+// verification, and a retry when the failure was worth retrying.
+//
+// Every judgement here comes from ssh/SyncPlan.h — this function moves bytes
+// and reports; it does not decide when appending is safe or when a failure is
+// permanent, because those are the parts that must be testable without a
+// server.
 void Browser::RunTransfer(Tab& t, std::shared_ptr<Transfer> x)
 {
     Worker* w = t.worker.get();
     Tab* tp = &t;
     w->Post([tp, x, w](SftpClient& c) {
         if (x->cancel.load()) { x->state = 4; return; }
+        // The queue can be paused between a transfer being enqueued and the
+        // worker reaching it; a paused item goes back to queued rather than
+        // running, and the pump picks it up again on resume.
+        if (tp->paused.load()) { x->state = 6; return; }
+
+        // ---- resume decision --------------------------------------------
+        amber::ResumeCheck rc;
+        rc.mtimeToleranceSec = 2;
+        rc.haveRecord = x->haveSrcRecord;
+        rc.recordedSize = x->srcSizeAtStart;
+        rc.recordedMtime = x->srcMtimeAtStart;
+        if (x->download)
+        {
+            SftpEntry src;
+            if (c.Stat(x->remote, src))
+            {
+                rc.sourceSize = src.size;
+                rc.sourceMtime = static_cast<int64_t>(src.mtime);
+                x->preserveMtime = static_cast<int64_t>(src.mtime);
+                x->preserveMode = src.perms;
+            }
+            WIN32_FILE_ATTRIBUTE_DATA fad = {};
+            if (GetFileAttributesExW(x->local.c_str(), GetFileExInfoStandard, &fad))
+                rc.partialSize = (static_cast<uint64_t>(fad.nFileSizeHigh) << 32) |
+                                 fad.nFileSizeLow;
+        }
+        else
+        {
+            WIN32_FILE_ATTRIBUTE_DATA fad = {};
+            if (GetFileAttributesExW(x->local.c_str(), GetFileExInfoStandard, &fad))
+            {
+                rc.sourceSize = (static_cast<uint64_t>(fad.nFileSizeHigh) << 32) |
+                                fad.nFileSizeLow;
+                ULARGE_INTEGER ft;
+                ft.LowPart = fad.ftLastWriteTime.dwLowDateTime;
+                ft.HighPart = fad.ftLastWriteTime.dwHighDateTime;
+                // FILETIME is 100 ns ticks since 1601; Unix seconds since 1970.
+                rc.sourceMtime = static_cast<int64_t>(ft.QuadPart / 10000000ULL) -
+                                 11644473600LL;
+                x->preserveMtime = rc.sourceMtime;
+            }
+            SftpEntry dst;
+            if (c.Stat(x->remote, dst))
+                rc.partialSize = dst.size;
+        }
+        std::string why;
+        const amber::ResumeDecision rd = amber::DecideResume(rc, why);
+        const uint64_t offset = amber::ResumeOffset(rc, rd);
+        x->resumeFrom = offset;
+        x->resumeWhy = why;
+        // Record the source as it is NOW, so a later attempt has the basis it
+        // needs to append. Written before any bytes move, because a record
+        // written afterwards would describe a source that had already changed.
+        x->srcSizeAtStart = rc.sourceSize;
+        x->srcMtimeAtStart = rc.sourceMtime;
+        x->haveSrcRecord = rc.sourceSize > 0;
+
+        x->attempts.fetch_add(1);
+        x->startedAt = static_cast<double>(GetTickCount64()) / 1000.0;
         x->state = 1;
         std::string err;
         auto prog = [&](uint64_t d, uint64_t tot) {
-            x->done = d; x->total = tot;
-            return !x->cancel.load();
+            x->done = d;
+            x->total = tot;
+            return !x->cancel.load() && !tp->paused.load();
         };
-        bool ok;
-        if (x->download)
+        const bool ok = x->download
+                            ? c.DownloadFrom(x->remote, x->local, offset, prog, err)
+                            : c.UploadFrom(x->local, x->remote, offset, prog, err);
+
+        if (!ok)
         {
-            std::string dir = SftpParent(x->remote);
-            ok = c.Download(x->remote, x->local, prog, err);
+            if (x->cancel.load())
+            {
+                x->state = 4;
+                return;
+            }
+            if (tp->paused.load())
+            {
+                // A paused transfer keeps its partial file and its record, so
+                // resuming continues rather than starting over.
+                x->error = "paused";
+                x->state = 6;
+                return;
+            }
+            x->error = err;
+            x->state = 3;
+            return;
+        }
+
+        // ---- metadata ----------------------------------------------------
+        // Best effort, and reported rather than assumed: a server that
+        // refuses setstat has not failed the transfer.
+        if (tp->preserveMeta && x->preserveMtime > 0)
+        {
+            if (x->download)
+            {
+                HANDLE h = CreateFileW(x->local.c_str(), FILE_WRITE_ATTRIBUTES,
+                                       FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (h != INVALID_HANDLE_VALUE)
+                {
+                    ULARGE_INTEGER ul;
+                    ul.QuadPart = (static_cast<uint64_t>(x->preserveMtime) +
+                                   11644473600ULL) * 10000000ULL;
+                    FILETIME ft;
+                    ft.dwLowDateTime = ul.LowPart;
+                    ft.dwHighDateTime = ul.HighPart;
+                    SetFileTime(h, nullptr, nullptr, &ft);
+                    CloseHandle(h);
+                }
+                // Unix mode bits have no faithful home on NTFS. Not applied,
+                // and the queue detail says so rather than implying it was.
+                if (x->preserveMode)
+                    x->verifyDetail = "remote mode bits not applied: Windows has "
+                                      "no equivalent";
+            }
+            else
+            {
+                std::string merr;
+                if (!c.SetTimes(x->remote, x->preserveMtime, 0, merr))
+                    x->verifyDetail = "timestamp not preserved: " + merr;
+            }
+        }
+
+        // ---- verification ------------------------------------------------
+        if (!x->verifyRequested)
+        {
+            x->state = 2;
+            x->done.store(x->total.load());
         }
         else
-            ok = c.Upload(x->local, x->remote, prog, err);
-        if (ok) { x->state = 2; x->done.store(x->total.load()); }
-        else { x->error = err; x->state = x->cancel.load() ? 4 : 3; }
+        {
+            x->state = 5;                  // verifying: NOT done yet
+            x->verify = static_cast<int>(amber::VerifyState::Pending);
+            std::string localHex, remoteHex, herr;
+            bool haveLocal = amber::Sha256File(x->local, localHex, herr);
+            bool available = false;
+            const bool haveRemote =
+                c.RemoteSha256(x->remote, remoteHex, available, herr);
+            if (!haveLocal)
+            {
+                x->verify = static_cast<int>(amber::VerifyState::Unavailable);
+                x->verifyDetail = "could not hash the local file: " + herr;
+            }
+            else if (!haveRemote || !available)
+            {
+                // No shell, or no hashing command. Reported as unavailable —
+                // which, for a REQUIRED verification, is not success.
+                x->verify = static_cast<int>(amber::VerifyState::Unavailable);
+                x->verifyDetail = "no remote digest: " + herr;
+            }
+            else if (amber::DigestsMatch(localHex, remoteHex))
+            {
+                x->verify = static_cast<int>(amber::VerifyState::Passed);
+                x->verifyDetail = "sha256 " + localHex.substr(0, 16) + "...";
+            }
+            else
+            {
+                x->verify = static_cast<int>(amber::VerifyState::Failed);
+                x->verifyDetail = "local " + localHex.substr(0, 16) +
+                                  "... != remote " + remoteHex.substr(0, 16) + "...";
+                x->error = "checksum mismatch";
+            }
+            // Done means the bytes landed; whether that counts as SUCCESS is
+            // Transfer::Succeeded, which requires the verification to pass.
+            x->state = 2;
+            x->done.store(x->total.load());
+        }
+
         if (ok && x->refreshRemote)
         {
             std::string cwd = w->Cwd();
             std::vector<SftpEntry> e; std::string e2;
             if (c.List(cwd, e, e2)) w->Publish(cwd, std::move(e));
         }
-        (void)tp;
     });
 }
 
@@ -1012,6 +1282,7 @@ void Browser::QueueDownload(Tab& t, const SftpEntry& e, const std::wstring& loca
                     x->download = true; x->remote = SftpJoin(rdir, k.name);
                     x->local = LocalJoin(ld, Widen(k.name)); x->name = Widen(k.name);
                     x->total = k.size; x->refreshLocal = true;
+                    x->verifyRequested = tp->verifyTransfers;
                     { std::lock_guard<std::mutex> lk(tp->xmx); x->id = tp->nextXfer++; tp->xfers.push_back(x); }
                     RunTransfer(*tp, x);
                 }
@@ -1024,6 +1295,7 @@ void Browser::QueueDownload(Tab& t, const SftpEntry& e, const std::wstring& loca
     auto x = std::make_shared<Transfer>();
     x->download = true; x->remote = remote; x->local = LocalJoin(localDir, Widen(e.name));
     x->name = Widen(e.name); x->total = e.size; x->refreshLocal = true;
+    x->verifyRequested = t.verifyTransfers;
     { std::lock_guard<std::mutex> lk(t.xmx); x->id = t.nextXfer++; t.xfers.push_back(x); }
     RunTransfer(t, x);
 }
@@ -1059,6 +1331,7 @@ void Browser::QueueUpload(Tab& t, const std::wstring& localPath, const std::stri
     if (GetFileAttributesExW(localPath.c_str(), GetFileExInfoStandard, &fad))
         x->total = ((uint64_t)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
     x->refreshRemote = true;
+    x->verifyRequested = t.verifyTransfers;
     { std::lock_guard<std::mutex> lk(t.xmx); x->id = t.nextXfer++; t.xfers.push_back(x); }
     RunTransfer(t, x);
 }
@@ -1772,12 +2045,176 @@ LRESULT Browser::Proc(HWND h, UINT m, WPARAM w, LPARAM l)
         case IdBtnClearQueue:
             if (t)
             {
+                // Only finished items go: a running or paused transfer left
+                // in the list is the only handle on it.
                 std::lock_guard<std::mutex> lk(t->xmx);
                 t->xfers.erase(std::remove_if(t->xfers.begin(), t->xfers.end(),
-                                              [](const std::shared_ptr<Transfer>& x) { return x->state.load() >= 2; }),
+                                              [](const std::shared_ptr<Transfer>& x)
+                                              {
+                                                  const int s = x->state.load();
+                                                  return s == 2 || s == 3 || s == 4;
+                                              }),
                                t->xfers.end());
             }
             break;
+        case IdBtnPauseQueue:
+            if (t)
+            {
+                const bool now = !t->paused.load();
+                t->paused = now;
+                if (now)
+                {
+                    SetStatusText(L"Queue paused. Running transfers stop at the "
+                                  L"next block and keep their partial files.");
+                }
+                else
+                {
+                    // Resuming re-posts every paused item. Each one runs its
+                    // resume decision again, so a source that changed while
+                    // the queue was paused restarts rather than appending.
+                    std::vector<std::shared_ptr<Transfer>> again;
+                    {
+                        std::lock_guard<std::mutex> lk(t->xmx);
+                        for (auto& x : t->xfers)
+                            if (x->state.load() == 6)
+                            {
+                                x->state = 0;
+                                x->error.clear();
+                                again.push_back(x);
+                            }
+                    }
+                    for (auto& x : again)
+                        RunTransfer(*t, x);
+                    SetStatusText(L"Queue resumed (" + std::to_wstring(again.size()) +
+                                  L" transfers).");
+                }
+                SetWindowTextW(GetDlgItem(h, IdBtnPauseQueue),
+                               now ? L"Resume Queue" : L"Pause Queue");
+            }
+            break;
+        case IdBtnRetryFailed:
+            if (t)
+            {
+                // Only failures worth retrying are re-queued. A permission
+                // error or a full disk fails the same way every time, so
+                // retrying it would only look like the button did nothing.
+                std::vector<std::shared_ptr<Transfer>> again;
+                int skipped = 0;
+                {
+                    std::lock_guard<std::mutex> lk(t->xmx);
+                    for (auto& x : t->xfers)
+                    {
+                        if (x->state.load() != 3)
+                            continue;
+                        if (!amber::RetryableError(x->error))
+                        {
+                            ++skipped;
+                            continue;
+                        }
+                        x->state = 0;
+                        x->cancel = false;
+                        again.push_back(x);
+                    }
+                }
+                for (auto& x : again)
+                    RunTransfer(*t, x);
+                std::wstring msg = L"Retrying " + std::to_wstring(again.size()) +
+                                   L" transfers.";
+                if (skipped)
+                    msg += L" " + std::to_wstring(skipped) +
+                           L" left alone: the error will not change on a retry.";
+                SetStatusText(msg);
+            }
+            break;
+        case IdBtnVerify:
+            if (t)
+            {
+                t->verifyTransfers = !t->verifyTransfers;
+                SetWindowTextW(GetDlgItem(h, IdBtnVerify),
+                               t->verifyTransfers ? L"Verify: SHA-256" : L"Verify: off");
+                SetStatusText(t->verifyTransfers
+                                  ? L"New transfers will be checked with SHA-256. "
+                                    L"A transfer whose hash cannot be obtained is "
+                                    L"reported, not assumed good."
+                                  : L"Checksum verification off.");
+            }
+            break;
+        case IdBtnCompare:
+            if (t)
+                CompareFolders(*t);
+            break;
+        case IdBtnSyncDir:
+            if (t)
+            {
+                // Cycles the three directions. Explicit rather than inferred
+                // from which pane has focus: a sync that picks its own
+                // direction is a sync that eventually picks the wrong one.
+                t->syncDir = t->syncDir == amber::SyncDirection::LocalToRemote
+                                 ? amber::SyncDirection::RemoteToLocal
+                             : t->syncDir == amber::SyncDirection::RemoteToLocal
+                                 ? amber::SyncDirection::TwoWay
+                                 : amber::SyncDirection::LocalToRemote;
+                const wchar_t* label =
+                    t->syncDir == amber::SyncDirection::LocalToRemote
+                        ? L"Sync: local → remote"
+                    : t->syncDir == amber::SyncDirection::RemoteToLocal
+                        ? L"Sync: remote → local"
+                        : L"Sync: two-way";
+                SetWindowTextW(GetDlgItem(hwnd, IdBtnSyncDir), label);
+                SetStatusText(
+                    t->syncDir == amber::SyncDirection::TwoWay
+                        ? L"Two-way: each side's newer copy wins, and anything "
+                          L"that changed on both is reported as a conflict "
+                          L"rather than merged."
+                        : L"One-way: a destination that is NEWER than the "
+                          L"source is left alone, never overwritten.");
+            }
+            break;
+        case IdBtnExcludes:
+            if (t)
+                EditExcludes(*t);
+            break;
+        case IdBtnSyncDelete:
+            if (t)
+            {
+                if (!t->syncDelete)
+                {
+                    // Turning a copy into a mirror is confirmed here AND
+                    // again in the plan, because the plan is where the actual
+                    // count of doomed files finally appears.
+                    if (MessageBoxW(hwnd,
+                                    L"List files the source does not have as "
+                                    L"deletions?\r\n\r\nThis turns a copy into a "
+                                    L"mirror. The plan will count them, and "
+                                    L"AmberSSH still will not delete anything "
+                                    L"without you confirming that plan.",
+                                    L"AmberSSH — mirror mode",
+                                    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+                        break;
+                }
+                t->syncDelete = !t->syncDelete;
+                SetWindowTextW(GetDlgItem(hwnd, IdBtnSyncDelete),
+                               t->syncDelete ? L"Delete extraneous: YES"
+                                             : L"Delete extraneous: no");
+                SetStatusText(t->syncDelete
+                                  ? L"Extraneous files will be LISTED in the plan."
+                                  : L"Extraneous files will be ignored.");
+            }
+            break;
+        }
+        return 0;
+    }
+    case WM_APP_COMPARE_DONE:
+    {
+        // The worker finished walking both trees and built the plan; the
+        // confirmation has to happen on the UI thread.
+        auto* result =
+            reinterpret_cast<std::pair<amber::SyncPlan, bool>*>(l);
+        if (result)
+        {
+            if (Tab* t = Active())
+                ShowPlan(*t, result->first, result->second);
+            delete result;
         }
         return 0;
     }
@@ -1848,6 +2285,304 @@ void SftpBrowser::SetNewTabHandler(NewTabFn fn, void* ctx)
 bool SftpBrowser::IsOpen()
 {
     return Browser::Get().hwnd != nullptr;
+}
+
+
+// ------------------------------------------------------------- comparison
+// Walks both trees, classifies every path, shows the plan, and only then
+// asks. Non-destructive up to the confirmation by construction: the walk and
+// the plan are pure functions of metadata (ssh/SyncPlan.h), and nothing here
+// touches a file until the user has read a summary that counts the deletions
+// and the conflicts on their own lines.
+namespace
+{
+
+// Recursive local walk, relative to `root`. Bounded in depth and in entries
+// so a reparse loop or a comparison started at a filesystem root cannot run
+// away before the user sees anything.
+void WalkLocal(const std::wstring& root, const std::wstring& rel,
+               std::vector<amber::SyncEntry>& out, int depth, size_t& budget)
+{
+    if (depth > 32 || budget == 0)
+        return;
+    const std::wstring dir = rel.empty() ? root : root + L"\\" + rel;
+    WIN32_FIND_DATAW fd;
+    HANDLE hFind = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (hFind == INVALID_HANDLE_VALUE)
+        return;
+    do
+    {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+            continue;
+        if (budget == 0)
+            break;
+        --budget;
+        const std::wstring childRel =
+            rel.empty() ? std::wstring(fd.cFileName) : rel + L"\\" + fd.cFileName;
+        std::wstring slashed = childRel;
+        for (wchar_t& c : slashed)
+            if (c == L'\\')
+                c = L'/';
+        amber::SyncEntry e;
+        e.path = Narrow(slashed);
+        e.dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        // A reparse point is reported as a link and never walked into.
+        e.link = (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+        e.size = e.dir ? 0
+                       : ((static_cast<uint64_t>(fd.nFileSizeHigh) << 32) |
+                          fd.nFileSizeLow);
+        ULARGE_INTEGER ft;
+        ft.LowPart = fd.ftLastWriteTime.dwLowDateTime;
+        ft.HighPart = fd.ftLastWriteTime.dwHighDateTime;
+        e.mtime = static_cast<int64_t>(ft.QuadPart / 10000000ULL) - 11644473600LL;
+        // Windows has no Unix mode to report. Reporting 0 rather than a
+        // plausible-looking 0644 is what stops the planner believing it can
+        // preserve permissions that were never there.
+        e.mode = 0;
+        out.push_back(e);
+        if (e.dir && !e.link)
+            WalkLocal(root, childRel, out, depth + 1, budget);
+    } while (FindNextFileW(hFind, &fd));
+    FindClose(hFind);
+}
+
+void WalkRemote(SftpClient& c, const std::string& root, const std::string& rel,
+                std::vector<amber::SyncEntry>& out, int depth, size_t& budget)
+{
+    if (depth > 32 || budget == 0)
+        return;
+    const std::string dir = rel.empty() ? root : SftpJoin(root, rel);
+    std::vector<SftpEntry> entries;
+    std::string err;
+    if (!c.List(dir, entries, err))
+        return;
+    for (const SftpEntry& s : entries)
+    {
+        if (s.name == "." || s.name == "..")
+            continue;
+        if (budget == 0)
+            break;
+        --budget;
+        amber::SyncEntry e;
+        e.path = rel.empty() ? s.name : rel + "/" + s.name;
+        e.dir = s.dir;
+        e.link = s.link;
+        e.size = s.dir ? 0 : s.size;
+        e.mtime = static_cast<int64_t>(s.mtime);
+        e.mode = s.perms & 0777;
+        out.push_back(e);
+        if (e.dir && !e.link)
+            WalkRemote(c, root, e.path, out, depth + 1, budget);
+    }
+}
+
+} // namespace
+
+void Browser::QueuePair(Tab& t, bool download, const std::wstring& local,
+                        const std::string& remote, uint64_t bytes)
+{
+    // A download needs its parent directory to exist; the plan created the
+    // directory steps but they are not executed as transfers.
+    if (download)
+    {
+        const size_t slash = local.find_last_of(L"\\/");
+        if (slash != std::wstring::npos)
+            SHCreateDirectoryExW(nullptr, local.substr(0, slash).c_str(), nullptr);
+    }
+    auto x = std::make_shared<Transfer>();
+    x->download = download;
+    x->local = local;
+    x->remote = remote;
+    const size_t slash = local.find_last_of(L"\\/");
+    x->name = slash == std::wstring::npos ? local : local.substr(slash + 1);
+    x->total = bytes;
+    x->refreshLocal = download;
+    x->refreshRemote = !download;
+    x->verifyRequested = t.verifyTransfers;
+    {
+        std::lock_guard<std::mutex> lk(t.xmx);
+        x->id = t.nextXfer++;
+        t.xfers.push_back(x);
+    }
+    RunTransfer(t, x);
+}
+
+void Browser::EditExcludes(Tab& t)
+{
+    std::string joined;
+    for (const std::string& g : t.excludes)
+        joined += (joined.empty() ? "" : ";") + g;
+    std::wstring text = Widen(joined);
+    if (!PromptString(hwnd, L"Comparison exclusions",
+                      L"Exclude patterns (semicolon separated)", text))
+        return;
+    std::vector<std::string> next;
+    const std::string all = Narrow(text);
+    size_t pos = 0;
+    while (pos <= all.size())
+    {
+        const size_t semi = all.find(';', pos);
+        std::string one = all.substr(pos, semi == std::string::npos
+                                              ? std::string::npos
+                                              : semi - pos);
+        while (!one.empty() && (one.front() == ' ' || one.front() == '\t'))
+            one.erase(one.begin());
+        while (!one.empty() && (one.back() == ' ' || one.back() == '\t'))
+            one.pop_back();
+        if (!one.empty())
+            next.push_back(one);
+        if (semi == std::string::npos)
+            break;
+        pos = semi + 1;
+    }
+    t.excludes = std::move(next);
+    SetStatusText(L"Excluding " + std::to_wstring(t.excludes.size()) +
+                  L" patterns from comparisons.");
+}
+
+void Browser::CompareFolders(Tab& t)
+{
+    if (!t.connected)
+    {
+        SetStatusText(L"Not connected.");
+        return;
+    }
+    if (t.lcwd.empty())
+    {
+        SetStatusText(L"Pick a local folder first (the left pane is on the "
+                      L"drive list).");
+        return;
+    }
+    const std::wstring localRoot = t.lcwd;
+    const std::string remoteRoot = t.rcwd;
+    const std::vector<std::string> excludes = t.excludes;
+    const amber::SyncDirection dir = t.syncDir;
+    const bool del = t.syncDelete;
+    Worker* w = t.worker.get();
+    HWND target = hwnd;
+    SetStatusText(L"Comparing " + localRoot + L" with " + Widen(remoteRoot) + L"...");
+
+    // The walk runs on the worker: a remote tree walk is a long sequence of
+    // round trips and must not block the UI thread.
+    w->Post([target, localRoot, remoteRoot, excludes, dir, del](SftpClient& c) {
+        size_t budgetL = 200000, budgetR = 200000;
+        std::vector<amber::SyncEntry> local, remote;
+        WalkLocal(localRoot, L"", local, 0, budgetL);
+        WalkRemote(c, remoteRoot, "", remote, 0, budgetR);
+        const bool truncated = budgetL == 0 || budgetR == 0;
+
+        amber::CompareOptions co;
+        co.excludeGlobs = excludes;
+        const std::vector<amber::ComparePair> pairs =
+            amber::Compare(local, remote, co);
+        amber::SyncOptions so;
+        so.direction = dir;
+        so.deleteExtraneous = del;
+
+        // The plan is built here and handed over whole, so the summary the
+        // user reads is the plan's own count rather than a second tally that
+        // could disagree with it.
+        auto* result = new std::pair<amber::SyncPlan, bool>(
+            amber::BuildPlan(pairs, so), truncated);
+        PostMessageW(target, WM_APP_COMPARE_DONE, 0,
+                     reinterpret_cast<LPARAM>(result));
+    });
+}
+
+void Browser::ShowPlan(Tab& t, const amber::SyncPlan& plan, bool truncated)
+{
+    if (plan.steps.empty())
+    {
+        SetStatusText(L"Nothing to do: the two folders match.");
+        return;
+    }
+    size_t moves = 0, skips = 0, mkdirs = 0;
+    uint64_t bytes = 0;
+    for (const amber::SyncStep& s : plan.steps)
+    {
+        if (s.action == amber::SyncAction::Skip)
+            ++skips;
+        else if (s.action == amber::SyncAction::MkdirLocal ||
+                 s.action == amber::SyncAction::MkdirRemote)
+            ++mkdirs;
+        else if (s.action != amber::SyncAction::Conflict &&
+                 !amber::Deletes(s.action))
+        {
+            ++moves;
+            bytes += s.bytes;
+        }
+    }
+
+    const wchar_t* dirName =
+        t.syncDir == amber::SyncDirection::LocalToRemote ? L"local → remote"
+        : t.syncDir == amber::SyncDirection::RemoteToLocal ? L"remote → local"
+                                                           : L"two-way";
+    std::wstring body = L"Plan for ";
+    body += dirName;
+    body += L":\r\n\r\n    " + std::to_wstring(moves) + L" files to transfer (" +
+            SizeText(bytes) + L")\r\n    " + std::to_wstring(mkdirs) +
+            L" directories to create\r\n    " + std::to_wstring(skips) +
+            L" already match or are left alone\r\n";
+    if (plan.conflicts)
+        body += L"    " + std::to_wstring(plan.conflicts) +
+                L" CONFLICTS — skipped, not guessed at\r\n";
+    if (plan.deletions)
+        body += L"\r\n    " + std::to_wstring(plan.deletions) +
+                L" extraneous files were found. They are LISTED but NOT "
+                L"deleted.\r\n";
+    if (truncated)
+        body += L"\r\nThe trees are larger than the comparison limit, so this "
+                L"plan is incomplete.\r\n";
+
+    // A sample of the actual steps, so the counts are not the only thing
+    // between the user and the action.
+    body += L"\r\nFirst steps:\r\n";
+    int shown = 0;
+    for (const amber::SyncStep& s : plan.steps)
+    {
+        if (s.action == amber::SyncAction::Skip)
+            continue;
+        if (shown++ >= 12)
+        {
+            body += L"    ...\r\n";
+            break;
+        }
+        body += L"    " + Widen(amber::SyncActionName(s.action)) + L"  " +
+                Widen(s.path) + L"\r\n";
+    }
+    body += L"\r\nQueue the " + std::to_wstring(moves) + L" transfers?";
+
+    if (MessageBoxW(hwnd, body.c_str(), L"AmberSSH — sync plan",
+                    MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
+    {
+        SetStatusText(L"Sync cancelled — nothing was changed.");
+        return;
+    }
+
+    // Only transfers are queued. Deletions are deliberately NOT executed:
+    // turning a comparison into a mirror needs its own confirmed action, not
+    // a checkbox that was read minutes earlier in a different dialog.
+    int queued = 0;
+    for (const amber::SyncStep& s : plan.steps)
+    {
+        const bool up = s.action == amber::SyncAction::Upload ||
+                        s.action == amber::SyncAction::ReplaceRemote;
+        const bool down = s.action == amber::SyncAction::Download ||
+                          s.action == amber::SyncAction::ReplaceLocal;
+        if (!up && !down)
+            continue;
+        std::wstring wrel = Widen(s.path);
+        for (wchar_t& ch : wrel)
+            if (ch == L'/')
+                ch = L'\\';
+        QueuePair(t, down, t.lcwd + L"\\" + wrel, SftpJoin(t.rcwd, s.path),
+                  s.bytes);
+        ++queued;
+    }
+    std::wstring msg = L"Queued " + std::to_wstring(queued) + L" transfers.";
+    if (plan.deletions)
+        msg += L" No deletions were performed.";
+    SetStatusText(msg);
 }
 
 } // namespace amber

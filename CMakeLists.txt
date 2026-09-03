@@ -54,6 +54,8 @@ set(AMBER_SOURCES
     src/ui/Chrome.h           src/ui/Chrome.cpp
     src/ui/AboutDialog.h      src/ui/AboutDialog.cpp
     src/ssh/Vitals.h          src/ssh/Vitals.cpp
+    src/ssh/SyncPlan.h        src/ssh/SyncPlan.cpp
+    src/utility/Hash.h        src/utility/Hash.cpp
     src/term/palette.h
     src/term/input.h       src/term/input.cpp
     src/ssh/ring.h

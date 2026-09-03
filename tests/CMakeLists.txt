@@ -20,6 +20,7 @@ add_executable(AmberTests
     CommandBlockTests.cpp
     CompatFixtureTests.cpp
     PaneLayoutTests.cpp
+    SyncPlanTests.cpp
 
     ${CMAKE_SOURCE_DIR}/src/term/vtparser.cpp
     ${CMAKE_SOURCE_DIR}/src/term/grid.cpp
@@ -29,6 +30,8 @@ add_executable(AmberTests
     ${CMAKE_SOURCE_DIR}/src/term/input.cpp
     ${CMAKE_SOURCE_DIR}/src/term/SyntaxTint.cpp
     ${CMAKE_SOURCE_DIR}/src/utility/SecureString.cpp
+    ${CMAKE_SOURCE_DIR}/src/utility/Hash.cpp
+    ${CMAKE_SOURCE_DIR}/src/ssh/SyncPlan.cpp
     ${CMAKE_SOURCE_DIR}/src/platform/Paths.cpp
     ${CMAKE_SOURCE_DIR}/src/platform/CredentialStore.cpp
     ${CMAKE_SOURCE_DIR}/src/platform/ConPty.cpp
