@@ -18,6 +18,7 @@ set(AMBER_CORE_SOURCES
     src/sessions/CommandJournal.h src/sessions/CommandJournal.cpp
     src/sessions/Guardian.h      src/sessions/Guardian.cpp
     src/sessions/CommandBlocks.h src/sessions/CommandBlocks.cpp
+    src/sessions/PaneLayout.h    src/sessions/PaneLayout.cpp
     src/sessions/Workspaces.h    src/sessions/Workspaces.cpp
     src/term/SyntaxTint.h        src/term/SyntaxTint.cpp
     src/sessions/Session.h

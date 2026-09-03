@@ -91,6 +91,35 @@ enum MenuId : int
     IdmBlockNotifyLast = IdmBlockNotifyFirst + 3,
     IdmBlockNotifyAfter = 41660,   // set the global threshold, in seconds
 
+    // Panes. Every one acts on the active tab's focused pane.
+    IdmPaneFocusLeft = 41700,
+    IdmPaneFocusRight,
+    IdmPaneFocusUp,
+    IdmPaneFocusDown,
+    IdmPaneFocusNext,
+    IdmPaneFocusPrev,
+    IdmPaneMoveLeft,
+    IdmPaneMoveRight,
+    IdmPaneMoveUp,
+    IdmPaneMoveDown,
+    IdmPaneSwapLeft,
+    IdmPaneSwapRight,
+    IdmPaneSwapUp,
+    IdmPaneSwapDown,
+    IdmPaneGrow,
+    IdmPaneShrink,
+    IdmPaneGrowV,
+    IdmPaneShrinkV,
+    IdmPaneRotate,
+    IdmPaneZoom,
+    IdmPaneReadOnly,
+    IdmPaneClose,
+    // Broadcast. The picker is a modal list of the tab's panes; the rest are
+    // the emergency stop and the "all/none" shortcuts.
+    IdmBroadcastPick = 41740,
+    IdmBroadcastStop,
+    IdmBroadcastAll,
+
     IdmMotionFirst = 41000,        // +0..N → index into kMotionStyles
     IdmMotionLast  = IdmMotionFirst + kMotionStyleCount - 1,
     IdmReducedMotion = 40120,      // accessibility: short Direct morph only
@@ -677,25 +706,25 @@ void App::UpdateGridDims()
     };
     for (auto& sp : m_sessions)
     {
-        if (sp->pane)
-        {
-            int cA = cols, rA = rows, cB = cols, rB = rows;
-            if (sp->paneVertical)
-            {
-                cA = std::max(2, (cols - 1) / 2);
-                cB = std::max(2, cols - 1 - cA);
-            }
-            else
-            {
-                rA = std::max(2, (rows - 1) / 2);
-                rB = std::max(2, rows - 1 - rA);
-            }
-            sizeSession(*sp, cA, rA);
-            sizeSession(*sp->pane, cB, rB);
-        }
-        else
+        // A single-pane tab keeps the whole grid; anything split is sized
+        // from the layout tree, which is what makes a nested split propagate
+        // the right column and row count down to each PTY.
+        if (sp->layout.Empty() || sp->layout.Count() <= 1)
         {
             sizeSession(*sp, cols, rows);
+            continue;
+        }
+        for (const auto& [id, r] : sp->layout.Rects(cols, rows))
+        {
+            amber::Session* p = PaneById(*sp, id);
+            if (!p)
+                continue;
+            // A pane hidden by a zoom keeps its last size rather than being
+            // resized to nothing: the remote application should not see a
+            // 2x2 terminal because the user zoomed a different pane.
+            if (r.cols <= 0 || r.rows <= 0)
+                continue;
+            sizeSession(*p, r.cols, r.rows);
         }
     }
 
@@ -1078,8 +1107,7 @@ void App::DrainSessionOutput(amber::Session& s, int budget)
     uint8_t buf[16384];
 
     const bool activeTab =
-        HasSession() &&
-        (&s == &Cur() || (Cur().pane && &s == Cur().pane.get()));
+        HasSession() && PaneIdOf(Cur(), s) != amber::kNoPane;
 
     // Terminal page: local echo / line editing "Auto" follow whether the far
     // end echoes (Telnet decides that during option negotiation).
@@ -1357,39 +1385,11 @@ bool App::StartSession(amber::ConnectionRequest& req)
     cfg.cols = cols;
     cfg.rows = rows;
 
-    // Parser replies (DSR/DA) go back to this session's own channel.
-    amber::Session* raw = session.get();
-    session->parser.SetWriter([raw](const char* d, size_t n) { raw->ssh.Send(d, n); });
-    // OSC 52: remote vim/tmux "copy" lands on the local clipboard.
-    session->parser.SetClipboardSink([this](const std::string& b64)
-    {
-        std::string text = DecodeBase64(b64);
-        if (text.empty())
-            return;
-        SetClipboardText(text);
-        char msg[64];
-        snprintf(msg, sizeof(msg), "Remote copied %zu characters", text.size());
-        SetStatus(msg);
-    });
-    session->parser.SetTitleSink([this, raw](const std::string& t)
-    {
-        raw->remoteTitle = t;
-        if (HasSession() && &Cur() == raw)
-        {
-            SetWindowTextW(m_hwnd, WideFromUtf8(TitleFor(*raw)).c_str());
-        }
-    });
-    // OSC 7 — the shell's cwd, so Ctrl+click on a file name can open it.
-    session->parser.SetCwdSink([raw](const std::string& dir) { raw->cwd = dir; });
-    // Sixel / Kitty inline images.
-    session->parser.SetImageSink([this, raw](amber::DecodedImage&& img, int cols, int rows)
-                                 { return OnInlineImage(*raw, std::move(img), cols, rows); });
-    // OSC 133;D — the shell reported a command's exit status: quiet green
-    // edge glow for success, red ember wash + ring for failure.
-    session->parser.SetMarkSink([this, raw](char kind, int code, bool hasCode)
-                                { OnShellMark(*raw, kind, code, hasCode); });
-    // xterm CSI 8 t: the remote app asks for a terminal size (Features page).
-    session->parser.SetResizeSink([this, raw](int c, int r) { OnRemoteResize(*raw, c, r); });
+    // Parser replies, clipboard, title, OSC 7, images, OSC 133 marks and the
+    // remote resize request — all of it in one call. It used to be five
+    // lambdas written out here and copied, differently, at three other
+    // creation sites; one of them was missing the resize sink.
+    BindSessionSinks(*session);
     // Every Connection-dialog page that shapes this session: parser
     // features, scrollback, echo, log file, global font / effect overrides.
     ApplyProfileToSession(*session);
@@ -1681,6 +1681,7 @@ void App::RenderFrame()
     DrawLiveEffects();
     DrawNotices();      // guardian annotations: not an effect, always drawn
     DrawBlockGutter();  // command-block bars: metadata, never terminal text
+    DrawPaneBadges();   // read-only and broadcast markers, per pane
     DrawPalette();
     DrawJournal();
     DrawPasteGuard();
@@ -2447,7 +2448,7 @@ void App::BuildVisualsFromGrid()
     };   // composePane
 
     amber::Session& P = Cur();
-    if (!P.pane)
+    if (P.layout.Empty() || P.layout.Count() <= 1)
     {
         composePane(P, 0, 0,
                     std::min(P.grid.Cols(), static_cast<int>(m_gm.cols)),
@@ -2455,30 +2456,44 @@ void App::BuildVisualsFromGrid()
     }
     else
     {
-        composePane(P, 0, 0, P.grid.Cols(), P.grid.Rows());
-        int co = 0, ro = 0;
-        PaneOffset(*P.pane, co, ro);
-        composePane(*P.pane, co, ro, P.pane->grid.Cols(),
-                    P.pane->grid.Rows());
+        const int gc = static_cast<int>(m_gm.cols), gr = static_cast<int>(m_gm.rows);
+        for (const auto& [id, r] : P.layout.Rects(gc, gr))
+        {
+            if (r.cols <= 0 || r.rows <= 0)
+                continue;               // hidden by a zoom
+            amber::Session* p = PaneById(P, id);
+            if (!p)
+                continue;
+            composePane(*p, r.col, r.row, std::min(p->grid.Cols(), r.cols),
+                        std::min(p->grid.Rows(), r.rows));
+        }
 
-        // Divider line between the panes, tinted by the active theme.
+        // One rule per divider, from the tree, so a nested layout gets the
+        // lines it actually has rather than the single line the old
+        // one-level model could draw. The focused pane's edges are brighter,
+        // which is how the eye finds where input is going.
         float lin[3];
         AmberRampCpu(0.30f, lin);
-        float rgba[4] = { lin[0], lin[1], lin[2], 0.85f };
-        if (P.paneVertical)
-        {
-            float dx = m_gm.originX + (P.grid.Cols() + 0.42f) * m_gm.cellW;
-            m_prims.AddRectRgba(dx, m_gm.originY, m_gm.cellW * 0.16f,
-                                m_gm.rows * m_gm.cellH, rgba, 0.0f,
-                                PrimLayer::Over);
-        }
-        else
-        {
-            float dy = m_gm.originY + (P.grid.Rows() + 0.42f) * m_gm.cellH;
-            m_prims.AddRectRgba(m_gm.originX, dy, m_gm.cols * m_gm.cellW,
-                                m_gm.cellH * 0.16f, rgba, 0.0f,
-                                PrimLayer::Over);
-        }
+        for (int r = 0; r < gr; ++r)
+            for (int c = 0; c < gc; ++c)
+            {
+                bool vertical = false;
+                amber::PaneId before = amber::kNoPane, after = amber::kNoPane;
+                if (!P.layout.DividerAt(c, r, gc, gr, vertical, before, after))
+                    continue;
+                const bool hot = before == P.focus || after == P.focus;
+                float rgba[4] = { lin[0], lin[1], lin[2], hot ? 0.95f : 0.55f };
+                const float x = m_gm.originX + static_cast<float>(c) * m_gm.cellW;
+                const float y = m_gm.originY + static_cast<float>(r) * m_gm.cellH;
+                if (vertical)
+                    m_prims.AddRectRgba(x + m_gm.cellW * 0.42f, y,
+                                        m_gm.cellW * 0.16f, m_gm.cellH, rgba,
+                                        0.0f, PrimLayer::Over);
+                else
+                    m_prims.AddRectRgba(x, y + m_gm.cellH * 0.42f, m_gm.cellW,
+                                        m_gm.cellH * 0.16f, rgba, 0.0f,
+                                        PrimLayer::Over);
+            }
     }
 
     // Assign this frame's births (individual / scroll-snap / reveal wave),
@@ -2516,15 +2531,11 @@ void App::BuildVisualsFromGrid()
                 m_prims.AddCoreGlyph(a.x, a.y, a.cp, a.rgb, alpha, 0.0f, m_sampler);
             }
         };
-        drawAfter(Cur());
-        if (Cur().pane)
-            drawAfter(*Cur().pane);
+        ForEachPane(Cur(), [&](amber::Session& p) { drawAfter(p); });
     }
     else
     {
-        Cur().afterimages.clear();
-        if (Cur().pane)
-            Cur().pane->afterimages.clear();
+        ForEachPane(Cur(), [](amber::Session& p) { p.afterimages.clear(); });
     }
 
     const float twSpeed = std::max(m_particles.tun.effectSpeed, 0.1f);
@@ -3827,12 +3838,21 @@ void App::DrawStatusBar()
     // State-bearing entries render lit when they are on, so the bar reports as
     // well as acts.
     struct ChipDef { const char* label; int cmd; bool on; };
-    const bool split = HasSession() && Cur().pane != nullptr;
+    const bool split = HasSession() && Cur().layout.Count() > 1;
+    const size_t bcTargets = HasSession() ? Cur().broadcast.size() : 0;
+    // "bcast 4" rather than a lit chip: the count is the thing that stops a
+    // broadcast being sent somewhere the user had forgotten about.
+    if (bcTargets)
+        snprintf(m_bcastChip, sizeof(m_bcastChip), "bcast %zu", bcTargets);
     const bool folded = HasSession() && Cur().AnyCollapsed();
     const ChipDef defs[] = {
         { "quake",   IdmQuakeMode, m_quake },
         { "fold",    folded ? IdmFoldNone : IdmFoldAll, folded },
-        { "bcast",   IdmBroadcast, m_broadcast && split },
+        // The chip carries the target COUNT, not just an on/off state, and
+        // clicking it while broadcasting is the emergency stop rather than
+        // another way into the picker.
+        { bcTargets ? m_bcastChip : "bcast",
+          bcTargets ? IdmBroadcastStop : IdmBroadcastPick, bcTargets > 0 },
         { "split",   IdmSplitVertical, split },
         { "sftp",    IdmSftpPanel, false },
         { "journal", IdmJournal,   m_jrnOpen },
@@ -4099,6 +4119,15 @@ void App::SendToShell(const std::string& bytes)
     if (!HasSession() || bytes.empty())
         return;
     amber::Session& F = Foc();
+    // A read-only pane still receives output and can still be selected,
+    // copied and searched — it just refuses input. Checked here so every
+    // route into the shell (typing, paste, snippets, the journal, block
+    // rerun, broadcast) is covered by one test rather than seven.
+    if (F.readOnly)
+    {
+        SetStatus("This pane is read-only — Ctrl+Shift+R unlocks it.", 4.0);
+        return;
+    }
     if (F.state != amber::SessionState::Connected)
         return;
     if (F.diagnostic)
@@ -4123,18 +4152,27 @@ void App::SendToShell(const std::string& bytes)
     F.ssh.Send(bytes.data(), bytes.size());
     F.grid.SnapView();
 
-    // Broadcast: mirror the keystrokes into the other split pane (cluster
-    // typing). The focused pane already got them above.
-    if (m_broadcast && Cur().pane)
+    // Broadcast: mirror the keystrokes into every EXPLICITLY selected pane.
+    // The focused pane already got them above.
+    //
+    // The set is a list of pane ids, never "all panes" — a pane opened after
+    // the set was chosen is not in it, so splitting a new terminal off a
+    // broadcasting tab cannot quietly add a target. A read-only pane is
+    // skipped for the same reason it refuses typing.
+    amber::Session& tab = Cur();
+    if (tab.broadcast.empty())
+        return;
+    const amber::PaneId self = PaneIdOf(tab, F);
+    for (amber::PaneId id : tab.broadcast)
     {
-        amber::Session& other =
-            (&F == Cur().pane.get()) ? Cur() : *Cur().pane;
-        if (&other != &F && other.state == amber::SessionState::Connected &&
-            !other.diagnostic)
-        {
-            other.ssh.Send(bytes.data(), bytes.size());
-            other.grid.SnapView();
-        }
+        if (id == self)
+            continue;
+        amber::Session* p = PaneById(tab, id);
+        if (!p || p->readOnly || p->diagnostic ||
+            p->state != amber::SessionState::Connected)
+            continue;
+        p->ssh.Send(bytes.data(), bytes.size());
+        p->grid.SnapView();
     }
 }
 
@@ -4362,11 +4400,19 @@ bool App::OnKeyDown(WPARAM vk)
     if (mods.ctrl && mods.shift &&
         (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN))
     {
-        // Switch pane focus in a split tab.
-        if (HasSession() && Cur().pane)
+        // Move focus by geometry — the pane that looks that way, whatever
+        // the tree nesting happens to be. Alt as well moves the PANE rather
+        // than the focus, and Ctrl+Shift+Alt+Shift is not a chord anyone can
+        // type, so resize gets its own keys below.
+        if (HasSession() && Cur().layout.Count() > 1)
         {
-            Cur().paneFocus =
-                (vk == VK_LEFT || vk == VK_UP) ? 0 : 1;
+            using D = amber::PaneLayout::Dir;
+            const D d = vk == VK_LEFT ? D::Left : vk == VK_RIGHT ? D::Right
+                        : vk == VK_UP ? D::Up : D::Down;
+            if (mods.alt)
+                MovePane(d);
+            else
+                FocusPane(d);
             m_swallowChar = true;
             return true;
         }
@@ -4392,7 +4438,24 @@ bool App::OnKeyDown(WPARAM vk)
     {
         if (vk == 'C') { CopySelection(); m_swallowChar = true; return true; }
         if (vk == 'V') { Paste(); m_swallowChar = true; return true; }
-        if (vk == 'B') { HandleMenuCommand(IdmBroadcast); m_swallowChar = true; return true; }
+        // Ctrl+Shift+B opens the picker, and is the emergency stop while
+        // broadcasting: the same key both arms and disarms, so there is
+        // always one chord that stops it without hunting a menu.
+        if (vk == 'B')
+        {
+            if (HasSession() && !Cur().broadcast.empty())
+                StopBroadcast();
+            else
+                PickBroadcastTargets();
+            m_swallowChar = true;
+            return true;
+        }
+        // Pane commands, all on the Ctrl+Shift convention so nothing a remote
+        // application expects from a plain Ctrl combination is taken.
+        if (vk == 'Z') { ToggleZoomPane();    m_swallowChar = true; return true; }
+        if (vk == 'R') { ToggleReadOnlyPane(); m_swallowChar = true; return true; }
+        if (vk == VK_OEM_6) { FocusPaneCycle(1);  m_swallowChar = true; return true; }
+        if (vk == VK_OEM_4) { FocusPaneCycle(-1); m_swallowChar = true; return true; }
         if (vk == 'D')
         {
             Foc().userClosed = true;   // never auto-reconnect a manual close
@@ -4678,13 +4741,15 @@ void App::OnMouseButton(bool down, int px, int py, bool rightButton, bool middle
         CellFromPx(px, py, r, c);
 
         // Pane focus follows the click; selection runs in that pane's local
-        // grid coordinates.
-        if (Cur().pane)
+        // grid coordinates. A click on a divider changes nothing — it starts
+        // a drag instead, handled above.
+        if (Cur().layout.Count() > 1)
         {
-            if (Cur().paneVertical)
-                Cur().paneFocus = (c > Cur().grid.Cols()) ? 1 : 0;
-            else
-                Cur().paneFocus = (r > Cur().grid.Rows()) ? 1 : 0;
+            const amber::PaneId hit =
+                Cur().layout.PaneAt(c, r, static_cast<int>(m_gm.cols),
+                                    static_cast<int>(m_gm.rows));
+            if (hit != amber::kNoPane && PaneById(Cur(), hit))
+                Cur().focus = hit;
         }
         amber::Session& F = Foc();
         int co = 0, ro = 0;
@@ -4996,6 +5061,38 @@ void App::SendPasteText(const std::string& norm)
 {
     if (!HasSession())
         return;
+    // Broadcasting a multi-line paste to several hosts at once is the single
+    // most destructive thing this application can be asked to do: every line
+    // runs the moment it lands, on every target, simultaneously. The existing
+    // paste guard has already previewed the text; this is a second, explicit
+    // confirmation that names the count, and it is deliberately a modal that
+    // defaults to "No".
+    const amber::Session& tab = Cur();
+    const size_t targets = tab.broadcast.size();
+    if (targets >= 3 && amber::PasteLineCount(norm) > 1)
+    {
+        std::string names;
+        for (amber::PaneId id : tab.broadcast)
+        {
+            const amber::Session* p = PaneById(tab, id);
+            if (!p)
+                continue;
+            names += "\r\n    " + p->Caption();
+        }
+        const std::wstring body =
+            L"You are about to run " +
+            std::to_wstring(amber::PasteLineCount(norm)) +
+            L" lines on " + std::to_wstring(targets) + L" hosts at once:\r\n" +
+            WideFromUtf8(names) +
+            L"\r\n\r\nEvery line runs as it arrives, on all of them. Continue?";
+        if (MessageBoxW(m_hwnd, body.c_str(),
+                        L"AmberSSH — broadcast a multi-line paste?",
+                        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+        {
+            SetStatus("Broadcast paste cancelled.", 5.0);
+            return;
+        }
+    }
     if (Cur().parser.Modes().bracketedPaste)
         SendToShell("\x1b[200~" + norm + "\x1b[201~");
     else
@@ -5609,9 +5706,43 @@ void App::BuildMenus()
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IdmSplitVertical, L"Split &Vertical\tCtrl+Shift+E");
     AppendMenuW(file, MF_STRING, IdmSplitHorizontal, L"Split Hori&zontal\tCtrl+Shift+U");
-    AppendMenuW(file, MF_STRING, IdmSplitClose, L"Close Spli&t");
-    AppendMenuW(file, MF_STRING, IdmBroadcast,
-                L"&Broadcast Input to Both Panes\tCtrl+Shift+B");
+    AppendMenuW(file, MF_STRING, IdmPaneClose, L"Close Pa&ne");
+    {
+        HMENU pane = CreatePopupMenu();
+        AppendMenuW(pane, MF_STRING, IdmPaneZoom, L"&Zoom / Restore\tCtrl+Shift+Z");
+        AppendMenuW(pane, MF_STRING, IdmPaneRotate, L"&Rotate the Split");
+        AppendMenuW(pane, MF_STRING, IdmPaneReadOnly, L"Read-&only\tCtrl+Shift+R");
+        AppendMenuW(pane, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(pane, MF_STRING, IdmPaneFocusNext, L"&Next Pane\tCtrl+Shift+]");
+        AppendMenuW(pane, MF_STRING, IdmPaneFocusPrev, L"&Previous Pane\tCtrl+Shift+[");
+        AppendMenuW(pane, MF_STRING, IdmPaneFocusLeft, L"Focus &Left\tCtrl+Shift+Left");
+        AppendMenuW(pane, MF_STRING, IdmPaneFocusRight, L"Focus &Right\tCtrl+Shift+Right");
+        AppendMenuW(pane, MF_STRING, IdmPaneFocusUp, L"Focus &Up\tCtrl+Shift+Up");
+        AppendMenuW(pane, MF_STRING, IdmPaneFocusDown, L"Focus &Down\tCtrl+Shift+Down");
+        AppendMenuW(pane, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(pane, MF_STRING, IdmPaneMoveLeft, L"Move Pane Left\tCtrl+Shift+Alt+Left");
+        AppendMenuW(pane, MF_STRING, IdmPaneMoveRight, L"Move Pane Right\tCtrl+Shift+Alt+Right");
+        AppendMenuW(pane, MF_STRING, IdmPaneMoveUp, L"Move Pane Up\tCtrl+Shift+Alt+Up");
+        AppendMenuW(pane, MF_STRING, IdmPaneMoveDown, L"Move Pane Down\tCtrl+Shift+Alt+Down");
+        AppendMenuW(pane, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(pane, MF_STRING, IdmPaneSwapLeft, L"Swap With Left");
+        AppendMenuW(pane, MF_STRING, IdmPaneSwapRight, L"Swap With Right");
+        AppendMenuW(pane, MF_STRING, IdmPaneSwapUp, L"Swap With Above");
+        AppendMenuW(pane, MF_STRING, IdmPaneSwapDown, L"Swap With Below");
+        AppendMenuW(pane, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(pane, MF_STRING, IdmPaneGrow, L"Wider");
+        AppendMenuW(pane, MF_STRING, IdmPaneShrink, L"Narrower");
+        AppendMenuW(pane, MF_STRING, IdmPaneGrowV, L"Taller");
+        AppendMenuW(pane, MF_STRING, IdmPaneShrinkV, L"Shorter");
+        AppendMenuW(file, MF_POPUP, reinterpret_cast<UINT_PTR>(pane), L"Pa&ne");
+    }
+    {
+        HMENU bc = CreatePopupMenu();
+        AppendMenuW(bc, MF_STRING, IdmBroadcastPick, L"Choose &Targets...\tCtrl+Shift+B");
+        AppendMenuW(bc, MF_STRING, IdmBroadcastAll, L"Select &All Panes");
+        AppendMenuW(bc, MF_STRING, IdmBroadcastStop, L"&Stop Broadcasting");
+        AppendMenuW(file, MF_POPUP, reinterpret_cast<UINT_PTR>(bc), L"&Broadcast");
+    }
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IdmCommandPalette,
                 L"Command &Palette...\tCtrl+Shift+P");
@@ -6114,10 +6245,10 @@ bool App::HandleMenuCommand(int id)
     case IdmSplitHorizontal:  SplitPane(false);         return true;
     case IdmSplitClose:       CloseSplit();             return true;
     case IdmBroadcast:
-        m_broadcast = !m_broadcast;
-        SetStatus(m_broadcast ? "Broadcast ON — keystrokes go to both panes"
-                              : "Broadcast off");
-        UpdateMenuChecks();
+        // The old toggle now opens the picker: "broadcast to both panes" has
+        // no meaning once a tab can have six, and a toggle that silently
+        // targets everything is the misuse this stage exists to prevent.
+        PickBroadcastTargets();
         return true;
     case IdmCommandPalette:   TogglePalette();          return true;
     case IdmJournal:          ToggleJournal();          return true;
@@ -6602,6 +6733,33 @@ bool App::HandleMenuCommand(int id)
                                   : "Folded summaries omit the first output line");
         SaveSettings();
         return true;
+    // ---- panes -----------------------------------------------------------
+    case IdmPaneFocusLeft:  FocusPane(amber::PaneLayout::Dir::Left);  return true;
+    case IdmPaneFocusRight: FocusPane(amber::PaneLayout::Dir::Right); return true;
+    case IdmPaneFocusUp:    FocusPane(amber::PaneLayout::Dir::Up);    return true;
+    case IdmPaneFocusDown:  FocusPane(amber::PaneLayout::Dir::Down);  return true;
+    case IdmPaneFocusNext:  FocusPaneCycle(1);                        return true;
+    case IdmPaneFocusPrev:  FocusPaneCycle(-1);                       return true;
+    case IdmPaneMoveLeft:   MovePane(amber::PaneLayout::Dir::Left);   return true;
+    case IdmPaneMoveRight:  MovePane(amber::PaneLayout::Dir::Right);  return true;
+    case IdmPaneMoveUp:     MovePane(amber::PaneLayout::Dir::Up);     return true;
+    case IdmPaneMoveDown:   MovePane(amber::PaneLayout::Dir::Down);   return true;
+    case IdmPaneSwapLeft:   SwapPaneWith(amber::PaneLayout::Dir::Left);  return true;
+    case IdmPaneSwapRight:  SwapPaneWith(amber::PaneLayout::Dir::Right); return true;
+    case IdmPaneSwapUp:     SwapPaneWith(amber::PaneLayout::Dir::Up);    return true;
+    case IdmPaneSwapDown:   SwapPaneWith(amber::PaneLayout::Dir::Down);  return true;
+    case IdmPaneGrow:       ResizePane(amber::PaneLayout::Dir::Right); return true;
+    case IdmPaneShrink:     ResizePane(amber::PaneLayout::Dir::Left);  return true;
+    case IdmPaneGrowV:      ResizePane(amber::PaneLayout::Dir::Down);  return true;
+    case IdmPaneShrinkV:    ResizePane(amber::PaneLayout::Dir::Up);    return true;
+    case IdmPaneRotate:     RotatePane();                             return true;
+    case IdmPaneZoom:       ToggleZoomPane();                         return true;
+    case IdmPaneReadOnly:   ToggleReadOnlyPane();                     return true;
+    case IdmPaneClose:      CloseSplit();                             return true;
+    case IdmBroadcastPick:  PickBroadcastTargets();                   return true;
+    case IdmBroadcastStop:  StopBroadcast();                          return true;
+    case IdmBroadcastAll:   BroadcastAll();                           return true;
+
     case IdmBlockGutter:
         m_blockGutter = !m_blockGutter;
         SetStatus(m_blockGutter ? "Command block gutter on"
@@ -7323,6 +7481,32 @@ void App::BuildPaletteItems()
     add("Block: Run the Command Now", IdmBlockRerunNow);
     add("Block: Notify When This One Finishes", IdmBlockNotify);
     add(std::string("Block Gutter") + onoff(m_blockGutter), IdmBlockGutter);
+    // Panes — every operation the spec lists, discoverable by name.
+    add("Pane: Zoom / Restore", IdmPaneZoom);
+    add("Pane: Rotate the Split", IdmPaneRotate);
+    add("Pane: Toggle Read-only", IdmPaneReadOnly);
+    add("Pane: Close", IdmPaneClose);
+    add("Pane: Next", IdmPaneFocusNext);
+    add("Pane: Previous", IdmPaneFocusPrev);
+    add("Pane: Focus Left", IdmPaneFocusLeft);
+    add("Pane: Focus Right", IdmPaneFocusRight);
+    add("Pane: Focus Up", IdmPaneFocusUp);
+    add("Pane: Focus Down", IdmPaneFocusDown);
+    add("Pane: Move Left", IdmPaneMoveLeft);
+    add("Pane: Move Right", IdmPaneMoveRight);
+    add("Pane: Move Up", IdmPaneMoveUp);
+    add("Pane: Move Down", IdmPaneMoveDown);
+    add("Pane: Swap With Left", IdmPaneSwapLeft);
+    add("Pane: Swap With Right", IdmPaneSwapRight);
+    add("Pane: Swap With Above", IdmPaneSwapUp);
+    add("Pane: Swap With Below", IdmPaneSwapDown);
+    add("Pane: Wider", IdmPaneGrow);
+    add("Pane: Narrower", IdmPaneShrink);
+    add("Pane: Taller", IdmPaneGrowV);
+    add("Pane: Shorter", IdmPaneShrinkV);
+    add("Broadcast: Choose Targets...", IdmBroadcastPick);
+    add("Broadcast: Select All Panes", IdmBroadcastAll);
+    add("Broadcast: STOP", IdmBroadcastStop);
     add("Split Vertical", IdmSplitVertical);
     add("Split Horizontal", IdmSplitHorizontal);
     add("Close Split", IdmSplitClose);
@@ -8160,6 +8344,98 @@ void App::DrawBlockGutter()
                 m_prims.AddTextCore(lx, ly, t, rgb, 1.0f, m_sampler);
             else
                 m_prims.AddTextRgb(lx, ly, t, rgb, m_sampler);
+        }
+    }
+}
+
+// Read-only and broadcast markers, drawn over each pane from pane state —
+// never written into any grid, like every other annotation in this build.
+//
+// A read-only pane has to SAY so: the whole point is that the user pointed it
+// at a production log precisely because they do not trust themselves to be
+// careful, and a lock they cannot see is not a lock they can rely on.
+void App::DrawPaneBadges()
+{
+    if (!HasSession() || m_minimized)
+        return;
+    amber::Session& tab = Cur();
+    if (tab.layout.Empty())
+        return;
+    const int gc = static_cast<int>(m_gm.cols), gr = static_cast<int>(m_gm.rows);
+    const float dpi = static_cast<float>(m_dpi) / 96.0f;
+    const amber::ChromeSpec& ch = amber::Chrome();
+    const bool skin = amber::ChromeSkinned();
+    const bool lightGround = m_appearance == 1 || m_appearance == 2;
+
+    for (const auto& [id, r] : tab.layout.Rects(gc, gr))
+    {
+        if (r.cols <= 0 || r.rows <= 0)
+            continue;
+        const amber::Session* p = PaneById(tab, id);
+        if (!p)
+            continue;
+        const bool bcast = std::find(tab.broadcast.begin(), tab.broadcast.end(),
+                                     id) != tab.broadcast.end();
+        if (!p->readOnly && !bcast)
+            continue;
+        std::string label;
+        float rgb[3];
+        if (p->readOnly)
+        {
+            label = " READ-ONLY ";
+            if (skin)
+                SrgbToLinear(ch.textDim, rgb);
+            else
+                AmberRampCpu(0.55f, rgb);
+        }
+        else
+        {
+            label = " BROADCAST ";
+            // The danger colour, because that is what this is.
+            if (skin)
+                SrgbToLinear(ch.danger, rgb);
+            else
+            { rgb[0] = 1.0f; rgb[1] = 0.35f; rgb[2] = 0.10f; }
+        }
+        // Lift a colour too dark for the terminal's ground, the same way the
+        // guardian notices do.
+        {
+            const float luma = 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2];
+            if (!lightGround && luma > 0.0f && luma < 0.20f)
+            {
+                const float k = std::min(6.0f, 0.20f / luma);
+                for (float& c : rgb)
+                    c = std::min(1.0f, c * k);
+            }
+        }
+        const float tw = m_prims.MeasureText(label, m_sampler);
+        if (tw > static_cast<float>(r.cols) * m_gm.cellW)
+            continue;
+        const float x = m_gm.originX + static_cast<float>(r.col + r.cols) * m_gm.cellW - tw;
+        const float y = m_gm.originY + static_cast<float>(r.row) * m_gm.cellH;
+        float pad[4] = { 0.0f, 0.0f, 0.0f, lightGround ? 0.92f : 0.88f };
+        if (lightGround)
+        { pad[0] = 0.92f; pad[1] = 0.91f; pad[2] = 0.88f; }
+        m_prims.AddRectRgba(x, y, tw, m_gm.cellH, pad, 0.0f, PrimLayer::OverBlend);
+        if (lightGround)
+            m_prims.AddTextCore(x, y, label, rgb, 1.0f, m_sampler);
+        else
+            m_prims.AddTextRgb(x, y, label, rgb, m_sampler);
+        // A broadcasting pane also gets a border, so the count in the status
+        // bar is not the only thing standing between the user and four hosts.
+        if (bcast)
+        {
+            float edge[4] = { rgb[0], rgb[1], rgb[2], 0.75f };
+            const float px0 = m_gm.originX + static_cast<float>(r.col) * m_gm.cellW;
+            const float py0 = y;
+            const float pw = static_cast<float>(r.cols) * m_gm.cellW;
+            const float ph = static_cast<float>(r.rows) * m_gm.cellH;
+            const float t = std::max(1.0f, 1.5f * dpi);
+            const PrimLayer ink = lightGround ? PrimLayer::OverBlend : PrimLayer::Over;
+            m_prims.AddRectRgba(px0, py0, pw, t, edge, 0.0f, ink);
+            m_prims.AddRectRgba(px0, py0 + ph - t, pw, t, edge, 0.0f, ink);
+            m_prims.AddRectRgba(px0, py0, t, ph, edge, 0.0f, ink);
+            m_prims.AddRectRgba(px0 + pw - t, py0, t, ph, edge, 0.0f, ink);
         }
     }
 }
@@ -9245,14 +9521,18 @@ void App::DrawInlineImages(ID3D12GraphicsCommandList* cl, FrameContext& frame,
         }
     };
     amber::Session& P = Cur();
-    if (!P.pane)
-        drawFor(P, 0, 0, std::min(P.grid.Rows(), static_cast<int>(m_gm.rows)));
-    else
+    if (P.layout.Empty() || P.layout.Count() <= 1)
     {
-        drawFor(P, 0, 0, P.grid.Rows());
-        int co = 0, ro = 0;
-        PaneOffset(*P.pane, co, ro);
-        drawFor(*P.pane, co, ro, P.pane->grid.Rows());
+        drawFor(P, 0, 0, std::min(P.grid.Rows(), static_cast<int>(m_gm.rows)));
+        return;
+    }
+    const int gc = static_cast<int>(m_gm.cols), gr = static_cast<int>(m_gm.rows);
+    for (const auto& [id, r] : P.layout.Rects(gc, gr))
+    {
+        if (r.cols <= 0 || r.rows <= 0)
+            continue;
+        if (amber::Session* p = PaneById(P, id))
+            drawFor(*p, r.col, r.row, std::min(p->grid.Rows(), r.rows));
     }
 }
 
@@ -9763,17 +10043,9 @@ void App::PlayRecordingFile(const std::wstring& path)
         session->castEvents.push_back({ t, std::move(text) });
     }
     session->castPlayStart = m_time;
-    {
-        amber::Session* raw = session.get();
-        session->parser.SetImageSink([this, raw](amber::DecodedImage&& img, int cols, int rows)
-                                     { return OnInlineImage(*raw, std::move(img), cols, rows); });
-        session->parser.SetMarkSink([this, raw](char kind, int code, bool hasCode)
-                                    { OnShellMark(*raw, kind, code, hasCode); });
-        // OSC 7 is terminal state like any other, and the command journal
-        // records the directory a command ran in — a recording that carries
-        // the marks must carry the working directory with them.
-        session->parser.SetCwdSink([raw](const std::string& dir) { raw->cwd = dir; });
-    }
+    // A recording is a terminal stream like any other: it can carry OSC 133
+    // marks, OSC 7 and inline images, so it gets the full sink set.
+    BindSessionSinks(*session);
     m_sessions.push_back(std::move(session));
     m_active = static_cast<int>(m_sessions.size()) - 1;
     SelectTab(m_active);
@@ -10766,7 +11038,8 @@ void App::ShowContextMenu(int px, int py)
 // Features page allowed CSI 8 ; rows ; cols t: size the window to fit.
 void App::OnRemoteResize(amber::Session& s, int cols, int rows)
 {
-    if (!HasSession() || &s != &Cur() || m_fullscreen || IsZoomed(m_hwnd) || Cur().pane)
+    if (!HasSession() || &s != &Cur() || m_fullscreen || IsZoomed(m_hwnd) ||
+        Cur().layout.Count() > 1)
         return;
     cols = std::clamp(cols, 20, 500);
     rows = std::clamp(rows, 5, 200);
@@ -10791,70 +11064,464 @@ std::string App::TitleFor(const amber::Session& s) const
     return t.empty() ? m_titleBase : (m_titleBase + " \xE2\x80\x94 " + t);
 }
 
-void App::SplitPane(bool vertical)
+// Every parser sink a pane session needs, in one place. This used to be
+// copied inline at each creation site, which is how a sink gets forgotten;
+// it is also the mechanism that lets a session be re-homed, because binding
+// is now a single call rather than five scattered lambdas.
+void App::BindSessionSinks(amber::Session& s)
 {
-    if (!HasSession())
-        return;
-    amber::Session& P = Cur();
-    if (P.diagnostic)
+    amber::Session* raw = &s;
+    raw->parser.SetWriter([raw](const char* d, size_t n) { raw->ssh.Send(d, n); });
+    raw->parser.SetTitleSink([this, raw](const std::string& t)
     {
-        SetStatus("The diagnostic session cannot be split.");
-        return;
-    }
-    if (P.pane)
-    {
-        SetStatus("This tab is already split (Close Split first).");
-        return;
-    }
-
-    auto p = std::make_unique<amber::Session>();
-    p->profile = P.profile;
-    p->label = P.label;
-    p->state = amber::SessionState::Connecting;
-    p->status = "connecting...";
-    p->savedPassword.Assign(P.savedPassword.View());
-    p->savedPassphrase.Assign(P.savedPassphrase.View());
-    p->grid.Init(std::max(2, P.grid.Cols() / 2),
-                 std::max(2, P.grid.Rows()));
-    amber::Session* raw = p.get();
-    p->parser.SetTitleSink([raw](const std::string& t)
-                           { raw->remoteTitle = t; });
-    p->parser.SetClipboardSink([this](const std::string& b64)
+        raw->remoteTitle = t;
+        if (HasSession() && &Cur() == raw)
+            SetWindowTextW(m_hwnd, WideFromUtf8(TitleFor(*raw)).c_str());
+    });
+    raw->parser.SetClipboardSink([this](const std::string& b64)
     {
         std::string text = DecodeBase64(b64);
-        if (!text.empty())
-            SetClipboardText(text);
+        if (text.empty())
+            return;
+        SetClipboardText(text);
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Remote copied %zu characters", text.size());
+        SetStatus(msg);
     });
-    p->parser.SetCwdSink([raw](const std::string& dir) { raw->cwd = dir; });
-    p->parser.SetImageSink([this, raw](amber::DecodedImage&& img, int cols, int rows)
-                           { return OnInlineImage(*raw, std::move(img), cols, rows); });
-    p->parser.SetMarkSink([this, raw](char kind, int code, bool hasCode)
-                          { OnShellMark(*raw, kind, code, hasCode); });
+    raw->parser.SetCwdSink([raw](const std::string& dir) { raw->cwd = dir; });
+    raw->parser.SetImageSink([this, raw](amber::DecodedImage&& img, int cols, int rows)
+                             { return OnInlineImage(*raw, std::move(img), cols, rows); });
+    raw->parser.SetMarkSink([this, raw](char kind, int code, bool hasCode)
+                            { OnShellMark(*raw, kind, code, hasCode); });
+    raw->parser.SetResizeSink([this, raw](int c, int r) { OnRemoteResize(*raw, c, r); });
+}
 
-    ApplyProfileToSession(*p);          // same PuTTY-page behaviour as the parent
-    P.paneVertical = vertical;
-    P.paneFocus = 1;
-    P.pane = std::move(p);
-    UpdateGridDims();               // sizes both panes and their PTYs
-    StartReconnect(*P.pane);        // fresh connection, same profile+secrets
+std::unique_ptr<amber::Session> App::MakePaneSession(const amber::Session& from)
+{
+    auto p = std::make_unique<amber::Session>();
+    p->profile = from.profile;
+    p->label = from.label;
+    p->state = amber::SessionState::Connecting;
+    p->status = "connecting...";
+    p->bornAt = m_time;
+    p->savedPassword.Assign(from.savedPassword.View());
+    p->savedPassphrase.Assign(from.savedPassphrase.View());
+    p->savedProxyPassword.Assign(from.savedProxyPassword.View());
+    p->grid.Init(std::max(2, from.grid.Cols() / 2), std::max(2, from.grid.Rows()));
+    BindSessionSinks(*p);
+    ApplyProfileToSession(*p);      // the same Connection-dialog behaviour
+    return p;
+}
+
+// A pane's rect in the active tab's cell grid, from the layout tree.
+amber::PaneRect App::PaneRectOf(const amber::Session& s) const
+{
+    if (!HasSession())
+        return {};
+    const amber::Session& tab = Cur();
+    const amber::PaneId id = PaneIdOf(tab, s);
+    if (id == amber::kNoPane)
+        return {};
+    if (tab.layout.Empty())
+        return amber::PaneRect{ 0, 0, static_cast<int>(m_gm.cols),
+                                static_cast<int>(m_gm.rows) };
+    return tab.layout.RectOf(id, static_cast<int>(m_gm.cols),
+                             static_cast<int>(m_gm.rows));
+}
+
+// Splits the focused pane, connecting `profile` in the new one — or a clone
+// of the pane being split when it is null. Returns the new pane's id, or
+// kNoPane when the split was refused. The single place a pane is created, so
+// the tree and the session list cannot drift apart.
+amber::PaneId App::AddPane(const amber::ConnectionProfile* profile, bool vertical)
+{
+    if (!HasSession())
+        return amber::kNoPane;
+    amber::Session& tab = Cur();
+    if (tab.diagnostic)
+    {
+        SetStatus("The diagnostic session cannot be split.");
+        return amber::kNoPane;
+    }
+    if (tab.layout.Empty())
+        tab.layout.Reset(0);
+    const amber::PaneId id = tab.nextPaneId;
+    const amber::SplitDir dir = vertical ? amber::SplitDir::Vertical
+                                         : amber::SplitDir::Horizontal;
+    // Ask the tree first: it refuses rather than creating a pane too small to
+    // be a terminal, and a refusal must not leave a stray session behind.
+    if (!tab.layout.Split(tab.focus, id, dir, static_cast<int>(m_gm.cols),
+                          static_cast<int>(m_gm.rows)))
+    {
+        SetStatus(vertical ? "Not enough columns to split this pane."
+                           : "Not enough rows to split this pane.", 5.0);
+        return amber::kNoPane;
+    }
+    ++tab.nextPaneId;
+    amber::Session* parent = PaneById(tab, tab.focus);
+    auto p = MakePaneSession(parent ? *parent : tab);
+    if (profile)
+    {
+        p->profile = *profile;
+        p->label = profile->username.empty()
+                       ? profile->host
+                       : profile->username + "@" + profile->host;
+        ApplyProfileToSession(*p);
+    }
+    amber::Session* raw = p.get();
+    if (tab.extraPanes.size() < static_cast<size_t>(id))
+        tab.extraPanes.resize(static_cast<size_t>(id));
+    tab.extraPanes[static_cast<size_t>(id) - 1] = std::move(p);
+    tab.focus = id;
+    UpdateGridDims();               // sizes every pane and its PTY
+    StartReconnect(*raw);           // a fresh connection for the new pane
     m_particles.Reset();
-    SetStatus(vertical
-                  ? "Split vertical — click or Ctrl+Shift+arrows to switch panes"
-                  : "Split horizontal — click or Ctrl+Shift+arrows to switch panes");
+    return id;
+}
+
+void App::SplitPane(bool vertical)
+{
+    if (AddPane(nullptr, vertical) == amber::kNoPane)
+        return;
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Split %s — %zu panes. Ctrl+Shift+arrows moves focus.",
+             vertical ? "vertical" : "horizontal", Cur().layout.Count());
+    SetStatus(msg, 5.0);
 }
 
 void App::CloseSplit()
 {
-    if (!HasSession() || !Cur().pane)
+    if (!HasSession())
+        return;
+    amber::Session& tab = Cur();
+    if (tab.layout.Count() <= 1)
     {
-        SetStatus("No split to close.");
+        SetStatus("This tab has one pane — Ctrl+Shift+W closes the tab.", 5.0);
         return;
     }
-    Cur().pane.reset();             // dtor disconnects and scrubs
-    Cur().paneFocus = 0;
+    // Pane 0 is the tab's own session object, and the tab's identity, profile
+    // and layout live on it. Closing it would mean promoting another pane's
+    // Session into its place, and a Session owns a running worker thread and
+    // so cannot be moved. Refused rather than closing the whole tab behind
+    // the user's back — see the Stage 5 report on what would lift this.
+    if (tab.focus == 0)
+    {
+        SetStatus("The tab's original pane cannot be closed on its own — "
+                  "close another pane, or close the tab with Ctrl+Shift+W.", 7.0);
+        return;
+    }
+    const amber::PaneId gone = tab.focus;
+    if (!tab.layout.Close(gone))
+    {
+        SetStatus("Could not close that pane.", 4.0);
+        return;
+    }
+    // Focus follows to a pane that still exists before the session dies, so
+    // nothing can dereference the one being destroyed.
+    tab.focus = tab.layout.Panes().empty() ? 0 : tab.layout.Panes().front();
+    // Any broadcast target that just vanished goes with it.
+    tab.broadcast.erase(std::remove(tab.broadcast.begin(), tab.broadcast.end(), gone),
+                        tab.broadcast.end());
+    // The slot is left null rather than erased, so ids are never reused and a
+    // broadcast set cannot come to mean a different pane.
+    if (static_cast<size_t>(gone) - 1 < tab.extraPanes.size())
+        tab.extraPanes[static_cast<size_t>(gone) - 1].reset();   // dtor disconnects
     UpdateGridDims();
     m_particles.Reset();
-    SetStatus("Split closed.");
+    char msg[96];
+    snprintf(msg, sizeof(msg), "Pane closed — %zu remain.", tab.layout.Count());
+    SetStatus(msg);
+}
+
+// -------------------------------------------------------------- broadcast
+// The target picker. A modal checklist of the tab's panes, because the only
+// safe way to broadcast is for the user to have named each destination.
+//
+// Built as a menu rather than a dialog so it can be popped from the status
+// bar, the menu and the palette without three layouts to keep skinned.
+void App::PickBroadcastTargets()
+{
+    if (!HasSession())
+        return;
+    amber::Session& tab = Cur();
+    const std::vector<amber::PaneId> ids = tab.layout.Panes();
+    if (ids.size() <= 1)
+    {
+        SetStatus("Broadcast needs more than one pane — split this tab first.", 5.0);
+        return;
+    }
+    HMENU m = CreatePopupMenu();
+    // Command ids 1..N are the panes; the actions use high values so they
+    // cannot collide with a pane index.
+    std::vector<amber::PaneId> order;
+    for (amber::PaneId id : ids)
+    {
+        const amber::Session* p = PaneById(tab, id);
+        if (!p)
+            continue;
+        order.push_back(id);
+        const bool on = std::find(tab.broadcast.begin(), tab.broadcast.end(), id) !=
+                        tab.broadcast.end();
+        std::wstring label = std::to_wstring(order.size()) + L". " +
+                             WideFromUtf8(p->Caption());
+        if (p->readOnly)
+            label += L"  (read-only — cannot be a target)";
+        else if (p->state != amber::SessionState::Connected)
+            label += L"  (not connected)";
+        UINT flags = MF_STRING | (on ? MF_CHECKED : 0u);
+        if (p->readOnly)
+            flags |= MF_GRAYED;
+        AppendMenuW(m, flags, static_cast<UINT_PTR>(order.size()), label.c_str());
+    }
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, 1001, L"Select &All (excluding read-only)");
+    AppendMenuW(m, MF_STRING, 1002, L"Select &None — stop broadcasting");
+
+    POINT pt = {};
+    GetCursorPos(&pt);
+    const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTBUTTON | TPM_NONOTIFY,
+                                   pt.x, pt.y, 0, m_hwnd, nullptr);
+    DestroyMenu(m);
+    if (cmd == 0)
+        return;
+    if (cmd == 1002)
+    {
+        StopBroadcast();
+        return;
+    }
+    if (cmd == 1001)
+    {
+        BroadcastAll();
+        return;
+    }
+    const size_t idx = static_cast<size_t>(cmd) - 1;
+    if (idx >= order.size())
+        return;
+    const amber::PaneId id = order[idx];
+    const amber::Session* p = PaneById(tab, id);
+    if (!p || p->readOnly)
+        return;
+    auto it = std::find(tab.broadcast.begin(), tab.broadcast.end(), id);
+    if (it != tab.broadcast.end())
+        tab.broadcast.erase(it);
+    else
+        tab.broadcast.push_back(id);
+    ReportBroadcast();
+    // Left open, in effect: picking one target then wanting another is the
+    // normal case, so the picker comes straight back up.
+    PickBroadcastTargets();
+}
+
+void App::BroadcastAll()
+{
+    if (!HasSession())
+        return;
+    amber::Session& tab = Cur();
+    tab.broadcast.clear();
+    for (amber::PaneId id : tab.layout.Panes())
+    {
+        const amber::Session* p = PaneById(tab, id);
+        // Read-only panes are excluded: a pane that refuses typing cannot be
+        // a broadcast target, and listing it would make the count a lie.
+        if (p && !p->readOnly)
+            tab.broadcast.push_back(id);
+    }
+    ReportBroadcast();
+}
+
+void App::StopBroadcast()
+{
+    if (!HasSession())
+        return;
+    Cur().broadcast.clear();
+    SetStatus("Broadcast STOPPED — keystrokes go to the focused pane only.", 6.0);
+    UpdateMenuChecks();
+}
+
+void App::ReportBroadcast()
+{
+    if (!HasSession())
+        return;
+    const amber::Session& tab = Cur();
+    if (tab.broadcast.empty())
+    {
+        SetStatus("Broadcast off.");
+    }
+    else
+    {
+        std::string names;
+        for (amber::PaneId id : tab.broadcast)
+        {
+            const amber::Session* p = PaneById(tab, id);
+            if (!p)
+                continue;
+            if (!names.empty())
+                names += ", ";
+            names += p->Caption();
+        }
+        SetStatus("Broadcasting to " + std::to_string(tab.broadcast.size()) +
+                      " panes: " + names + "  (Ctrl+Shift+B stops)",
+                  8.0);
+    }
+    UpdateMenuChecks();
+}
+
+// ------------------------------------------------------------ pane commands
+void App::FocusPane(amber::PaneLayout::Dir d)
+{
+    if (!HasSession())
+        return;
+    amber::Session& tab = Cur();
+    const amber::PaneId to = tab.layout.Neighbour(tab.focus, d,
+                                                  static_cast<int>(m_gm.cols),
+                                                  static_cast<int>(m_gm.rows));
+    if (to == amber::kNoPane)
+        return;
+    tab.focus = to;
+    Foc().ClearSelection();
+}
+
+void App::FocusPaneCycle(int delta)
+{
+    if (!HasSession())
+        return;
+    amber::Session& tab = Cur();
+    const amber::PaneId to = tab.layout.Cycle(tab.focus, delta);
+    if (to == amber::kNoPane || to == tab.focus)
+        return;
+    tab.focus = to;
+    Foc().ClearSelection();
+}
+
+void App::MovePane(amber::PaneLayout::Dir d)
+{
+    if (!HasSession())
+        return;
+    amber::Session& tab = Cur();
+    const int cols = static_cast<int>(m_gm.cols), rows = static_cast<int>(m_gm.rows);
+    const amber::PaneId to = tab.layout.Neighbour(tab.focus, d, cols, rows);
+    if (to == amber::kNoPane)
+    {
+        SetStatus("No pane that way to move next to.", 4.0);
+        return;
+    }
+    const amber::SplitDir sd = (d == amber::PaneLayout::Dir::Left ||
+                                d == amber::PaneLayout::Dir::Right)
+                                   ? amber::SplitDir::Vertical
+                                   : amber::SplitDir::Horizontal;
+    const size_t before = tab.layout.Count();
+    if (!tab.layout.Move(tab.focus, to, sd, cols, rows))
+    {
+        // Move restores the layout when the destination has no room; the one
+        // case it cannot is when nothing had room at all, which would have
+        // dropped the pane. Detect that and say so rather than leaving a
+        // session with no way to reach it.
+        if (tab.layout.Count() != before)
+            SetStatus("That pane could not be placed and was closed.", 6.0);
+        else
+            SetStatus("No room to move the pane there.", 4.0);
+        UpdateGridDims();
+        return;
+    }
+    UpdateGridDims();
+    SetStatus("Pane moved.");
+}
+
+void App::SwapPaneWith(amber::PaneLayout::Dir d)
+{
+    if (!HasSession())
+        return;
+    amber::Session& tab = Cur();
+    const amber::PaneId to = tab.layout.Neighbour(tab.focus, d,
+                                                  static_cast<int>(m_gm.cols),
+                                                  static_cast<int>(m_gm.rows));
+    if (to == amber::kNoPane)
+    {
+        SetStatus("No pane that way to swap with.", 4.0);
+        return;
+    }
+    if (!tab.layout.Swap(tab.focus, to))
+        return;
+    UpdateGridDims();
+    SetStatus("Panes swapped.");
+}
+
+void App::ResizePane(amber::PaneLayout::Dir d)
+{
+    if (!HasSession())
+        return;
+    amber::Session& tab = Cur();
+    if (tab.layout.Count() <= 1)
+        return;
+    // Left/Up shrink, Right/Down grow — the direction the edge moves.
+    const float step = (d == amber::PaneLayout::Dir::Right ||
+                        d == amber::PaneLayout::Dir::Down)
+                           ? 0.04f
+                           : -0.04f;
+    if (!tab.layout.Resize(tab.focus, step))
+        return;
+    UpdateGridDims();               // propagates the new size to every PTY
+}
+
+void App::RotatePane()
+{
+    if (!HasSession())
+        return;
+    amber::Session& tab = Cur();
+    if (!tab.layout.Rotate(tab.focus))
+    {
+        SetStatus("Nothing to rotate — this tab has one pane.", 4.0);
+        return;
+    }
+    UpdateGridDims();
+    SetStatus("Layout rotated.");
+}
+
+void App::ToggleZoomPane()
+{
+    if (!HasSession())
+        return;
+    amber::Session& tab = Cur();
+    if (tab.layout.Count() <= 1)
+    {
+        SetStatus("Nothing to zoom — this tab has one pane.", 4.0);
+        return;
+    }
+    if (tab.layout.Zoomed())
+    {
+        // The tree was never modified, so this restores the exact layout by
+        // construction rather than by remembering it.
+        tab.layout.ClearZoom();
+        SetStatus("Zoom off — layout restored.");
+    }
+    else
+    {
+        tab.layout.SetZoom(tab.focus);
+        SetStatus("Pane zoomed — Ctrl+Shift+Z restores the layout.", 5.0);
+    }
+    UpdateGridDims();
+    m_particles.Reset();
+}
+
+void App::ToggleReadOnlyPane()
+{
+    if (!HasSession())
+        return;
+    amber::Session& s = Foc();
+    s.readOnly = !s.readOnly;
+    if (s.readOnly)
+    {
+        // A read-only pane is also removed from the broadcast set: leaving it
+        // there would mean the set reports a target it cannot reach.
+        amber::Session& tab = Cur();
+        const amber::PaneId id = PaneIdOf(tab, s);
+        tab.broadcast.erase(std::remove(tab.broadcast.begin(), tab.broadcast.end(), id),
+                            tab.broadcast.end());
+    }
+    SetStatus(s.readOnly
+                  ? "Pane is READ-ONLY — output only. Ctrl+Shift+R unlocks it."
+                  : "Pane unlocked — it accepts input again.",
+              6.0);
 }
 
 // The text of one absolute row, trimmed. Used to name the command the view
@@ -11627,10 +12294,39 @@ void App::SaveWorkspaceAs()
             continue;               // a diagnostic or ad-hoc tab has nothing to restore
         amber::WorkspaceTab t;
         t.profileId = s.profile.id;
-        if (s.pane && !s.pane->profile.id.empty())
+        if (s.layout.Count() > 1)
         {
-            t.splitProfileId = s.pane->profile.id;
-            t.splitVertical = s.paneVertical;
+            // Panes in id order, so the layout string's indices line up with
+            // the list on the way back in.
+            const std::vector<amber::PaneId> ids = s.layout.Panes();
+            std::vector<amber::PaneId> ordered = ids;
+            std::sort(ordered.begin(), ordered.end());
+            std::vector<amber::PaneId> saved{ 0 };
+            for (amber::PaneId id : ordered)
+            {
+                if (id == 0)
+                    continue;
+                const amber::Session* p = PaneById(s, id);
+                if (!p || p->profile.id.empty())
+                    continue;      // an ad-hoc pane has nothing to restore
+                t.paneProfileIds.push_back(p->profile.id);
+                saved.push_back(id);
+            }
+            if (!t.paneProfileIds.empty())
+            {
+                t.layout = s.layout.Serialize(saved);
+                for (size_t k = 0; k < saved.size(); ++k)
+                {
+                    if (saved[k] == s.focus)
+                        t.focusPane = static_cast<int>(k);
+                    const amber::Session* p = PaneById(s, saved[k]);
+                    if (p && p->readOnly)
+                        t.readOnlyPanes.push_back(static_cast<int>(k));
+                }
+                // Schema 1 still gets the first split, so an older build
+                // restores something sensible rather than nothing.
+                t.splitProfileId = t.paneProfileIds.front();
+            }
         }
         w.tabs.push_back(std::move(t));
     }
@@ -11665,14 +12361,58 @@ void App::OpenWorkspace(const std::string& name)
     // Sessions are ADDED, never swapped in: closing someone's live sessions
     // because they opened a workspace would be its own kind of disaster.
     int opened = 0;
+    int panes = 0;
     for (const amber::WorkspaceTab& t : w->tabs)
     {
         if (!ConnectProfileById(t.profileId))
             continue;
         ++opened;
-        if (!t.splitProfileId.empty())
-            SetStatus("Workspace: split panes are reopened as separate tabs");
+        amber::Session& tab = Cur();
+        // Panes in the order they were saved, so the layout string's indices
+        // mean what they meant. `saved` mirrors the writer's list: index 0 is
+        // pane 0, then each split in turn.
+        std::vector<amber::PaneId> saved{ 0 };
+        for (const std::string& id : t.paneProfileIds)
+        {
+            const amber::ConnectionProfile* p = m_profiles.Find(id);
+            if (!p)
+                continue;           // the profile was deleted since the save
+            // Direction is a placeholder: the layout string below decides the
+            // real shape. Splitting vertically first just guarantees room.
+            const amber::PaneId made = AddPane(p, true);
+            if (made == amber::kNoPane)
+                break;              // no room for more panes at this size
+            saved.push_back(made);
+            ++panes;
+        }
+        if (!t.layout.empty() && saved.size() > 1)
+        {
+            // Restore the tree only when every pane it names came back;
+            // otherwise the layout would hide a live session or name one that
+            // does not exist, and the panes keep the shape AddPane gave them.
+            if (!tab.layout.Deserialize(t.layout, saved))
+                SetStatus("Workspace: the saved pane layout no longer fits — "
+                          "panes reopened side by side.", 6.0);
+        }
+        // Read-only comes back; broadcast deliberately does not.
+        for (int idx : t.readOnlyPanes)
+            if (idx >= 0 && static_cast<size_t>(idx) < saved.size())
+                if (amber::Session* p = PaneById(tab, saved[static_cast<size_t>(idx)]))
+                    p->readOnly = true;
+        tab.broadcast.clear();
+        if (t.focusPane >= 0 && static_cast<size_t>(t.focusPane) < saved.size())
+            tab.focus = saved[static_cast<size_t>(t.focusPane)];
+        // A zoom is never restored, per the spec: coming back to a workspace
+        // with one pane filling the window and the rest invisible is a
+        // surprise, not a restoration.
+        tab.layout.ClearZoom();
+        UpdateGridDims();
     }
+    if (panes > 0)
+        SetStatus("Workspace " + name + ": " + std::to_string(opened) +
+                      " tabs, " + std::to_string(panes) + " extra panes. "
+                      "Broadcast is off.",
+                  6.0);
     SetStatus("Workspace " + name + ": opened " + std::to_string(opened) +
               " of " + std::to_string(w->tabs.size()) + " sessions", 5.0);
 }
@@ -12109,14 +12849,9 @@ void App::StartDiagSession()
     session->bornAt = m_time;
     session->grid.Init(m_gm.cols ? static_cast<int>(m_gm.cols) : 120,
                        m_gm.rows ? static_cast<int>(m_gm.rows) : 40);
-    {
-        amber::Session* raw = session.get();
-        session->parser.SetImageSink([this, raw](amber::DecodedImage&& img, int cols, int rows)
-                                     { return OnInlineImage(*raw, std::move(img), cols, rows); });
-        session->parser.SetMarkSink([this, raw](char kind, int code, bool hasCode)
-                                    { OnShellMark(*raw, kind, code, hasCode); });
-        session->parser.SetCwdSink([raw](const std::string& dir) { raw->cwd = dir; });
-    }
+    // The diagnostic session has no remote end, but it has a parser, so it
+    // gets the same sinks as any other rather than a hand-picked subset.
+    BindSessionSinks(*session);
     m_sessions.push_back(std::move(session));
     m_active = static_cast<int>(m_sessions.size()) - 1;
 }

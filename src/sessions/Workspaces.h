@@ -18,13 +18,35 @@ namespace amber
 
 struct WorkspaceTab
 {
-    std::string profileId;        // ConnectionProfile::id
+    std::string profileId;        // ConnectionProfile::id — the tab's pane 0
+    // ---- schema 1 (still written, still read) --------------------------
+    // A single split, which is all the old pane model could express. Kept so
+    // a workspace saved by an older build restores, and so an older build
+    // can still restore one saved by this one.
     std::string splitProfileId;   // empty when the tab is not split
     bool splitVertical = true;    // side by side, else stacked
+    // ---- schema 2 -------------------------------------------------------
+    // Every pane after the first, in pane-id order, and the layout tree over
+    // all of them as PaneLayout::Serialize writes it. When `layout` is empty
+    // the schema-1 fields are what describe the tab.
+    std::vector<std::string> paneProfileIds;
+    std::string layout;
+    // Which pane had focus, as an index into {pane 0} + paneProfileIds.
+    int focusPane = 0;
+    // Read-only panes, by the same index. Restored: a pane the user locked
+    // for watching a production log should come back locked.
+    std::vector<int> readOnlyPanes;
+    // Broadcast targets are deliberately NOT stored. Restoring a workspace
+    // that starts typing into four production hosts at once is not a feature,
+    // and the spec says so; the set is always empty on load.
 };
 
 struct Workspace
 {
+    // 1 = the original single-split form; 2 = pane trees. A file written by
+    // an older build has no version field and is read as 1.
+    static constexpr int kSchemaVersion = 2;
+    int version = kSchemaVersion;
     std::string name;
     std::vector<WorkspaceTab> tabs;
 };

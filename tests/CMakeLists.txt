@@ -19,6 +19,7 @@ add_executable(AmberTests
     GuardianTests.cpp
     CommandBlockTests.cpp
     CompatFixtureTests.cpp
+    PaneLayoutTests.cpp
 
     ${CMAKE_SOURCE_DIR}/src/term/vtparser.cpp
     ${CMAKE_SOURCE_DIR}/src/term/grid.cpp
@@ -36,6 +37,7 @@ add_executable(AmberTests
     ${CMAKE_SOURCE_DIR}/src/sessions/CommandJournal.cpp
     ${CMAKE_SOURCE_DIR}/src/sessions/Guardian.cpp
     ${CMAKE_SOURCE_DIR}/src/sessions/CommandBlocks.cpp
+    ${CMAKE_SOURCE_DIR}/src/sessions/PaneLayout.cpp
     ${CMAKE_SOURCE_DIR}/src/sessions/Workspaces.cpp
 )
 

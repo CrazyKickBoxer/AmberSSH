@@ -63,11 +63,25 @@ std::string WorkspaceStore::ToLine(const Workspace& w)
         const WorkspaceTab& t = w.tabs[i];
         if (i)
             o << ',';
+        // The schema-1 fields go first and are always written, so a build
+        // that predates pane trees still restores this workspace — as a
+        // single split, which is the most it could ever show.
         o << "{\"p\":\"" << Esc(t.profileId) << "\",\"s\":\""
-          << Esc(t.splitProfileId) << "\",\"v\":" << (t.splitVertical ? 1 : 0)
-          << "}";
+          << Esc(t.splitProfileId) << "\",\"v\":" << (t.splitVertical ? 1 : 0);
+        if (!t.layout.empty())
+        {
+            o << ",\"l\":\"" << Esc(t.layout) << "\",\"f\":" << t.focusPane
+              << ",\"q\":[";
+            for (size_t k = 0; k < t.paneProfileIds.size(); ++k)
+                o << (k ? "," : "") << '"' << Esc(t.paneProfileIds[k]) << '"';
+            o << "],\"o\":[";
+            for (size_t k = 0; k < t.readOnlyPanes.size(); ++k)
+                o << (k ? "," : "") << t.readOnlyPanes[k];
+            o << ']';
+        }
+        o << "}";
     }
-    o << "]}";
+    o << "],\"ver\":" << w.version << "}";
     return o.str();
 }
 
@@ -95,11 +109,76 @@ bool WorkspaceStore::FromLine(const std::string& line, Workspace& out)
                             line[vpos + 4] == '0');
         if (t.profileId.empty())
             break;
+        // Schema 2, if this tab has it. Bounded to the region before the next
+        // tab's "p" so a field is never read out of the wrong tab.
+        const size_t nextP = line.find("\"p\":", probe);
+        const size_t limit = (nextP == std::string::npos) ? line.size() : nextP;
+        size_t lpos = probe;
+        if (Field(line, "l", lpos, t.layout) && lpos <= limit && !t.layout.empty())
+        {
+            const size_t fpos = line.find("\"f\":", probe);
+            if (fpos != std::string::npos && fpos < limit)
+                t.focusPane = atoi(line.c_str() + fpos + 4);
+            // "q":["id","id"] — the panes after the first.
+            const size_t qpos = line.find("\"q\":[", probe);
+            if (qpos != std::string::npos && qpos < limit)
+            {
+                size_t at = qpos + 5;
+                while (at < limit && line[at] != ']')
+                {
+                    if (line[at] != '"')
+                    {
+                        ++at;
+                        continue;
+                    }
+                    size_t q = at;
+                    std::string id;
+                    // Field() expects a key; the array holds bare strings, so
+                    // read one directly, honouring the same escapes.
+                    ++q;
+                    while (q < limit && line[q] != '"')
+                    {
+                        if (line[q] == '\\' && q + 1 < limit)
+                            ++q;
+                        id.push_back(line[q]);
+                        ++q;
+                    }
+                    if (!id.empty())
+                        t.paneProfileIds.push_back(id);
+                    at = q + 1;
+                    if (t.paneProfileIds.size() > 64)
+                        break;      // a workspace cannot demand 65 panes
+                }
+            }
+            const size_t opos = line.find("\"o\":[", probe);
+            if (opos != std::string::npos && opos < limit)
+            {
+                size_t at = opos + 5;
+                while (at < limit && line[at] != ']')
+                {
+                    if (isdigit(static_cast<unsigned char>(line[at])))
+                    {
+                        t.readOnlyPanes.push_back(atoi(line.c_str() + at));
+                        while (at < limit && isdigit(static_cast<unsigned char>(line[at])))
+                            ++at;
+                        continue;
+                    }
+                    ++at;
+                }
+            }
+        }
+        else
+            t.layout.clear();
         w.tabs.push_back(std::move(t));
         from = probe;
     }
     if (w.tabs.empty())
         return false;
+    // No version field at all means a file written before pane trees.
+    const size_t vp = line.find("\"ver\":");
+    w.version = (vp == std::string::npos) ? 1 : atoi(line.c_str() + vp + 6);
+    if (w.version < 1 || w.version > Workspace::kSchemaVersion)
+        w.version = 1;      // a newer file read by this build: take what we know
     out = std::move(w);
     return true;
 }

@@ -126,8 +126,31 @@ private:
     void DownloadFontFamily(const std::wstring& family); // a chrome face, by name
     void RegisterGdiFonts();           // bundled fonts as GDI private resources
     void ApplyChromeFace();            // resolve the skin's face for dialogs + strip
-    void SplitPane(bool vertical);     // duplicate session into a second pane
-    void CloseSplit();                 // keep the focused pane only
+    amber::PaneId AddPane(const amber::ConnectionProfile* profile, bool vertical);
+    void SplitPane(bool vertical);     // split the FOCUSED pane in two
+    void CloseSplit();                 // close the focused pane
+    // ---- pane operations (sessions/PaneLayout.h) --------------------------
+    // Every one of these acts on the active tab's focused pane and is
+    // reachable from the palette as well as the menu.
+    void FocusPane(amber::PaneLayout::Dir d);
+    void FocusPaneCycle(int delta);
+    void MovePane(amber::PaneLayout::Dir d);
+    void SwapPaneWith(amber::PaneLayout::Dir d);
+    void ResizePane(amber::PaneLayout::Dir d);
+    void RotatePane();
+    void ToggleZoomPane();
+    void ToggleReadOnlyPane();
+    // ---- broadcast sets ---------------------------------------------------
+    void PickBroadcastTargets();   // the checklist of this tab's panes
+    void BroadcastAll();           // every pane except the read-only ones
+    void StopBroadcast();          // the emergency stop
+    void ReportBroadcast();        // names the current targets in the status bar
+    // Wires a new pane session's parser sinks to this App. Consolidated
+    // because it was duplicated inline in four places, and because a session
+    // that can be re-bound is a session that can move between windows.
+    void BindSessionSinks(amber::Session& s);
+    // Creates a pane session cloned from `from`'s profile, ready to connect.
+    std::unique_ptr<amber::Session> MakePaneSession(const amber::Session& from);
     void StartReconnect(amber::Session& s);   // build cfg from stored secrets
     void OpenUrlAt(int row, int col);  // Ctrl+click URL launcher
     bool OpenRemotePathAt(int row, int col);   // Ctrl+click remote path -> SFTP
@@ -144,36 +167,69 @@ private:
     {
         return *m_sessions[static_cast<size_t>(m_active)];
     }
+    // --- panes -------------------------------------------------------------
+    // A tab's root session IS pane 0; extraPanes holds 1..N at index id-1,
+    // with a null slot for one that has been closed so ids are never reused.
+    static amber::Session* PaneById(amber::Session& tab, amber::PaneId id)
+    {
+        if (id == 0)
+            return &tab;
+        const size_t i = static_cast<size_t>(id) - 1;
+        if (id < 1 || i >= tab.extraPanes.size())
+            return nullptr;
+        return tab.extraPanes[i].get();
+    }
+    static const amber::Session* PaneById(const amber::Session& tab, amber::PaneId id)
+    {
+        return PaneById(const_cast<amber::Session&>(tab), id);
+    }
+    // Which pane a session is, within its tab. kNoPane when it is not in it.
+    static amber::PaneId PaneIdOf(const amber::Session& tab, const amber::Session& s)
+    {
+        if (&tab == &s)
+            return 0;
+        for (size_t i = 0; i < tab.extraPanes.size(); ++i)
+            if (tab.extraPanes[i].get() == &s)
+                return static_cast<amber::PaneId>(i + 1);
+        return amber::kNoPane;
+    }
+    // Every live pane of a tab, root first.
+    template <typename F> static void ForEachPane(amber::Session& tab, F&& f)
+    {
+        f(tab);
+        for (auto& p : tab.extraPanes)
+            if (p)
+                f(*p);
+    }
+
     // The session that receives input: the active tab's focused pane.
     amber::Session& Foc()
     {
         amber::Session& c = Cur();
-        return (c.pane && c.paneFocus == 1) ? *c.pane : c;
+        amber::Session* p = PaneById(c, c.focus);
+        return p ? *p : c;
     }
     const amber::Session& Foc() const
     {
         const amber::Session& c = Cur();
-        return (c.pane && c.paneFocus == 1) ? *c.pane : c;
+        const amber::Session* p = PaneById(c, c.focus);
+        return p ? *p : c;
     }
-    // View-grid offset of a session inside the active tab's layout.
+    // A pane's rect in the active tab's cell grid. Empty when the session is
+    // not a pane of the active tab, or is hidden by a zoom.
+    amber::PaneRect PaneRectOf(const amber::Session& s) const;
+    // The offset of a session's pane inside the tab's grid. Kept as a helper
+    // because a dozen renderer paths want exactly this and nothing more.
     void PaneOffset(const amber::Session& s, int& colOff, int& rowOff) const
     {
-        colOff = rowOff = 0;
-        if (!HasSession() || !Cur().pane || &s != Cur().pane.get())
-            return;
-        if (Cur().paneVertical)
-            colOff = Cur().grid.Cols() + 1;
-        else
-            rowOff = Cur().grid.Rows() + 1;
+        const amber::PaneRect r = PaneRectOf(s);
+        colOff = r.col;
+        rowOff = r.row;
     }
     template <typename F> void ForEachSession(F&& f)
     {
         for (auto& sp : m_sessions)
-        {
-            f(*sp);
-            if (sp->pane)
-                f(*sp->pane);
-        }
+            ForEachPane(*sp, f);
     }
 
     bool ShowConnectionDialog();       // modal; creates and starts a session
@@ -275,6 +331,8 @@ private:
     // OSC 8: the target under the pointer, for the status bar (see the .cpp).
     void UpdateLinkHover(amber::Session& s, int px, int py);
     std::string m_hoverLink;
+    // "bcast 4" — the status-bar chip label, rebuilt each frame.
+    mutable char m_bcastChip[24] = "bcast";
     void OnWheel(int delta, bool ctrl);
     // Terminal mouse reporting (?1000/?1002/?1003, SGR ?1006): translates a
     // mouse event into an escape report for the remote app. Returns true
@@ -550,6 +608,7 @@ private:
     void DrawJournal();
     void DrawNotices();   // guardian annotations over the grid (never in it)
     void DrawBlockGutter();   // command-block bars and metadata, also over it
+    void DrawPaneBadges();    // read-only / broadcast markers per pane
     bool m_blockGutter = true;
     // Reads the typed command off the grid between the OSC 133 B and C marks.
     std::string LiftCommandText(const amber::Session& s) const;

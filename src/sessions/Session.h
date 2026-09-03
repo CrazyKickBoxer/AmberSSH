@@ -11,6 +11,7 @@
 #include "../profiles/ConnectionProfile.h"
 #include "../ssh/session.h"
 #include "CommandBlocks.h"
+#include "PaneLayout.h"
 #include "Guardian.h"
 #include "../term/ImageDecode.h"
 #include "../term/grid.h"
@@ -231,12 +232,28 @@ struct Session
     // repaired by re-anchoring the surviving notices to the new top.
     uint64_t noticesPushedSeen = 0;
 
-    // --- split panes ---------------------------------------------------------
-    // A tab's secondary pane is owned by its primary session; paneFocus picks
-    // which of the two receives input.
-    std::unique_ptr<Session> pane;
-    bool paneVertical = true;
-    int paneFocus = 0;          // 0 = this session, 1 = the pane
+    // --- panes (sessions/PaneLayout.h) ---------------------------------------
+    // A tab is its root session plus any panes split off it, laid out by a
+    // recursive tree. THIS session is always pane id 0 of its own tab;
+    // `extraPanes` holds ids 1..N at index id-1, with a null slot for a pane
+    // that has been closed. Ids are never reused, so a broadcast set or a
+    // focus reference cannot come to mean a different pane than the one it
+    // was pointed at.
+    //
+    // Only a tab's root session uses these; a pane's own copies stay empty.
+    std::vector<std::unique_ptr<Session>> extraPanes;
+    PaneLayout layout;
+    PaneId focus = 0;            // which pane receives input
+    PaneId nextPaneId = 1;
+    // Broadcast targets, by pane id. Empty means broadcast is off. Explicit
+    // ids rather than "all panes" so a pane opened later is never swept in.
+    std::vector<PaneId> broadcast;
+
+    // --- read-only -----------------------------------------------------------
+    // A read-only pane still receives output, and can still be selected,
+    // copied and searched; it just refuses keyboard input. For watching a
+    // production log without being one slip away from typing into it.
+    bool readOnly = false;
 
     Session() = default;
     Session(const Session&) = delete;
