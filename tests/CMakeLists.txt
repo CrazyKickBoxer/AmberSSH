@@ -18,10 +18,12 @@ add_executable(AmberTests
     LocalSessionTests.cpp
     GuardianTests.cpp
     CommandBlockTests.cpp
+    CompatFixtureTests.cpp
 
     ${CMAKE_SOURCE_DIR}/src/term/vtparser.cpp
     ${CMAKE_SOURCE_DIR}/src/term/grid.cpp
     ${CMAKE_SOURCE_DIR}/src/term/charwidth.cpp
+    ${CMAKE_SOURCE_DIR}/src/term/Graphemes.cpp
     ${CMAKE_SOURCE_DIR}/src/term/ImageDecode.cpp
     ${CMAKE_SOURCE_DIR}/src/term/input.cpp
     ${CMAKE_SOURCE_DIR}/src/term/SyntaxTint.cpp

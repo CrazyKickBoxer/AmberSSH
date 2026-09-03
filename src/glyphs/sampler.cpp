@@ -1,5 +1,6 @@
 #include "sampler.h"
 #include "../term/charwidth.h"
+#include "../term/Graphemes.h"
 
 #include <windows.h>
 #include <d2d1.h>
@@ -675,7 +676,7 @@ uint32_t GlyphSampler::GlyphIdFor(char32_t cp)
     Raster r;
     float padX = (kRasterW - m_advanceEm * m_rasterEm) * 0.5f;
     float padY = (kRasterH - m_lineEm * m_rasterEm) * 0.5f;
-    if (!RasterizeGlyph(cp, m_rasterEm, padX, padY, r))
+    if (!RasterizeForCp(cp, m_rasterEm, padX, padY, r))
     {
         // Whitespace or unrenderable: alias to blank.
         m_glyphIds[cp] = 0;
@@ -695,7 +696,7 @@ bool GlyphSampler::AddAtlasGlyph(char32_t cp)
 {
     Raster r;
     // Generous padding so bounds never clip.
-    if (!RasterizeGlyph(cp, m_atlasFontPx, m_atlasFontPx, m_atlasFontPx, r))
+    if (!RasterizeForCp(cp, m_atlasFontPx, m_atlasFontPx, m_atlasFontPx, r))
     {
         AtlasGlyph g = {};
         g.advance = DesignAdvancePx(cp, m_atlasFontPx, m_advanceEm * m_atlasFontPx);
@@ -1117,4 +1118,163 @@ float GlyphSampler::DesignAdvancePx(char32_t cp, float px, float fallbackPx)
         FAILED(m_face->GetDesignGlyphMetrics(&idx, 1, &gm, FALSE)))
         return fallbackPx;
     return static_cast<float>(gm.advanceWidth) / fm.designUnitsPerEm * px;
+}
+
+// ---------------------------------------------------------------- clusters
+// Rasterises a grapheme cluster into the cell box, via a Direct2D text layout
+// so DirectWrite performs the shaping: mark positioning, ligature substitution
+// within the cluster, and font fallback per run. The output uses the same
+// Raster contract as RasterizeGlyph — the box is the cell, and boundsLeft /
+// boundsTop are its origin — so the particle extraction downstream is
+// identical and a cluster is not a special case at render time.
+bool GlyphSampler::RasterizeCluster(const std::u32string& text, float emPx,
+                                    float padX, float padY, Raster& out)
+{
+    if (text.empty() || emPx <= 0.0f)
+        return false;
+
+    const float advPx = m_advanceEm * emPx;
+    const float linePx = m_lineEm * emPx;
+    // The box is the cell the cluster occupies. A flag is two cells wide; a
+    // combining sequence is one. Marks can overhang, so the bitmap is given a
+    // little room on every side and the overhang is simply clipped, exactly as
+    // a glyph run's alpha bounds would clip it.
+    const int cells = 1 + static_cast<int>(text.size() > 1 &&
+                                           text[0] >= 0x1F1E6 && text[0] <= 0x1F1FF);
+    const int boxW = std::max(1, static_cast<int>(std::ceil(advPx * cells)));
+    const int boxH = std::max(1, static_cast<int>(std::ceil(linePx)));
+    if (boxW > 512 || boxH > 512)
+        return false;                    // absurd cell size: leave it alone
+
+    // UTF-16 for DirectWrite. A cluster is bounded by ClusterTable::kMaxLength,
+    // so this cannot grow without limit.
+    std::wstring w16;
+    w16.reserve(text.size() * 2);
+    for (char32_t cp : text)
+    {
+        if (cp > 0xFFFF)
+        {
+            const char32_t v = cp - 0x10000;
+            w16.push_back(static_cast<wchar_t>(0xD800 + (v >> 10)));
+            w16.push_back(static_cast<wchar_t>(0xDC00 + (v & 0x3FF)));
+        }
+        else
+            w16.push_back(static_cast<wchar_t>(cp));
+    }
+
+    ComPtr<IWICImagingFactory> wicFactory;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&wicFactory))))
+        return false;
+    ComPtr<IWICBitmap> wic;
+    if (FAILED(wicFactory->CreateBitmap(static_cast<UINT>(boxW), static_cast<UINT>(boxH),
+                                        GUID_WICPixelFormat32bppPBGRA,
+                                        WICBitmapCacheOnLoad, &wic)))
+        return false;
+
+    ComPtr<ID2D1Factory> d2d;
+    if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
+                                 __uuidof(ID2D1Factory),
+                                 reinterpret_cast<void**>(d2d.GetAddressOf()))))
+        return false;
+    ComPtr<ID2D1RenderTarget> rt;
+    if (FAILED(d2d->CreateWicBitmapRenderTarget(
+            wic.Get(),
+            D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                                  D2D1_ALPHA_MODE_PREMULTIPLIED)),
+            &rt)))
+        return false;
+
+    ComPtr<IDWriteTextFormat> fmt;
+    if (FAILED(m_factory->CreateTextFormat(
+            m_fontName.empty() ? L"Consolas" : m_fontName.c_str(), nullptr,
+            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, emPx, L"en-us", &fmt)))
+        return false;
+    fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+    // No wrapping: a cluster is one line by definition, and letting it wrap
+    // would push the marks onto a second row inside the cell box.
+    fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
+    ComPtr<ID2D1SolidColorBrush> brush;
+    if (FAILED(rt->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 1), &brush)))
+        return false;
+
+    rt->BeginDraw();
+    rt->Clear(D2D1::ColorF(0, 0, 0, 0));
+    rt->DrawText(w16.c_str(), static_cast<UINT32>(w16.size()), fmt.Get(),
+                 D2D1::RectF(0.0f, 0.0f, static_cast<float>(boxW),
+                             static_cast<float>(boxH)),
+                 brush.Get(), D2D1_DRAW_TEXT_OPTIONS_NONE,
+                 DWRITE_MEASURING_MODE_NATURAL);
+    if (FAILED(rt->EndDraw()))
+        return false;
+
+    WICRect wr = { 0, 0, boxW, boxH };
+    ComPtr<IWICBitmapLock> lock;
+    if (FAILED(wic->Lock(&wr, WICBitmapLockRead, &lock)))
+        return false;
+    UINT stride = 0, size = 0;
+    BYTE* data = nullptr;
+    lock->GetStride(&stride);
+    lock->GetDataPointer(&size, &data);
+    if (!data)
+        return false;
+
+    out.w = boxW;
+    out.h = boxH;
+    out.alpha.assign(static_cast<size_t>(boxW) * boxH, 0);
+    bool anyInk = false;
+    for (int y = 0; y < boxH; ++y)
+    {
+        const BYTE* row = data + static_cast<size_t>(y) * stride;
+        for (int x = 0; x < boxW; ++x)
+        {
+            const uint8_t a = row[x * 4 + 3];
+            out.alpha[static_cast<size_t>(y) * boxW + x] = a;
+            if (a)
+                anyInk = true;
+        }
+    }
+    if (!anyInk)
+        return false;                    // nothing drew: fall back to the base
+
+    out.penX = padX;
+    out.top = padY;
+    out.advPx = advPx;
+    out.linePx = linePx;
+    out.boundsLeft = padX;
+    out.boundsTop = padY;
+    return true;
+}
+
+bool GlyphSampler::RasterizeForCp(char32_t cp, float emPx, float padX, float padY,
+                                  Raster& out)
+{
+    if (amber::IsClusterAlias(cp))
+    {
+        const std::u32string& text = amber::Clusters().Text(cp);
+        if (!text.empty())
+        {
+            if (RasterizeCluster(text, emPx, padX, padY, out))
+            {
+                ++m_clusterHits;
+                return true;
+            }
+            // Shaping failed (no face, an absurd cell size). Fall back to the
+            // BASE character so the text is still legible and correct-ish,
+            // rather than to the missing-glyph box that an alias would
+            // otherwise resolve to.
+            ++m_clusterMisses;
+            return RasterizeGlyph(text[0], emPx, padX, padY, out);
+        }
+        // An alias with no cluster behind it: never let it reach IndexFor,
+        // which would read it as a nerd-font Private Use Area miss and start
+        // downloading a symbols font.
+        return RasterizeGlyph(U'\xFFFD', emPx, padX, padY, out);
+    }
+    return RasterizeGlyph(cp, emPx, padX, padY, out);
 }

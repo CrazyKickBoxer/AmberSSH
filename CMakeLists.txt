@@ -40,6 +40,7 @@ set(AMBER_SOURCES
     src/term/vtparser.h    src/term/vtparser.cpp
     src/term/grid.h        src/term/grid.cpp
     src/term/charwidth.h   src/term/charwidth.cpp
+    src/term/Graphemes.h   src/term/Graphemes.cpp
     src/term/ImageDecode.h src/term/ImageDecode.cpp
     src/platform/AudioLevel.h src/platform/AudioLevel.cpp
     src/platform/Notify.h     src/platform/Notify.cpp

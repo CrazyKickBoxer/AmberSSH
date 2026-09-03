@@ -107,6 +107,18 @@ private:
     };
 
     bool RasterizeGlyph(char32_t cp, float emPx, float padX, float padY, Raster& out);
+    // Dispatch: a cluster alias is shaped as text, everything else is one
+    // glyph. The single place that has to know the difference.
+    bool RasterizeForCp(char32_t cp, float emPx, float padX, float padY, Raster& out);
+    // A grapheme cluster (a base plus its combining marks, or a flag's two
+    // regional indicators) rasterised as ONE image. Shaping is left to
+    // DirectWrite's own text layout, which applies the font's mark-positioning
+    // tables — reproducing that with a glyph run would mean reimplementing
+    // script analysis. The result feeds the same Raster -> ExtractPoints
+    // pipeline as every other glyph, so a cluster is particles like the rest
+    // of the text rather than a pasted bitmap.
+    bool RasterizeCluster(const std::u32string& text, float emPx, float padX,
+                          float padY, Raster& out);
     void ExtractPoints(const Raster& r, GlyphPoint* out, uint32_t glyphId,
                        char32_t cp);
     UINT16 IndexFor(char32_t cp, IDWriteFontFace** faceOut);
@@ -123,6 +135,8 @@ public:
     // every fallback — the app offers/fetches a symbols font in response.
     bool PuaGlyphMissing() const { return m_puaMiss; }
     void ClearPuaMissing() { m_puaMiss = false; }
+    uint64_t ClusterHits() const { return m_clusterHits; }
+    uint64_t ClusterMisses() const { return m_clusterMisses; }
     // Re-scan font dirs and drop every cached glyph/template so previously
     // substituted '?' glyphs re-rasterize against the new faces.
     void RefreshAfterFontChange();
@@ -136,6 +150,9 @@ private:
     std::vector<ComPtr<IDWriteFontFace>> m_fallbackFaces;
     bool m_fallbacksBuilt = false;
     bool m_puaMiss = false;
+    // Diagnostics: clusters shaped, and clusters that fell back to their base.
+    uint64_t m_clusterHits = 0;
+    uint64_t m_clusterMisses = 0;
     std::vector<std::wstring> m_fontDirs;       // for RefreshAfterFontChange
     std::wstring m_fontName;
 

@@ -80,6 +80,16 @@ public:
     void Feed(const uint8_t* data, size_t len);
     void Reset();
     const TermModes& Modes() const { return m_modes; }
+    // Malformed UTF-8 sequences this parser has recovered from. Surfaced by
+    // the debug overlay: a rising count means the far end is not sending what
+    // it says it is.
+    uint64_t Utf8Errors() const { return m_utfErrors; }
+    // Live OSC 8 hyperlink targets held by this parser.
+    size_t LinkCount() const { return m_links.size(); }
+    // OSC 8 targets refused because they carried control characters.
+    uint64_t LinkRejects() const { return m_linkRejects; }
+    // Inline-image payloads that failed to decode (malformed or over budget).
+    uint64_t ImageDecodeFails() const { return m_imageDecodeFails; }
     // OSC 8 hyperlink target for a Cell::link id (empty for 0 / unknown).
     const std::string& LinkUri(uint16_t id) const
     {
@@ -97,6 +107,8 @@ private:
     void DispatchOsc();          // completed OSC payload (title, OSC 52)
     void DispatchDcs();          // DCS: Sixel images
     void DispatchApc();          // APC: Kitty graphics protocol
+    void DispatchITerm();        // OSC 1337: iTerm2 inline images
+    static std::string DecodeB64(const std::string& in);
     void HandleSgr();
     void HandleMode(bool set);
     void PrintChar(char32_t cp);
@@ -145,7 +157,11 @@ private:
 
     // UTF-8 accumulation
     uint32_t m_utfCp = 0;
+    uint32_t m_utfMin = 0;      // smallest value this length may legally encode
     int m_utfNeed = 0;
+    uint64_t m_utfErrors = 0;   // invalid sequences recovered from (diagnostics)
+    uint64_t m_linkRejects = 0; // OSC 8 targets refused for control characters
+    uint64_t m_imageDecodeFails = 0;  // graphics payloads that would not decode
 
     // Current brush (SGR state)
     Cell m_brush;

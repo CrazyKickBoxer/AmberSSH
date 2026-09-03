@@ -283,6 +283,113 @@ void VtParser::DispatchApc()
     reply("OK");
 }
 
+// Base64 → bytes, ignoring whitespace and padding. Shared by the Kitty and
+// iTerm2 image paths; both take their payload straight off the wire, so a
+// stray character must be skipped rather than aborting the decode.
+std::string VtParser::DecodeB64(const std::string& in)
+{
+    auto val = [](char ch) -> int {
+        if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+        if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+        if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+        if (ch == '+') return 62;
+        if (ch == '/') return 63;
+        return -1;
+    };
+    std::string out;
+    out.reserve(in.size() * 3 / 4);
+    int acc = 0, bits = 0;
+    for (char ch : in)
+    {
+        const int v = val(ch);
+        if (v < 0)
+            continue;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if (bits >= 8)
+        {
+            bits -= 8;
+            out.push_back(static_cast<char>((acc >> bits) & 0xFF));
+        }
+    }
+    return out;
+}
+
+// OSC 1337 — iTerm2. Only the inline-image command is honoured:
+//
+//   OSC 1337 ; File = key=value ; ... : <base64 of the file> ST
+//
+// Everything else in the 1337 namespace (SetUserVar, CurrentDir, RemoteHost,
+// ReportVariable, and the shell-integration commands) is deliberately
+// ignored. Several of them set state or answer queries on the application's
+// behalf, and honouring a namespace this open on the say-so of a remote host
+// is how a terminal ends up doing something it was never asked to.
+void VtParser::DispatchITerm()
+{
+    const size_t eq = m_oscBuf.find('=', 5);
+    if (m_oscBuf.compare(5, 5, "File=") != 0 || eq == std::string::npos)
+        return;
+    const size_t colon = m_oscBuf.find(':', 5);
+    if (colon == std::string::npos)
+        return;
+    const std::string args = m_oscBuf.substr(10, colon - 10);
+    const std::string b64 = m_oscBuf.substr(colon + 1);
+    if (b64.empty())
+        return;
+
+    // The declared keys. `inline=1` is what separates an image to display
+    // from a file transfer, which AmberSSH does not implement — a terminal
+    // silently writing files a remote host sends is not a feature.
+    auto arg = [&](const char* name, const std::string& def) -> std::string {
+        size_t pos = 0;
+        const std::string key = std::string(name) + "=";
+        while (pos < args.size())
+        {
+            const size_t semi = args.find(';', pos);
+            const std::string kv = args.substr(
+                pos, semi == std::string::npos ? std::string::npos : semi - pos);
+            if (kv.rfind(key, 0) == 0)
+                return kv.substr(key.size());
+            if (semi == std::string::npos)
+                break;
+            pos = semi + 1;
+        }
+        return def;
+    };
+    if (arg("inline", "0") != "1")
+        return;
+
+    const std::string bytes = DecodeB64(b64);
+    if (bytes.empty())
+        return;
+    amber::DecodedImage img;
+    // iTerm2 sends whole files. PNG is what every producer of these actually
+    // uses; anything else is declined rather than guessed at.
+    if (!amber::DecodePng(reinterpret_cast<const uint8_t*>(bytes.data()),
+                          bytes.size(), img))
+    {
+        ++m_imageDecodeFails;
+        return;
+    }
+    if (!m_image)
+        return;
+    // width/height accept "N" (cells), "Npx", "N%" or "auto". Only the cell
+    // form maps onto the grid; the others fall back to the image's own size,
+    // which the sink already derives from the cell metrics.
+    auto cells = [&](const char* name) -> int {
+        const std::string v = arg(name, "auto");
+        if (v.empty() || v == "auto")
+            return 0;
+        if (v.find_first_not_of("0123456789") != std::string::npos)
+            return 0;                     // px / % / anything else
+        const int n = atoi(v.c_str());
+        return (n > 0 && n < 4096) ? n : 0;
+    };
+    const int adv = m_image(std::move(img), cells("width"), cells("height"));
+    for (int r = 0; r < adv; ++r)
+        m_grid.LineFeed();
+}
+
 void VtParser::DispatchOsc()
 {
     // OSC 0/2 — window title. The buffer cap is sized for OSC 52 clipboard
@@ -330,6 +437,22 @@ void VtParser::DispatchOsc()
             m_brush.link = 0;
             return;
         }
+        // The target is shown on hover and in the status bar, so it must not
+        // be able to carry control characters into them — a CR, a BEL or an
+        // ESC in a URI would otherwise reach a readout that draws whatever it
+        // is handed. A URI has no legitimate use for any of them: RFC 3986
+        // requires them percent-encoded. Anything below 0x20, plus DEL,
+        // rejects the whole link rather than being silently stripped, because
+        // a stripped URI is a DIFFERENT target from the one the server named.
+        for (unsigned char ch : uri)
+        {
+            if (ch < 0x20 || ch == 0x7F)
+            {
+                ++m_linkRejects;
+                m_brush.link = 0;
+                return;
+            }
+        }
         uint16_t id = 0;
         for (size_t i = 0; i < m_links.size(); ++i)
             if (m_links[i] == uri)
@@ -343,6 +466,12 @@ void VtParser::DispatchOsc()
             id = static_cast<uint16_t>(m_links.size());
         }
         m_brush.link = id;
+        return;
+    }
+    // OSC 1337 — iTerm2. Inline images only; see DispatchITerm.
+    if (m_oscBuf.rfind("1337;", 0) == 0)
+    {
+        DispatchITerm();
         return;
     }
     // OSC 133 — FinalTerm shell-integration marks: "133;A" prompt start,
@@ -444,16 +573,17 @@ void VtParser::Feed(const uint8_t* data, size_t len)
             {
                 m_state = State::Ground;
                 DispatchString();
+                continue;
             }
-            else
-            {
-                m_state = State::Osc;
-                // Bounded: a hostile or broken server must not be able to
-                // grow this buffer without limit. Excess bytes are dropped;
-                // the sequence still terminates normally.
-                if (m_oscBuf.size() < kMaxOscLen)
-                    m_oscBuf.push_back(static_cast<char>(b));
-            }
+            // An ESC inside a control string that is not ST ENDS the string,
+            // and the byte after it starts whatever comes next. Swallowing
+            // the ESC and appending the byte — which is what this did — meant
+            // "ESC ] 8 ; ; <uri> ESC [ 31 m" put "[31m" inside the URI
+            // instead of setting a colour, and let a server smuggle text past
+            // a terminator. xterm ends the string here; so do we.
+            m_state = State::Ground;
+            DispatchString();
+            --i;             // reprocess this byte from Ground
             continue;
         }
 
@@ -480,18 +610,42 @@ void VtParser::Feed(const uint8_t* data, size_t len)
         {
         case State::Ground:
         {
-            // UTF-8 decode.
+            // UTF-8 decode. The accumulator persists across Feed calls, so a
+            // sequence split over two reads (which happens constantly on a
+            // 16 KB socket boundary) decodes correctly.
             if (m_utfNeed > 0)
             {
                 if ((b & 0xC0) == 0x80)
                 {
                     m_utfCp = (m_utfCp << 6) | (b & 0x3F);
                     if (--m_utfNeed == 0)
-                        PrintChar(m_utfCp > 0x10FFFF ? U'�' : m_utfCp);
+                    {
+                        // Three ways a well-formed-looking sequence is still
+                        // invalid, all of which used to reach the grid:
+                        //   - an overlong encoding (C0 80 for NUL), the
+                        //     classic way to smuggle a byte past a filter;
+                        //   - a UTF-16 surrogate half, which is not a scalar
+                        //     value and must never be stored in a cell;
+                        //   - anything above U+10FFFF.
+                        // All three become U+FFFD, and all three are counted.
+                        const bool overlong = m_utfCp < m_utfMin;
+                        const bool surrogate = m_utfCp >= 0xD800 && m_utfCp <= 0xDFFF;
+                        if (overlong || surrogate || m_utfCp > 0x10FFFF)
+                        {
+                            ++m_utfErrors;
+                            PrintChar(U'�');
+                        }
+                        else
+                            PrintChar(m_utfCp);
+                    }
                 }
                 else
                 {
+                    // A truncated sequence: emit one replacement for it and
+                    // reprocess this byte as a fresh start, so the stream
+                    // resynchronises on the very next character.
                     m_utfNeed = 0;
+                    ++m_utfErrors;
                     PrintChar(U'�');
                     --i;   // reprocess this byte
                 }
@@ -500,11 +654,16 @@ void VtParser::Feed(const uint8_t* data, size_t len)
                 PrintChar(b);
             else if (m_feat.charset != 0)
                 PrintChar(DecodeHighByte(b));       // single-byte charset
-            else if ((b & 0xE0) == 0xC0) { m_utfCp = b & 0x1F; m_utfNeed = 1; }
-            else if ((b & 0xF0) == 0xE0) { m_utfCp = b & 0x0F; m_utfNeed = 2; }
-            else if ((b & 0xF8) == 0xF0) { m_utfCp = b & 0x07; m_utfNeed = 3; }
+            else if ((b & 0xE0) == 0xC0) { m_utfCp = b & 0x1F; m_utfNeed = 1; m_utfMin = 0x80; }
+            else if ((b & 0xF0) == 0xE0) { m_utfCp = b & 0x0F; m_utfNeed = 2; m_utfMin = 0x800; }
+            else if ((b & 0xF8) == 0xF0) { m_utfCp = b & 0x07; m_utfNeed = 3; m_utfMin = 0x10000; }
             else
+            {
+                // A continuation byte with nothing to continue, or one of the
+                // five- and six-byte forms UTF-8 no longer has.
+                ++m_utfErrors;
                 PrintChar(U'�');
+            }
             break;
         }
         case State::Esc:

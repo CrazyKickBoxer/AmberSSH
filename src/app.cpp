@@ -20,6 +20,7 @@
 #include "ui/Theme.h"
 #include "platform/CredentialStore.h"
 #include "platform/Paths.h"
+#include "term/Graphemes.h"
 
 #include <windowsx.h>
 #include <commdlg.h>
@@ -1896,6 +1897,12 @@ void App::RecordScene(ID3D12GraphicsCommandList* cl)
     // gradient first, then the crisp glyph cores (sharp, no blur), then the
     // additive particle field, then UI chrome on top.
     m_prims.RecordUnder(cl, frame, cb);
+    // Inline graphics sit directly on the terminal background, UNDER the
+    // text: a caption or a prompt drawn over an image has to stay legible,
+    // and an image drawn over the text would hide it. This is the layer order
+    // Stage 4 specifies — background, graphics, text core, particles,
+    // overlays — and it used to run after the particle field.
+    DrawInlineImages(cl, frame, cb);
     // Text sharpness: Soft draws the crisp letterform UNDER the particle glow
     // (the original diffuse nixie look); Crisp draws it on top so the glyph
     // reads sharp inside its halo; Razor also skips it here and draws it
@@ -1906,7 +1913,6 @@ void App::RecordScene(ID3D12GraphicsCommandList* cl)
     if (m_sharpness == 1)
         m_prims.RecordCore(cl, frame, cb);
     m_prims.RecordColor(cl, frame, cb);   // full-colour emoji over the field
-    DrawInlineImages(cl, frame, cb);      // Sixel / Kitty images
     m_prims.RecordOverBlend(cl, frame, cb);   // darkening panels (palette)
     m_prims.RecordOver(cl, frame, cb);
 
@@ -3939,6 +3945,34 @@ void App::DrawStatusBar()
             lx += m_prims.MeasureText(g, m_sampler) + 16.0f * dpi;
         }
     }
+    // A hovered OSC 8 target outranks the transient message: it is about
+    // where the pointer is right now, and it disappears the moment it moves.
+    if (!m_hoverLink.empty())
+    {
+        float hi[3];
+        if (skin)
+            SrgbToLinear(ch.neonB, hi);
+        else
+            AmberRampCpu(0.80f, hi);
+        const float room = (m_sbChips.empty() ? W - padX : m_sbChips.back().x) -
+                           lx - 12.0f * dpi;
+        std::string msg = m_hoverLink;
+        if (room > 0.0f && m_prims.MeasureText(msg, m_sampler) > room)
+        {
+            while (!msg.empty() &&
+                   m_prims.MeasureText(msg + "\xE2\x80\xA6", m_sampler) > room)
+            {
+                msg.pop_back();
+                while (!msg.empty() &&
+                       (static_cast<unsigned char>(msg.back()) & 0xC0) == 0x80)
+                    msg.pop_back();
+            }
+            msg += "\xE2\x80\xA6";
+        }
+        if (room > 0.0f)
+            emit(lx, textY, msg, hi);
+        return;
+    }
     // The transient message lives here now instead of floating over output.
     if (!m_status.empty() && m_time < m_statusUntil)
     {
@@ -4017,6 +4051,45 @@ void App::DrawStatusLine()
                  m_device.HdrActive() ? "HDR" : "SDR");
         m_prims.AddText(m_gm.originX, m_titleBarH + 2.0f + m_gm.cellH, line,
                         0.6f, m_sampler);
+
+        // Protocol health. Every figure here is a count of something that
+        // actually happened, so a rising number is evidence rather than a
+        // guess: malformed UTF-8 recovered from, wide cells on screen right
+        // now, grapheme clusters interned, glyphs the terminal face could not
+        // draw, live OSC 8 targets, and what the inline images are costing.
+        if (HasSession())
+        {
+            const amber::Session& S = Foc();
+            const Grid& g = S.grid;
+            int wide = 0, clusters = 0, links = 0;
+            for (int r = 0; r < g.Rows(); ++r)
+                for (int c = 0; c < g.Cols(); ++c)
+                {
+                    const Cell& cell = g.ViewCell(r, c);
+                    if (cell.flags & CellWideLead)
+                        ++wide;
+                    if (amber::IsClusterAlias(cell.cp))
+                        ++clusters;
+                    if (cell.link)
+                        ++links;
+                }
+            const size_t imgBytes = ImageBytes(S);
+            snprintf(line, sizeof(line),
+                     "utf8-err %llu  clusters %zu (screen %d, shaped %llu, "
+                     "fallback %llu)  wide %d  links %zu/%d (rejected %llu)  "
+                     "images %zu (%.1f MB)  img-fail %llu",
+                     static_cast<unsigned long long>(S.parser.Utf8Errors()),
+                     amber::Clusters().Count(), clusters,
+                     static_cast<unsigned long long>(m_sampler.ClusterHits()),
+                     static_cast<unsigned long long>(m_sampler.ClusterMisses()),
+                     wide, S.parser.LinkCount(), links,
+                     static_cast<unsigned long long>(S.parser.LinkRejects()),
+                     S.images.size(),
+                     static_cast<double>(imgBytes) / (1024.0 * 1024.0),
+                     static_cast<unsigned long long>(S.parser.ImageDecodeFails()));
+            m_prims.AddText(m_gm.originX, m_titleBarH + 2.0f + m_gm.cellH * 2.0f,
+                            line, 0.6f, m_sampler);
+        }
     }
 }
 
@@ -4673,6 +4746,40 @@ void App::OnMouseButton(bool down, int px, int py, bool rightButton, bool middle
     }
 }
 
+// OSC 8: the destination of the link under the pointer, held for the status
+// bar. Shown because a hyperlink whose visible text says one thing and whose
+// target says another is the oldest trick there is, and a terminal that hides
+// the target makes Ctrl+click a guess.
+//
+// The URI was already refused at parse time if it carried control characters,
+// so what is stored here is safe to draw; it is still clipped for length.
+void App::UpdateLinkHover(amber::Session& s, int px, int py)
+{
+    m_hoverLink.clear();
+    int r = 0, c = 0;
+    if (!CellFromPx(px, py, r, c))
+        return;
+    int co = 0, ro = 0;
+    PaneOffset(s, co, ro);
+    const int row = r - ro, col = c - co;
+    if (row < 0 || row >= s.grid.Rows() || col < 0 || col >= s.grid.Cols())
+        return;
+    const uint16_t id = s.grid.ViewCell(row, col).link;
+    if (!id)
+        return;
+    const std::string& uri = s.parser.LinkUri(id);
+    if (uri.empty())
+        return;
+    // Whether Ctrl+click would actually open it is part of the readout: a
+    // scheme AmberSSH will not launch should say so before it is clicked, not
+    // after.
+    const bool openable = uri.rfind("http://", 0) == 0 ||
+                          uri.rfind("https://", 0) == 0 ||
+                          uri.rfind("mailto:", 0) == 0;
+    m_hoverLink = (openable ? "link: " : "link (will not open): ") +
+                  (uri.size() > 160 ? uri.substr(0, 159) + "\xE2\x80\xA6" : uri);
+}
+
 void App::OnMouseMove(int px, int py)
 {
     m_lastMousePx = px;
@@ -4702,6 +4809,7 @@ void App::OnMouseMove(int px, int py)
         if (MouseReport(px, py, 2, 3))
             return;
     }
+    UpdateLinkHover(F, px, py);
     if (!F.selecting)
         return;
 
@@ -8305,7 +8413,7 @@ std::string App::LiftCommandText(const amber::Session& s) const
             const Cell& c = g.AbsCell(row, col);
             if (c.flags & CellWideTail)
                 continue;
-            AppendUtf8(line, (c.cp == 0) ? U' ' : c.cp);
+            amber::AppendClusterUtf8(line, (c.cp == 0) ? U' ' : c.cp);
         }
         while (!line.empty() && (line.back() == ' ' || line.back() == '\t'))
             line.pop_back();
@@ -8347,7 +8455,7 @@ std::string App::RowTextRaw(const amber::Session& s, uint64_t rowId) const
         const Cell& cell = g.AbsCell(idx, c);
         if (cell.flags & CellWideTail)
             continue;
-        AppendUtf8(line, cell.cp == 0 ? U' ' : cell.cp);
+        amber::AppendClusterUtf8(line, cell.cp == 0 ? U' ' : cell.cp);
     }
     while (!line.empty() && (line.back() == ' ' || line.back() == '\t'))
         line.pop_back();
@@ -8942,9 +9050,48 @@ int App::OnInlineImage(amber::Session& s, amber::DecodedImage&& img, int cols, i
     // The image sits on the cursor row; the shell scrolls the rows below it
     // in normally. Rows the image needs beyond the screen bottom scroll now.
     s.images.push_back(std::move(im));
-    if (s.images.size() > 64)
-        s.images.erase(s.images.begin());
+    EvictImages(s);
     return s.images.back().rows;
+}
+
+// Bytes of decoded pixels a session's inline images are holding.
+size_t App::ImageBytes(const amber::Session& s)
+{
+    size_t total = 0;
+    for (const amber::Session::InlineImage& im : s.images)
+        if (im.img)
+            total += im.img->rgba.size();
+    return total;
+}
+
+// Keeps a session's inline images inside three bounds: a count, a byte
+// budget, and the scrollback itself.
+//
+// The count alone was the only limit before, and it is not a limit: sixty-four
+// images of 8 megapixels each is two gigabytes of RGBA, and a remote program
+// can produce them as fast as the link allows. The budget is what actually
+// stops that. Oldest first, because the newest image is the one on screen.
+void App::EvictImages(amber::Session& s)
+{
+    // Rows that have scrolled out of the buffer take their images with them.
+    const uint64_t oldest = s.grid.TotalPushed() -
+                            static_cast<uint64_t>(s.grid.ScrollbackSize());
+    s.images.erase(std::remove_if(s.images.begin(), s.images.end(),
+                                  [oldest](const amber::Session::InlineImage& im)
+                                  {
+                                      return im.rowId + static_cast<uint64_t>(
+                                                            std::max(0, im.rows)) < oldest;
+                                  }),
+                   s.images.end());
+    while (s.images.size() > kMaxImagesPerSession)
+        s.images.erase(s.images.begin());
+    size_t bytes = ImageBytes(s);
+    while (bytes > kImageByteBudget && s.images.size() > 1)
+    {
+        if (s.images.front().img)
+            bytes -= std::min(bytes, s.images.front().img->rgba.size());
+        s.images.erase(s.images.begin());
+    }
 }
 
 App::GpuImage* App::EnsureGpuImage(ID3D12GraphicsCommandList* cl, amber::Session& s,
@@ -9943,7 +10090,7 @@ void App::PreviewRemoteFileAt(int row, int col)
         const Cell& cell = g.ViewCell(row, c);
         if (cell.flags & CellWideTail)
             continue;
-        AppendUtf8(line, (cell.cp == 0) ? U' ' : cell.cp);
+        amber::AppendClusterUtf8(line, (cell.cp == 0) ? U' ' : cell.cp);
     }
     // Token boundaries: whitespace and the usual listing decorations.
     auto isSep = [](char ch) { return ch == ' ' || ch == '\t' || ch == '"' || ch == '\'' ||
@@ -10726,7 +10873,7 @@ std::string App::RowText(const amber::Session& s, uint64_t rowId) const
         const Cell& cell = g.AbsCell(abs, c);
         if (cell.flags & CellWideTail)
             continue;
-        AppendUtf8(line, (cell.cp == 0) ? U' ' : cell.cp);
+        amber::AppendClusterUtf8(line, (cell.cp == 0) ? U' ' : cell.cp);
     }
     while (!line.empty() && (line.back() == ' ' || line.back() == '\t'))
         line.pop_back();

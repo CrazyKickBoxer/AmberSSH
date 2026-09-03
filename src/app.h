@@ -272,6 +272,9 @@ private:
                    uint32_t onFill = 0);
     std::string SkinCase(const std::string& s);
     void OnMouseMove(int px, int py);
+    // OSC 8: the target under the pointer, for the status bar (see the .cpp).
+    void UpdateLinkHover(amber::Session& s, int px, int py);
+    std::string m_hoverLink;
     void OnWheel(int delta, bool ctrl);
     // Terminal mouse reporting (?1000/?1002/?1003, SGR ?1006): translates a
     // mouse event into an escape report for the remote app. Returns true
@@ -495,6 +498,13 @@ private:
     std::vector<GpuImage> m_gpuImages;
     std::vector<uint32_t> m_imageSrvPool;
     int OnInlineImage(amber::Session& s, amber::DecodedImage&& img, int cols, int rows);
+    // Inline-image lifetime. A remote program must not be able to grow this
+    // without limit, so a session's images are bounded by a count, a byte
+    // budget AND the scrollback they are anchored to.
+    static constexpr size_t kMaxImagesPerSession = 64;
+    static constexpr size_t kImageByteBudget = 96u * 1024u * 1024u;
+    static size_t ImageBytes(const amber::Session& s);
+    void EvictImages(amber::Session& s);
     void DrawInlineImages(ID3D12GraphicsCommandList* cl, FrameContext& frame,
                           D3D12_GPU_VIRTUAL_ADDRESS cb);
     GpuImage* EnsureGpuImage(ID3D12GraphicsCommandList* cl, amber::Session& s,

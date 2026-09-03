@@ -54,6 +54,8 @@ public:
     // --- parser-facing operations ---------------------------------------
     void SetAutowrap(bool on) { m_autowrap = on; }
     void PutChar(char32_t cp, const Cell& brush, bool insertMode);
+    // Attaches a combining mark to an already-drawn cell (see Graphemes.h).
+    void AttachMark(int x, int y, char32_t mark);
     void LineFeed();
     void CarriageReturn() { m_curX = 0; m_wrapPending = false; }
     void Backspace();

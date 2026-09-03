@@ -1,5 +1,6 @@
 #include "grid.h"
 #include "charwidth.h"
+#include "Graphemes.h"
 
 #include <algorithm>
 
@@ -154,23 +155,101 @@ void Grid::ClearWideAt(int x, int y)
     }
 }
 
+// Adds a combining mark to the cell at (x, y), re-interning its cluster.
+// Refused interns (the table is full, or the cluster hit its length cap)
+// leave the cell exactly as it was: the base character stays correct and only
+// the mark is lost, which is the same degradation as before this existed.
+void Grid::AttachMark(int x, int y, char32_t mark)
+{
+    Cell& c = At(x, y);
+    // A mark can only attach to something that was drawn. A wide tail carries
+    // no ink of its own, so the mark belongs to its lead.
+    if (c.flags & CellWideTail)
+    {
+        if (x > 0)
+            AttachMark(x - 1, y, mark);
+        return;
+    }
+    std::u32string text;
+    if (amber::IsClusterAlias(c.cp))
+        text = amber::Clusters().Text(c.cp);
+    else
+        text.push_back(c.cp == 0 ? U' ' : c.cp);
+    if (text.empty())
+        return;
+    text.push_back(mark);
+    if (const char32_t alias = amber::Clusters().Intern(text))
+        c.cp = alias;
+}
+
 void Grid::PutChar(char32_t cp, const Cell& brush, bool insertMode)
 {
     int w = TermCharWidth(cp);
 
-    // Zero-width: variation selectors retro-flag the previous glyph's
-    // presentation; everything else (ZWJ, combining marks, format controls)
-    // is consumed without moving the cursor — matching the server's wcwidth.
+    // Zero-width: no cell of its own, matching the server's wcwidth. The
+    // variation selectors retro-flag the previous glyph's presentation; a
+    // combining mark ATTACHES to it, becoming part of that cell's cluster.
+    //
+    // Attaching is what makes "e" + U+0301 render and copy as "é". Before
+    // this the mark was dropped on the floor and the text was silently wrong.
     if (w == 0)
     {
-        if (m_lastX >= 0 && m_lastX < m_cols && m_lastY >= 0 && m_lastY < m_rows)
+        const bool haveLast = m_lastX >= 0 && m_lastX < m_cols &&
+                              m_lastY >= 0 && m_lastY < m_rows;
+        if (!haveLast)
+            return;
+        if (cp == 0xFE0F)
         {
-            if (cp == 0xFE0F)
-                At(m_lastX, m_lastY).flags |= CellEmojiVS;
-            else if (cp == 0xFE0E)
-                At(m_lastX, m_lastY).flags |= CellTextVS;
+            At(m_lastX, m_lastY).flags |= CellEmojiVS;
+            return;
         }
+        if (cp == 0xFE0E)
+        {
+            At(m_lastX, m_lastY).flags |= CellTextVS;
+            return;
+        }
+        if (amber::IsCombining(cp))
+            AttachMark(m_lastX, m_lastY, cp);
         return;
+    }
+
+    // A regional indicator following another one completes a flag. Both
+    // halves are width 1, so the pair occupies the same two columns joined or
+    // not — which is why this one CAN be merged without lying to the server
+    // about the cursor. The cluster goes in the first cell as a wide lead.
+    if (amber::IsRegionalIndicator(cp) && m_lastX >= 0 && m_lastX < m_cols &&
+        m_lastY >= 0 && m_lastY < m_rows && m_curX == m_lastX + 1 &&
+        m_curY == m_lastY && !m_wrapPending)
+    {
+        Cell& lead = At(m_lastX, m_lastY);
+        const char32_t base = amber::ClusterBase(lead.cp);
+        if (amber::IsRegionalIndicator(base) && !(lead.flags & CellWideLead))
+        {
+            std::u32string text;
+            if (amber::IsClusterAlias(lead.cp))
+                text = amber::Clusters().Text(lead.cp);
+            else
+                text.push_back(lead.cp);
+            text.push_back(cp);
+            if (const char32_t alias = amber::Clusters().Intern(text))
+            {
+                lead.cp = alias;
+                lead.flags |= CellWideLead;
+                Cell tail = brush;
+                tail.cp = U' ';
+                tail.flags = CellWideTail;
+                At(m_curX, m_curY) = tail;
+                m_lastX = m_curX - 1;   // the flag stays the "last" cell
+                if (m_curX + 1 >= m_cols)
+                {
+                    m_curX = m_cols - 1;
+                    m_wrapPending = true;
+                }
+                else
+                    ++m_curX;
+                return;
+            }
+        }
     }
 
     if (m_wrapPending && m_autowrap)
@@ -556,7 +635,7 @@ std::string Grid::GetText(int r0, int c0, int r1, int c1) const
             const Cell& cell = ViewCell(r, c);
             if (cell.flags & CellWideTail)
                 continue;   // second half of a wide char — no text of its own
-            AppendUtf8(line, cell.cp ? cell.cp : U' ');
+            amber::AppendClusterUtf8(line, cell.cp ? cell.cp : U' ');
             // Presentation selectors are stored as flags, not cells — re-emit
             // them so a copied ❤️ pastes as the colour form elsewhere.
             if (cell.flags & CellEmojiVS)

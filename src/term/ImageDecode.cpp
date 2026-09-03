@@ -16,6 +16,19 @@ namespace amber
 namespace
 {
 constexpr int kMaxDim = 4096;
+// A dimension cap alone is not a size cap: 4096 x 4096 RGBA is 64 MB, and a
+// server can send those as fast as the link allows. The pixel budget is the
+// real bound on a single decode, and it is checked BEFORE the buffer is
+// allocated — including for PNG, where a few kilobytes of deflate can ask for
+// a hundred megabytes of bitmap.
+constexpr size_t kMaxPixels = 8u * 1024u * 1024u;   // 8 Mpx = 32 MB of RGBA
+
+bool TooBig(int w, int h)
+{
+    if (w <= 0 || h <= 0 || w > kMaxDim || h > kMaxDim)
+        return true;
+    return static_cast<size_t>(w) * static_cast<size_t>(h) > kMaxPixels;
+}
 
 struct Rgb { uint8_t r, g, b; };
 
@@ -57,6 +70,12 @@ bool DecodeSixel(const std::string& p, DecodedImage& out)
         int nw = std::max(w, std::min(kMaxDim, std::max(nx, 64)));
         int nh = std::max(h, std::min(kMaxDim, std::max(ny, 64)));
         if (nw == w && nh == h) return false;
+        // Sixel grows its canvas as it plots, so the budget has to be
+        // enforced on every growth, not once at the end. Refusing here stops
+        // plotting outside what has already been allocated; the image is
+        // truncated rather than the process ballooning.
+        if (static_cast<size_t>(nw) * static_cast<size_t>(nh) > kMaxPixels)
+            return false;
         std::vector<uint8_t> nb(static_cast<size_t>(nw) * nh * 4, 0);
         for (int row = 0; row < h; ++row)
             memcpy(&nb[static_cast<size_t>(row) * nw * 4], &buf[static_cast<size_t>(row) * w * 4],
@@ -184,7 +203,7 @@ bool DecodePng(const uint8_t* data, size_t len, DecodedImage& out)
         return false;
     UINT w = 0, h = 0;
     conv->GetSize(&w, &h);
-    if (!w || !h || w > kMaxDim || h > kMaxDim)
+    if (TooBig(static_cast<int>(w), static_cast<int>(h)))
         return false;
     out.w = static_cast<int>(w);
     out.h = static_cast<int>(h);
@@ -194,7 +213,7 @@ bool DecodePng(const uint8_t* data, size_t len, DecodedImage& out)
 
 bool DecodeKittyRaw(const uint8_t* data, size_t len, int format, int w, int h, DecodedImage& out)
 {
-    if (w <= 0 || h <= 0 || w > kMaxDim || h > kMaxDim)
+    if (TooBig(w, h))
         return false;
     size_t bpp = (format == 24) ? 3 : 4;
     if (len < static_cast<size_t>(w) * h * bpp)
