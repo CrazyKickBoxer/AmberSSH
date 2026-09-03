@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "transport.h"
+#include "../remote/XAuth.h"
 
 #include <cstdio>
 #include <cstring>
@@ -127,6 +128,14 @@ struct FwdTunnel
     std::vector<uint8_t> toSock;     // channel → socket backlog
     bool sockEof = false;
     bool chanEof = false;
+
+    // X11 only: the first bytes from the channel are the X11 setup packet,
+    // which carries the cookie the remote host was given. It is verified and
+    // the real local cookie substituted before anything reaches the display —
+    // see src/remote/XAuth.h for why that substitution is the point.
+    bool x11 = false;
+    bool x11Ready = false;           // the setup packet has been dealt with
+    std::vector<uint8_t> x11Setup;   // buffered until the whole packet is in
 };
 
 void SetNonblock(SOCKET s)
@@ -339,7 +348,8 @@ bool SocksStep(FwdTunnel& t)
 // One pump step for every live tunnel; opens pending channels, moves bytes in
 // both directions, and erases finished ones.
 void PumpTunnels(std::vector<FwdTunnel>& tunnels, LIBSSH2_SESSION* session,
-                 bool& activity)
+                 bool& activity, const std::vector<uint8_t>& x11Fake,
+                 const std::vector<uint8_t>& x11Real, std::string* x11Error)
 {
     uint8_t buf[32768];
     for (auto it = tunnels.begin(); it != tunnels.end();)
@@ -426,7 +436,46 @@ void PumpTunnels(std::vector<FwdTunnel>& tunnels, LIBSSH2_SESSION* session,
                 t.ch, reinterpret_cast<char*>(buf), sizeof(buf));
             if (n > 0)
             {
-                t.toSock.insert(t.toSock.end(), buf, buf + n);
+                // An X11 channel opens with the setup packet carrying the
+                // cookie the remote host was handed. It is checked here, and
+                // the real local cookie put in its place, before one byte
+                // reaches the display. A channel that fails the check is
+                // closed — never forwarded unauthenticated.
+                if (t.x11 && !t.x11Ready)
+                {
+                    t.x11Setup.insert(t.x11Setup.end(), buf, buf + n);
+                    std::vector<uint8_t> rewritten;
+                    if (t.x11Setup.size() > amber::kMaxSetupBytes)
+                    {
+                        if (x11Error)
+                            *x11Error = "X11: oversized setup packet refused";
+                        drop = true;
+                    }
+                    else
+                    {
+                        switch (amber::RewriteSetup(t.x11Setup, x11Fake,
+                                                    x11Real, rewritten))
+                        {
+                        case amber::XAuthVerdict::NeedMore:
+                            break;      // keep buffering
+                        case amber::XAuthVerdict::Rejected:
+                            if (x11Error)
+                                *x11Error = "X11: connection refused — the "
+                                            "cookie did not match";
+                            drop = true;
+                            break;
+                        case amber::XAuthVerdict::Rewritten:
+                            t.toSock.insert(t.toSock.end(), rewritten.begin(),
+                                            rewritten.end());
+                            t.x11Setup.clear();
+                            t.x11Setup.shrink_to_fit();
+                            t.x11Ready = true;
+                            break;
+                        }
+                    }
+                }
+                else
+                    t.toSock.insert(t.toSock.end(), buf, buf + n);
                 activity = true;
             }
             else if (n == 0 && libssh2_channel_eof(t.ch))
@@ -590,6 +639,14 @@ void SshSession::RequestResize(int cols, int rows)
     m_resizePending.store(true);
 }
 
+void SshSession::AddForward(const std::string& spec)
+{
+    if (spec.empty())
+        return;
+    std::lock_guard<std::mutex> lock(m_fwdMutex);
+    m_pendingForwards.push_back(spec);
+}
+
 void SshSession::Disconnect()
 {
     m_stop.store(true);
@@ -650,6 +707,11 @@ void SshSession::ThreadMain(SshConfig cfg)
     LIBSSH2_KNOWNHOSTS* kh = nullptr;
     std::string closeReason = "connection closed";
     std::vector<LIBSSH2_CHANNEL*> x11Pending;   // opened by the server (X11)
+    // Decoded once, so no hex parsing happens per forwarded connection.
+    const std::vector<uint8_t> x11FakeCookie =
+        amber::HexToBytes(cfg.x11FakeCookieHex);
+    const std::vector<uint8_t> x11RealCookie =
+        amber::HexToBytes(cfg.x11RealCookieHex);
     m_remoteEcho.store(true);
     m_cleanClose.store(false);
 
@@ -1039,8 +1101,23 @@ void SshSession::ThreadMain(SshConfig cfg)
             libssh2_session_callback_set2(
                 session, LIBSSH2_CALLBACK_X11,
                 reinterpret_cast<libssh2_cb_generic*>(&X11Callback));
-            if (libssh2_channel_x11_req_ex(channel, 0, nullptr, nullptr, 0) != 0)
-                PostEvent(SshEventType::Status, "X11 forwarding refused by the server");
+            // The remote host is given the FAKE cookie and never the real one.
+            // Without a fake cookie there is nothing to authenticate a
+            // forwarded connection with, so forwarding is refused rather than
+            // requested unauthenticated — see src/remote/XAuth.h.
+            if (x11FakeCookie.empty())
+                PostEvent(SshEventType::Status,
+                          "X11 forwarding not requested: no cookie could be "
+                          "generated");
+            else if (libssh2_channel_x11_req_ex(
+                         channel, 0, amber::kMitMagicCookie,
+                         cfg.x11FakeCookieHex.c_str(), 0) != 0)
+                PostEvent(SshEventType::Status,
+                          "X11 forwarding refused by the server");
+            else if (x11RealCookie.empty())
+                PostEvent(SshEventType::Status,
+                          "X11: no local cookie found — the X server's own "
+                          "access control decides who may connect");
         }
     }
     // Advertise 24-bit color. Many sshd configs refuse SetEnv for anything but
@@ -1100,11 +1177,42 @@ void SshSession::ThreadMain(SshConfig cfg)
     {
         bool activity = false;
 
+        // Forwards raised while the session is up (RemoteApp). Drained here so
+        // the listener is created on this thread like every other one, and a
+        // busy port is reported rather than silently ignored.
+        {
+            std::vector<std::string> add;
+            {
+                std::lock_guard<std::mutex> lock(m_fwdMutex);
+                add.swap(m_pendingForwards);
+            }
+            for (const std::string& spec : add)
+            {
+                std::vector<FwdListener> more;
+                std::vector<std::pair<int, std::pair<std::string, int>>> ignored;
+                std::string err;
+                ParseForwards(spec, more, ignored, err);
+                if (!err.empty())
+                    PostEvent(SshEventType::Status, "forward failed:" + err);
+                for (FwdListener& l : more)
+                    listeners.push_back(l);
+                if (more.empty() && err.empty())
+                    PostEvent(SshEventType::Status,
+                              "forward not understood: " + spec);
+                else if (!more.empty())
+                    PostEvent(SshEventType::Status, "tunnel up: " + spec);
+            }
+        }
+
         // Tunnels: accept new local/SOCKS clients, pump existing ones.
         if (!listeners.empty() || !tunnels.empty())
         {
             AcceptForwards(listeners, tunnels);
-            PumpTunnels(tunnels, session, activity);
+            std::string x11Err;
+            PumpTunnels(tunnels, session, activity, x11FakeCookie, x11RealCookie,
+                        &x11Err);
+            if (!x11Err.empty())
+                PostEvent(SshEventType::Status, x11Err);
         }
 
         // X11 channels the server opened: connect each to the local display.
@@ -1125,6 +1233,10 @@ void SshSession::ThreadMain(SshConfig cfg)
             t.ch = xc;
             libssh2_channel_set_blocking(xc, 0);
             t.socksState = 3;
+            // The setup packet on this channel carries the cookie the remote
+            // host was given, and is checked before anything reaches the
+            // display.
+            t.x11 = true;
             tunnels.push_back(std::move(t));
         }
 

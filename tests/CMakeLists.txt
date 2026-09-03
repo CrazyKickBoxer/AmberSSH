@@ -24,6 +24,8 @@ add_executable(AmberTests
     HostSigilTests.cpp
     BlastRadiusTests.cpp
     PrivacyCloakTests.cpp
+    XAuthTests.cpp
+    RemoteDisplayTests.cpp
 
     ${CMAKE_SOURCE_DIR}/src/term/vtparser.cpp
     ${CMAKE_SOURCE_DIR}/src/term/grid.cpp
@@ -48,6 +50,8 @@ add_executable(AmberTests
     ${CMAKE_SOURCE_DIR}/src/security/HostSigil.cpp
     ${CMAKE_SOURCE_DIR}/src/security/BlastRadius.cpp
     ${CMAKE_SOURCE_DIR}/src/security/PrivacyCloak.cpp
+    ${CMAKE_SOURCE_DIR}/src/remote/XAuth.cpp
+    ${CMAKE_SOURCE_DIR}/src/remote/RemoteDisplay.cpp
 )
 
 target_include_directories(AmberTests PRIVATE ${CMAKE_SOURCE_DIR}/src)

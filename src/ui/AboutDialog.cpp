@@ -18,7 +18,7 @@ constexpr wchar_t kClassName[] = L"AmberSSHAbout";
 // Client size in logical pixels. The mark is square and generous, and the text
 // column is wide enough that the description sits on two comfortable lines.
 constexpr int kClientW = 660;
-constexpr int kClientH = 330;
+constexpr int kClientH = 408;
 constexpr int kLogoPx = 176;
 
 struct AboutState
@@ -223,12 +223,22 @@ void PaintAbout(HWND hwnd, AboutState& st)
     y += tm.tmHeight + Px(14, dpi);
 
     // ---- description
-    RECT dr = { tx, y, rc.right - pad, y + Px(60, dpi) };
+    RECT dr = { tx, y, rc.right - pad, y + Px(42, dpi) };
     SetTextColor(dc, st.pal.textDim);
     DrawTextW(dc,
               L"A next-generation SSH terminal where everything is rendered "
               L"by particles.",
               -1, &dr, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+    y += Px(46, dpi);
+
+    // ---- credits. Attribution is a licence obligation for most of what
+    // AmberSSH links, and the About box is where a user looks for it. The
+    // full terms are in THIRD-PARTY-NOTICES.md next to the executable.
+    SelectObject(dc, st.smallFont);
+    SetTextColor(dc, st.pal.textDis);
+    RECT cr2 = { tx, y, rc.right - pad, y + Px(84, dpi) };
+    DrawTextW(dc, kProductCredits, -1, &cr2,
+              DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
 
     // ---- copyright, on the baseline of the panel
     SelectObject(dc, st.smallFont);

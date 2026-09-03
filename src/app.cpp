@@ -14,6 +14,8 @@
 #include "ui/AboutDialog.h"
 #include "ui/SafetyDialog.h"
 #include "security/PrivacyCloak.h"
+#include "remote/XAuth.h"
+#include "remote/RemoteDisplay.h"
 #include "ui/SkinDraw.h"
 #include "ui/SkinFinish.h"
 #include "platform/ConPty.h"
@@ -153,6 +155,13 @@ enum MenuId : int
     IdmCloakHome = 40172,          // also mask home-directory names
     IdmRiskFirst = 40173,          // +0..4 → RiskPolicy Off..Everything
     IdmRiskLast = IdmRiskFirst + 4,
+    // Remote display. AmberSSH ships no X server and no RDP client; these find
+    // what is installed and hand off to it (docs/REMOTE-DISPLAY.md).
+    IdmXServerReport = 40178,      // what was found, and under what terms
+    IdmXServerStart = 40179,       // launch the best one that is installed
+    IdmRemoteApp = 40180,          // tunnel + start Weston + the RDP client
+    IdmRemoteAppTunnel = 40181,    // tunnel + client only (a running service)
+    IdmRemoteDisplayDocs = 40182,  // open the runbook
     IdmWorkspaceSave = 40132,      // save the open sessions as a workspace
     IdmWorkspaceDelete = 40133,
     IdmWorkspaceFirst = 40800,     // +0..23 → m_workspaceNames
@@ -5840,6 +5849,22 @@ void App::BuildMenus()
                     L"Confirm &Risky Commands");
         AppendMenuW(file, MF_POPUP, reinterpret_cast<UINT_PTR>(safety), L"&Safety");
     }
+    {
+        // Remote display. Nothing here is bundled: AmberSSH finds an X server
+        // or an RDP client that is already installed and hands off to it.
+        HMENU rd = CreatePopupMenu();
+        AppendMenuW(rd, MF_STRING, IdmXServerReport, L"&Find X Servers");
+        AppendMenuW(rd, MF_STRING, IdmXServerStart, L"&Start the X Server");
+        AppendMenuW(rd, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(rd, MF_STRING, IdmRemoteApp,
+                    L"&Wayland RemoteApp (start Weston)...");
+        AppendMenuW(rd, MF_STRING, IdmRemoteAppTunnel,
+                    L"Wayland RemoteApp (&tunnel only)...");
+        AppendMenuW(rd, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(rd, MF_STRING, IdmRemoteDisplayDocs, L"Setup &Guide...");
+        AppendMenuW(file, MF_POPUP, reinterpret_cast<UINT_PTR>(rd),
+                    L"Remote &Display");
+    }
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IdmCommandPalette,
                 L"Command &Palette...\tCtrl+Shift+P");
@@ -6382,6 +6407,24 @@ bool App::HandleMenuCommand(int id)
                       ? "Cloak: home directory names are masked too."
                       : "Cloak: home directory names are shown.");
         return true;
+    case IdmXServerReport:    ReportXServers();         return true;
+    case IdmXServerStart:     StartXServer();           return true;
+    case IdmRemoteApp:        LaunchRemoteApp(true);    return true;
+    case IdmRemoteAppTunnel:  LaunchRemoteApp(false);   return true;
+    case IdmRemoteDisplayDocs:
+    {
+        // The runbook next to the binary, or the one in the source tree when
+        // running from a build directory.
+        std::filesystem::path doc =
+            std::filesystem::path(ExeDir()) / "docs" / "REMOTE-DISPLAY.md";
+        std::error_code ec;
+        if (!std::filesystem::exists(doc, ec))
+            doc = std::filesystem::path(ExeDir()).parent_path().parent_path() /
+                  "docs" / "REMOTE-DISPLAY.md";
+        ShellExecuteW(m_hwnd, L"open", doc.wstring().c_str(), nullptr, nullptr,
+                      SW_SHOWNORMAL);
+        return true;
+    }
     case IdmLogSession:       ToggleLogging();          return true;
     case IdmSearchScrollback: SearchScrollbackPrompt(); return true;
     case IdmSearchNext:       SearchNext();             return true;
@@ -7772,6 +7815,11 @@ void App::BuildPaletteItems()
                 amber::RiskPolicyName(static_cast<amber::RiskPolicy>(i)) +
                 (static_cast<int>(m_riskPolicy) == i ? "  (current)" : ""),
             IdmRiskFirst + i);
+    add("Remote Display: Find X Servers", IdmXServerReport);
+    add("Remote Display: Start the X Server", IdmXServerStart);
+    add("Remote Display: Wayland RemoteApp (start Weston)", IdmRemoteApp);
+    add("Remote Display: Wayland RemoteApp (tunnel only)", IdmRemoteAppTunnel);
+    add("Remote Display: Setup Guide", IdmRemoteDisplayDocs);
     add("Previous Command Mark", IdmPrevCommand);
     add("Next Command Mark", IdmNextCommand);
     add("Paste", IdmPaste);
@@ -10852,6 +10900,20 @@ void App::BuildSshConfig(const amber::ConnectionProfile& p, SshConfig& cfg) cons
     cfg.agentForward = p.agentForward;
     cfg.x11Forward = p.x11Forward;
     cfg.x11Display = p.x11Display;
+    if (cfg.x11Forward)
+    {
+        // Untrusted forwarding: a fresh fake cookie per session goes to the
+        // remote host, and the real one — read from .Xauthority — is
+        // substituted locally as each connection opens. A remote host that is
+        // compromised therefore never holds a credential that opens this
+        // display, during the session or after it.
+        cfg.x11FakeCookieHex = amber::MakeCookieHex();
+        const amber::XDisplay d = amber::ParseDisplay(cfg.x11Display);
+        const std::vector<amber::XAuthEntry> entries =
+            amber::ParseXAuthority(amber::LoadXAuthorityFile());
+        cfg.x11RealCookieHex =
+            amber::BytesToHex(amber::CookieForDisplay(entries, d));
+    }
     // Telnet / Rlogin / Serial
     cfg.telnetPassive = p.telnetPassive;
     cfg.telnetNewline = p.telnetNewline;
@@ -11883,6 +11945,128 @@ void App::RebuildCloak(amber::Session& s, int rows, int cols)
             ++s.cloakCount;
         }
     }
+}
+
+// ----------------------------------------------------------- remote display
+void App::ReportXServers()
+{
+    const std::vector<amber::XServerInfo> found =
+        amber::RankXServers(amber::ScanForXServers(),
+                            amber::DetectRunningDisplay());
+    if (found.empty())
+    {
+        SetStatus("No X server found. Install one (VcXsrv, X410, Cygwin/X) — "
+                  "AmberSSH does not bundle one. File > Remote Display > "
+                  "Setup Guide.",
+                  10.0);
+        return;
+    }
+    const amber::XServerInfo& best = found.front();
+    std::string msg = best.running
+                          ? best.name + " is running on display :" +
+                                std::to_string(best.display)
+                          : best.name + " is installed but not running";
+    // The terms are named because the user is choosing what to install on
+    // their own machine, and because AmberSSH bundling none of these is the
+    // reason those terms never apply to it.
+    if (!best.licence.empty())
+        msg += "  (" + best.licence + ")";
+    if (found.size() > 1)
+        msg += "  — " + std::to_string(found.size() - 1) + " more found";
+    SetStatus(msg, 10.0);
+}
+
+void App::StartXServer()
+{
+    const int running = amber::DetectRunningDisplay();
+    if (running >= 0)
+    {
+        SetStatus("An X server is already listening on display :" +
+                      std::to_string(running) + ".",
+                  5.0);
+        return;
+    }
+    const std::vector<amber::XServerInfo> found =
+        amber::RankXServers(amber::ScanForXServers(), -1);
+    for (const amber::XServerInfo& i : found)
+    {
+        const std::string args = amber::XServerLaunchArgs(i.kind, 0);
+        if (args.empty() || i.exePath.empty())
+            continue;
+        // Access control stays ON — see XServerLaunchArgs. Started detached:
+        // the X server outlives this session on purpose, because closing a tab
+        // should not take the user's windows with it.
+        const std::wstring exe = WideFromUtf8(i.exePath);
+        const std::wstring wargs = WideFromUtf8(args);
+        const HINSTANCE rc = ShellExecuteW(m_hwnd, L"open", exe.c_str(),
+                                           wargs.c_str(), nullptr, SW_SHOWNORMAL);
+        if (reinterpret_cast<INT_PTR>(rc) > 32)
+        {
+            SetStatus("Starting " + i.name + " on display :0 …", 6.0);
+            return;
+        }
+    }
+    SetStatus("Nothing to start: no X server AmberSSH knows how to launch is "
+              "installed.",
+              8.0);
+}
+
+void App::LaunchRemoteApp(bool startWeston)
+{
+    if (!HasSession())
+        return;
+    amber::Session& s = Foc();
+    if (s.state != amber::SessionState::Connected || s.diagnostic ||
+        s.profile.protocol != amber::Protocol::Ssh)
+    {
+        SetStatus("RemoteApp needs a connected SSH session.", 5.0);
+        return;
+    }
+
+    amber::RemoteAppOptions o;
+    o.startWeston = startWeston;
+    const amber::RemoteAppPlan p = amber::PlanRemoteApp(o);
+    if (!p.valid)
+    {
+        SetStatus("RemoteApp: " + p.why, 6.0);
+        return;
+    }
+
+    // 1. The tunnel. Bound to loopback, always — the spec carries the bind
+    //    address explicitly so it cannot default to every interface.
+    s.ssh.AddForward(p.forwardSpec);
+
+    // 2. The compositor, if asked for. Sent as a command line the user can see
+    //    in their scrollback rather than executed invisibly: it runs on their
+    //    machine and they are entitled to read it first.
+    if (startWeston && !p.remoteCommand.empty())
+    {
+        const std::string line = p.remoteCommand + " &\r";
+        s.ssh.Send(line.data(), line.size());
+    }
+
+    // 3. The client. mstsc ships with Windows, so this route bundles nothing
+    //    and raises no licensing question at all.
+    const std::wstring rdp = amber::WriteTempRdpFile(amber::RdpFile(p, false));
+    HINSTANCE rc = nullptr;
+    if (!rdp.empty())
+        rc = ShellExecuteW(m_hwnd, L"open", L"mstsc.exe",
+                           (L"\"" + rdp + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
+    else
+        rc = ShellExecuteW(m_hwnd, L"open", L"mstsc.exe",
+                           WideFromUtf8(amber::MstscArgs(p)).c_str(), nullptr,
+                           SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(rc) <= 32)
+    {
+        SetStatus("RemoteApp: could not start mstsc.exe. The tunnel is up on "
+                  "127.0.0.1:" + std::to_string(p.localPort) +
+                      " for any RDP client.",
+                  10.0);
+        return;
+    }
+    SetStatus("RemoteApp: tunnel on 127.0.0.1:" + std::to_string(p.localPort) +
+                  " → the host's own 127.0.0.1:" + std::to_string(p.remotePort),
+              8.0);
 }
 
 void App::InvalidateCloak()

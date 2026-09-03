@@ -72,6 +72,16 @@ struct SshConfig
     bool agentForward = false;
     bool x11Forward = false;
     std::string x11Display = "localhost:0";
+    // Untrusted X11 forwarding (see src/remote/XAuth.h). The FAKE cookie is
+    // what the remote host is told; the REAL one is substituted into each X11
+    // connection here, so a compromised remote host never learns the
+    // credential that opens the display. Both are lowercase hex.
+    //
+    // An empty real cookie means none was found in .Xauthority: the fake is
+    // still verified, but the packet is forwarded unchanged and the local X
+    // server's own access control decides. Weaker, and reported to the user.
+    std::string x11FakeCookieHex;
+    std::string x11RealCookieHex;
 
     // ---- Telnet / Rlogin ---------------------------------------------------
     bool telnetPassive = false;
@@ -128,6 +138,14 @@ public:
     // means packets are being lost right now.
     uint32_t RetransBytes() const { return m_retrans.load(); }
     void RequestResize(int cols, int rows);
+    // Adds a local forward to an already-running session, in the same syntax
+    // the profile's `forwards` field uses. Thread-safe; the worker picks it up
+    // on its next pass and reports success or "port busy" as a Status event.
+    //
+    // Exists so RemoteApp can raise its tunnel without making the user
+    // reconnect. It only ever ADDS: nothing here can remove a forward the user
+    // configured, and a listener still binds loopback only.
+    void AddForward(const std::string& spec);
     void Disconnect();
     bool Running() const { return m_running.load(); }
     // True when the far end echoes what we type (SSH/Rlogin always; Telnet
@@ -175,6 +193,10 @@ private:
     std::atomic<int> m_pendingCols{ 0 };
     std::atomic<int> m_pendingRows{ 0 };
     std::atomic<bool> m_resizePending{ false };
+    // Forwards added while the session is up (RemoteApp). Drained by the
+    // worker; the mutex is held only long enough to move the strings out.
+    std::mutex m_fwdMutex;
+    std::vector<std::string> m_pendingForwards;
 
     std::atomic<uintptr_t> m_socket{ ~0ull };   // for abortive close on cancel
     std::atomic<uintptr_t> m_serial{ 0 };       // COM handle for abort

@@ -725,6 +725,15 @@ private:
     // status bar, a notification. Returns the line unchanged when off.
     std::string CloakText(const std::string& line) const;
 
+    // ---- remote display ----------------------------------------------------
+    // AmberSSH bundles no X server and no RDP client. These find what is
+    // already installed and hand off to it, which is why the GPL on VcXsrv and
+    // the non-free terms on current Xming never reach this codebase.
+    // See docs/REMOTE-DISPLAY.md.
+    void ReportXServers();                  // what is installed, and its terms
+    void StartXServer();                    // launch the best one found
+    void LaunchRemoteApp(bool startWeston); // tunnel, Weston, then the client
+
     // ---- jump between commands in the scrollback ---------------------------
     // Steps the view to the previous/next prompt mark, naming the command it
     // lands on in the status bar. dir < 0 = older, dir > 0 = newer.
