@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AmberSSH User Manual</title>
+<style>
+  @page { size: A4; margin: 18mm 18mm 20mm 18mm; }
+  @page cover { margin: 0; }
+  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  html, body { margin: 0; padding: 0; }
+  body { font: 10.6pt/1.5 Georgia, "Times New Roman", serif; color: #1E1A16; background: #fff; }
+  h1, h2, h3, h4 { font-family: Bahnschrift, "Segoe UI", sans-serif; color: #1E1A16; line-height: 1.15; }
+  h1 { font-size: 24pt; font-weight: 600; margin: 0 0 4pt; letter-spacing: -0.01em; }
+  h1 small { display: block; font: 500 9pt Bahnschrift, sans-serif; letter-spacing: .16em; text-transform: uppercase; color: #A8730E; margin-bottom: 10pt; }
+  h2 { font-size: 14pt; font-weight: 600; margin: 18pt 0 6pt; border-bottom: 1.5pt solid #E8B23C; padding-bottom: 3pt; }
+  h3 { font-size: 11pt; font-weight: 600; margin: 12pt 0 4pt; color: #3A3128; }
+  p { margin: 0 0 7pt; }
+  ul, ol { margin: 0 0 8pt 18pt; padding: 0; }
+  li { margin: 0 0 3pt; }
+  code, kbd, .mono { font-family: "Cascadia Mono", Consolas, monospace; font-size: 9.2pt; }
+  code { background: #F4EFE3; padding: 0 3pt; border-radius: 2pt; }
+  kbd { background: #1E1A16; color: #FFD27A; padding: 0.5pt 4pt; border-radius: 2.5pt; font-size: 8.6pt; white-space: nowrap; }
+  pre { font-family: "Cascadia Mono", Consolas, monospace; font-size: 8.6pt; line-height: 1.45; background: #17120D; color: #FFD27A; padding: 8pt 10pt; border-radius: 3pt; margin: 0 0 9pt; white-space: pre-wrap; }
+  table { border-collapse: collapse; width: 100%; margin: 4pt 0 10pt; font-size: 9.4pt; page-break-inside: auto; }
+  th { text-align: left; font: 600 8.4pt Bahnschrift, sans-serif; letter-spacing: .06em; text-transform: uppercase; color: #6E5A33; border-bottom: 1pt solid #C9B27A; padding: 4pt 6pt 3pt; }
+  td { padding: 3.5pt 6pt; border-bottom: 0.5pt solid #E6DEC9; vertical-align: top; }
+  tr { page-break-inside: avoid; }
+  td:first-child { white-space: nowrap; }
+  .note { border-left: 3pt solid #E8B23C; background: #FBF6E9; padding: 6pt 9pt; margin: 6pt 0 9pt; font-size: 9.8pt; }
+  .warn { border-left: 3pt solid #B3202A; background: #FBEDEC; padding: 6pt 9pt; margin: 6pt 0 9pt; font-size: 9.8pt; }
+  .chapter { page-break-before: always; }
+  .cols2 { column-count: 2; column-gap: 18pt; }
+  .toc { column-count: 2; column-gap: 24pt; font-size: 10pt; }
+  .toc ol { margin-left: 16pt; }
+  .toc li { margin: 0 0 2pt; }
+  .small { font-size: 9pt; color: #5A4E3E; }
+  .skin { margin: 0 0 6pt; }
+  .skin b { font-family: Bahnschrift, sans-serif; font-weight: 600; }
+
+  /* ---- cover ---- */
+  .cover { page: cover; width: 210mm; height: 297mm; background: #000; color: #FFD27A; position: relative; page-break-after: always; overflow: hidden; }
+  .cover img { width: 210mm; display: block; margin-top: 42mm; }
+  .cover .meta { position: absolute; left: 18mm; bottom: 22mm; font-family: Bahnschrift, sans-serif; color: #C9A45C; font-size: 9pt; letter-spacing: .12em; text-transform: uppercase; line-height: 1.9; }
+  .cover .meta b { color: #FFD27A; font-weight: 500; }
+  .cover .line { position: absolute; left: 18mm; right: 18mm; bottom: 44mm; height: 0.6pt; background: #6E5A33; }
+  .cover .blurb { position: absolute; left: 18mm; right: 18mm; top: 176mm; font: italic 12pt/1.6 Georgia, serif; color: #C9A45C; max-width: 120mm; }
+</style>
+</head>
+<body>
+
+<!-- ================================================================ COVER -->
+<section class="cover">
+  <img src="manual_hero.png" alt="AmberSSH">
+  <div class="blurb">A native Windows 11 SSH terminal where every character in the viewport is drawn as a constellation of glowing GPU particles — and the text underneath stays exact.</div>
+  <div class="line"></div>
+  <div class="meta">
+    <b>AmberSSH · Version 1.0.0 · User Manual</b><br>
+    C++20 · Win32 · DirectX 12 · DirectWrite · libssh2<br>
+    September 2026
+  </div>
+</section>
+
+<!-- ============================================================= CONTENTS -->
+<h1><small>AmberSSH · User Manual</small>Contents</h1>
+<div class="toc">
+<ol>
+  <li>Introduction</li>
+  <li>Getting started</li>
+  <li>The window</li>
+  <li>Working in the terminal</li>
+  <li>Shell integration</li>
+  <li>The command journal</li>
+  <li>The command palette</li>
+  <li>Snippets and output triggers</li>
+  <li>The SFTP browser</li>
+  <li>Workspaces</li>
+  <li>Logging and recording</li>
+  <li>Port forwarding and jump hosts</li>
+  <li>Security</li>
+  <li>The look: appearance, themes and interface skins</li>
+  <li>Motion</li>
+  <li>Effects</li>
+  <li>Connection manager reference</li>
+  <li>Files and settings</li>
+  <li>Keyboard and mouse reference</li>
+  <li>Terminal compatibility</li>
+  <li>Building from source</li>
+  <li>Troubleshooting</li>
+</ol>
+</div>
+
+<!-- =========================================================== 1 INTRO -->
+<section class="chapter">
+<h1><small>Chapter 1</small>Introduction</h1>
+<p>AmberSSH is an SSH terminal for Windows 11. It speaks real SSH through libssh2, runs a real VT100/xterm-256color terminal over a genuine text-cell model, and then does something no other terminal does: it draws every glyph on screen as a small cloud of particles, simulated on the GPU, that assemble into letterforms, breathe, and scatter when the text changes.</p>
+<p>The idea that makes this work is simple and worth stating up front: <b>particles are presentation, never truth.</b> Underneath the renderer there is an ordinary grid of characters with scrollback, an alternate screen, a cursor and attributes. Selection, copy, search, the command journal and every other feature operate on that grid. Whatever the particles are doing at the moment you drag across a line, what lands on the clipboard is exactly what the server sent.</p>
+<p>Everything else in this manual — the fifteen interface skins, twenty-three arrival styles, the command journal, output folding, SFTP, workspaces — sits on top of that separation. Effects are subtle by default and every one of them can be turned off. The terminal has to stay readable; that is the whole point.</p>
+
+<h3>What you need</h3>
+<ul>
+  <li>Windows 11, x64.</li>
+  <li>A GPU with DirectX 12. Integrated graphics are fine at the default particle density; the higher densities want a discrete card.</li>
+  <li>An SSH server to talk to. AmberSSH also opens serial lines, Telnet and Rlogin, and can play back terminal recordings with no server at all.</li>
+</ul>
+
+<h3>How this manual is organised</h3>
+<p>Chapters 2–4 get you connected and working. Chapters 5–12 cover the features that make AmberSSH more than a terminal. Chapter 13 is security, read it once. Chapters 14–16 are the visual system. The rest is reference.</p>
+</section>
+
+<!-- ================================================= 2 GETTING STARTED -->
+<section class="chapter">
+<h1><small>Chapter 2</small>Getting started</h1>
+<h2>2.1 First run</h2>
+<p>AmberSSH is portable. Unzip it anywhere and run <code>AmberSSH.exe</code>. It keeps its own data under <code>%LOCALAPPDATA%\AmberSSH</code> (see Chapter 18) and writes nothing else to the machine.</p>
+<p>The <b>connection manager</b> opens first: a category tree on the left, settings for the selected category on the right, and a Saved Sessions list with Load, Save and Delete. If you have used PuTTY the layout will be familiar on purpose.</p>
+
+<h2>2.2 Opening a session</h2>
+<ol>
+  <li>On the <b>Session</b> page enter a host name or IP address and a port (22 for SSH).</li>
+  <li>Choose the connection type: SSH, Serial, Telnet or Rlogin.</li>
+  <li>On <b>Connection → Data</b> enter the username, or leave it for the server to prompt.</li>
+  <li>On <b>SSH → Auth</b> choose how to authenticate: password, a private key file (with its passphrase), keyboard-interactive, or an agent / Pageant.</li>
+  <li>Press <b>Open</b>.</li>
+</ol>
+<p>On first contact with a server AmberSSH shows the host, port, key algorithm and SHA-256 fingerprint and asks you to decide: accept once, accept and save, or cancel. The default is cancel. See Chapter 13 for what happens when a saved key later changes.</p>
+
+<h2>2.3 Saving a session</h2>
+<p>Fill in the settings, type a name in the Saved Sessions box and press <b>Save</b>. Every page's settings are stored with the profile. A saved session that remembers a password or passphrase stores the secret in the Windows Credential Manager, never in the profile file; the profile only records that a secret exists. <b>Load</b> restores a saved profile into the pages; <b>Delete</b> removes it along with its credentials.</p>
+
+<h2>2.4 Importing PuTTY and OpenSSH configurations</h2>
+<p><b>File → Import Profiles</b> (also in the command palette) reads PuTTY's saved sessions from the registry and hosts from your OpenSSH <code>config</code>, and creates a profile for each one it does not already have. PuTTY <code>.ppk</code> private keys are not loaded — convert them to OpenSSH format first; the Auth page says so explicitly rather than failing later.</p>
+
+<h2>2.5 Private keys</h2>
+<p>Keys must be in OpenSSH format, of the types your libssh2 build supports (ed25519, ECDSA and RSA are the usual set). Choose the file on the Auth page with <b>Browse…</b>, and enter the passphrase there if the key has one. A passphrase you choose to remember goes to the Credential Manager like a password.</p>
+
+<div class="note"><b>Windows Hello.</b> File → <b>Windows Hello for Stored Secrets</b> puts a Hello prompt (face, fingerprint or PIN) in front of every use of a remembered password or passphrase. If verification fails the stored secret is simply not used and you are asked to type it.</div>
+</section>
+
+<!-- ======================================================== 3 THE WINDOW -->
+<section class="chapter">
+<h1><small>Chapter 3</small>The window</h1>
+<h2>3.1 The title strip</h2>
+<p>AmberSSH draws its own title bar. From the left: the <b>hamburger</b> menu button (the application menu lives here — there is no conventional menu bar), the <b>session tabs</b> with an index tag and a close glyph each, the <b>+</b> button for a new session, and at the right the minimise, maximise and close buttons. On skins that number their tabs the tag is the tab's <kbd>Ctrl</kbd>+number shortcut.</p>
+<p>Background tabs show a small <b>activity spark</b> while their session is producing output and burn red for a few seconds after an output trigger fires (Chapter 8). With <b>Remote Vitals</b> on (File menu), the strip shows the remote host's CPU, memory and network figures for the active session.</p>
+
+<h2>3.2 The status line and status bar</h2>
+<p>The <b>status line</b> is the transient message strip at the foot of the terminal — "Copied 412 characters", "Workspace saved", host-key results and so on. The <b>status bar</b> (View → Status Bar) is a thin permanent bar with clickable entries for the command journal, quake mode and the other overlays; every skin draws it in its own style.</p>
+<p><kbd>F3</kbd> toggles the <b>debug overlay</b>: frame time, particle count, GPU timings and the renderer's state. <kbd>F2</kbd> toggles VSync.</p>
+
+<h2>3.3 Sessions and tabs</h2>
+<table>
+<tr><th>Shortcut</th><th>Action</th></tr>
+<tr><td><kbd>Ctrl+Shift+T</kbd></td><td>New connection (opens the connection manager in a new tab)</td></tr>
+<tr><td><kbd>Ctrl+Shift+W</kbd></td><td>Close the tab — confirms first if the session is still connected</td></tr>
+<tr><td><kbd>Ctrl+Shift+D</kbd></td><td>Disconnect the session but keep the tab</td></tr>
+<tr><td><kbd>Ctrl+Tab</kbd> / <kbd>Ctrl+Shift+Tab</kbd></td><td>Next / previous session</td></tr>
+<tr><td><kbd>Ctrl+1</kbd> … <kbd>Ctrl+9</kbd></td><td>Jump to a tab by its number</td></tr>
+</table>
+<p>Each session runs on its own worker thread with its own grid and scrollback; a stalled session cannot block another. With <b>Cube Session Switch</b> on (Effects menu) switching tabs rotates the whole terminal like a Compiz desktop cube.</p>
+
+<h2>3.4 Split panes</h2>
+<p><kbd>Ctrl+Shift+E</kbd> splits the active tab side by side, <kbd>Ctrl+Shift+U</kbd> top and bottom; <b>Close Split</b> keeps the focused pane. Click a pane or press <kbd>Ctrl+Shift</kbd>+arrows to move focus. <b>Broadcast Input to Both Panes</b> (File menu) types what you type into both — useful for the same command on two hosts.</p>
+
+<h2>3.5 Quake mode</h2>
+<p>File → <b>Quake Mode</b> registers <kbd>Ctrl+`</kbd> as a system-wide hotkey. Pressing it drops the terminal down from the top of the screen and pressing it again slides it away, from any application. If another program already owns <kbd>Ctrl+`</kbd> the status line tells you and quake mode stays off.</p>
+
+<h2>3.6 Full screen and the screensaver</h2>
+<p><kbd>F11</kbd> or <kbd>Alt+Enter</kbd> toggles full screen. Effects → <b>Screensaver</b> lets the particle field drift free after 1, 5 or 15 minutes of no input; any key or mouse movement brings the text back.</p>
+</section>
+
+<!-- =============================================== 4 WORKING IN TERMINAL -->
+<section class="chapter">
+<h1><small>Chapter 4</small>Working in the terminal</h1>
+<h2>4.1 Selection and the clipboard</h2>
+<p>Drag with the left button to select. <b>Releasing the button copies the selection automatically</b> and the status line reports how many characters went to the clipboard. A click without a drag clears the selection. <b>Right-click pastes.</b> <kbd>Ctrl+Shift+C</kbd> and <kbd>Ctrl+Shift+V</kbd> (or <kbd>Shift+Insert</kbd>) do the same from the keyboard.</p>
+<p>Local shortcuts deliberately use <kbd>Ctrl+Shift</kbd> so they can never collide with terminal control codes: <kbd>Ctrl+C</kbd> interrupts the remote process, <kbd>Ctrl+Shift+C</kbd> copies. Plain <kbd>Ctrl</kbd> combinations are sent to the shell.</p>
+<p>Selected text switches from the amber ramp to the drifting <b>Miami Sunset</b> gradient (Effects → Miami Sunset Selection). The <b>Selection</b> page of the connection manager can make rectangular selection the default and set what the middle and right buttons do.</p>
+
+<h2>4.2 The paste guard</h2>
+<p>View → <b>Confirm Multi-line Paste</b> asks before sending any paste that contains a line break, showing what is about to be typed. A newline in a paste executes whatever precedes it; the guard exists so a copied paragraph cannot run as a series of commands by accident. Bracketed-paste mode is honoured when the remote application enables it.</p>
+
+<h2>4.3 Scrollback and search</h2>
+<p>The mouse wheel scrolls; <kbd>Shift+PgUp</kbd> / <kbd>Shift+PgDn</kbd> move a page at a time. Typing returns the view to the live bottom. The <b>Terminal</b> page sets the number of scrollback lines.</p>
+<p><kbd>Ctrl+Shift+F</kbd> opens <b>Search Scrollback</b>. Type a term and press Enter to find the nearest match above; <kbd>Ctrl+G</kbd> repeats the search and wraps when it reaches the top. Matches are highlighted in the live text.</p>
+
+<h2>4.4 Links and file paths</h2>
+<p><kbd>Ctrl</kbd>+click a URL to open it in your browser. <kbd>Ctrl</kbd>+click a file path in the output and AmberSSH opens the SFTP browser at that file's directory with the file selected — the fastest way from "there's the file" to "here it is on my machine". If nothing usable is under the pointer the status line says so.</p>
+
+<h2>4.5 Font size and typing</h2>
+<p><kbd>Ctrl+Plus</kbd> / <kbd>Ctrl+Minus</kbd> or <kbd>Ctrl</kbd>+wheel change the terminal font size. Keyboard input goes through the Windows layout engine, so dead keys and non-US layouts produce the right characters. <kbd>Alt</kbd>+drag pushes the particles around with the pointer force field without touching the text (Effects → Pointer Force).</p>
+
+<h2>4.6 The time dial</h2>
+<p>Hold <kbd>Alt</kbd> and scroll the wheel to turn the <b>time dial</b>: it slows every animation down (to 0.05×) or speeds it up (to 4×) without changing anything about the text. The status line shows the current factor. <b>Motion → Reset Time Dial</b> (or the palette) puts it back to 1×.</p>
+</section>
+
+<!-- ============================================== 5 SHELL INTEGRATION -->
+<section class="chapter">
+<h1><small>Chapter 5</small>Shell integration</h1>
+<p>Several features need to know where one command ends and the next begins. AmberSSH reads the standard <b>OSC 133</b> prompt marks that modern shells can emit — the same ones VS Code, WezTerm and iTerm2 use — plus <b>OSC 7</b> for the current directory. Once your shell sends them you get:</p>
+<ul>
+  <li><b>Command jumping</b> — <kbd>Ctrl+Up</kbd> / <kbd>Ctrl+Down</kbd> move the view to the previous / next command prompt in the scrollback.</li>
+  <li><b>Output folding</b> — <kbd>Ctrl+Shift+O</kbd> collapses the output of the command at the cursor to a single summary line and expands it again. View → <b>Fold All Output</b> / <b>Expand All Output</b> do the whole scrollback. Folded lines are skipped by selection and search consistently: what you see is what you copy.</li>
+  <li><b>Exit-code flashes</b> — a command that fails flashes its prompt line briefly in the danger colour.</li>
+  <li><b>Spotlight the running command</b> (Effects) — while a command runs, everything except its output dims a little.</li>
+  <li><b>Taskbar progress</b> — a long-running command shows progress on the taskbar button, and the button turns red on a non-zero exit while the window is in the background.</li>
+  <li><b>The command journal</b> (Chapter 6).</li>
+</ul>
+
+<h2>5.1 Enabling the marks</h2>
+<p>For <b>bash</b>, add to <code>~/.bashrc</code>:</p>
+<pre>__amber_prompt() { printf '\e]133;A\a'; }
+__amber_precmd() { printf '\e]133;D;%s\a' "$?"; }
+PROMPT_COMMAND='__amber_precmd; __amber_prompt'
+PS0='\e]133;C\a'
+PS1="${PS1}"'\[\e]133;B\a\]'
+PROMPT_COMMAND="$PROMPT_COMMAND; printf '\\e]7;file://%s%s\\a' \"$HOSTNAME\" \"$PWD\""</pre>
+<p>For <b>zsh</b>, add to <code>~/.zshrc</code>:</p>
+<pre>precmd()  { printf '\e]133;D;%s\a' "$?"; printf '\e]133;A\a'; printf '\e]7;file://%s%s\a' "$HOST" "$PWD"; }
+preexec() { printf '\e]133;C\a'; }
+PS1="${PS1}%{$(printf '\e]133;B\a')%}"</pre>
+<p><code>A</code> marks the start of a prompt, <code>B</code> the start of input, <code>C</code> the start of a command's output and <code>D</code> its end with the exit code. Fish emits these out of the box.</p>
+<div class="note">Nothing in this chapter is required. Without the marks the terminal works exactly as before; the features above simply have nothing to attach to.</div>
+</section>
+
+<!-- ================================================== 6 COMMAND JOURNAL -->
+<section class="chapter">
+<h1><small>Chapter 6</small>The command journal</h1>
+<p>The journal is a record of every command you have run in AmberSSH, on every host, with its working directory, exit code and how long it took. It is captured from the shell-integration marks (Chapter 5), so it needs them, and it is stored locally in <code>journal.jsonl</code>. Nothing is ever sent anywhere.</p>
+<p><b>File → Record Commands to Journal</b> turns capture on and off. <b>Clear Command Journal…</b> forgets everything after a confirmation.</p>
+
+<h2>6.1 The overlay</h2>
+<p><kbd>Ctrl+Shift+J</kbd> opens the journal as an overlay on the terminal. Start typing to filter — the search matches the command, the host and the directory. Each entry shows when it ran, on which host and where, its exit code (failed commands are marked) and its duration.</p>
+<table>
+<tr><th>Key</th><th>In the journal</th></tr>
+<tr><td><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd></td><td>Move the selection</td></tr>
+<tr><td><kbd>Enter</kbd></td><td><b>Types</b> the selected command at the prompt without running it, so a destructive line recalled by accident can still be read and edited</td></tr>
+<tr><td><kbd>Ctrl+Enter</kbd></td><td>Types the command and runs it — the deliberate gesture</td></tr>
+<tr><td><kbd>C</kbd></td><td>Copies the command to the clipboard</td></tr>
+<tr><td><kbd>Delete</kbd></td><td>Removes the entry from the journal</td></tr>
+<tr><td><kbd>Backspace</kbd></td><td>Edits the filter</td></tr>
+<tr><td><kbd>Esc</kbd></td><td>Closes the overlay</td></tr>
+</table>
+<p>The overlay is opaque and pushes the particle text away from around itself while it is open — the letters gather back when it closes.</p>
+</section>
+
+<!-- ================================================= 7 COMMAND PALETTE -->
+<section class="chapter">
+<h1><small>Chapter 7</small>The command palette</h1>
+<p><kbd>Ctrl+Shift+P</kbd> opens a fuzzy-matching list of every action in the application. Type a few letters of what you want — "fold", "sftp", "theme bra" — and press <kbd>Enter</kbd>. <kbd>↑</kbd> <kbd>↓</kbd> move, <kbd>Esc</kbd> closes.</p>
+<p>The palette contains, among others: New Connection, Close Tab, Disconnect, Split Vertical / Horizontal, Close Split, Toggle Fullscreen, SFTP Panel, Import Profiles, Search Scrollback, Log Session to File, Customize Theme, Diagnostic Screen, Font Size Larger / Smaller, every <b>Theme:</b>, every <b>Font:</b>, Reduced Motion, Reset Time Dial, About, Command Journal (open / record / clear), Density: Auto, both colour palettes, both render modes, Previous / Next Command Mark, Paste, Fold / Fold All / Expand All, every saved <b>Snippet:</b>, Edit Snippets, Edit Output Triggers, Play Recording, Port Forwarding / Jump Host, and Next / Previous Session.</p>
+<p>Snippets (Chapter 8) appear here as <b>Snippet: name</b>, which is the intended way to run them.</p>
+</section>
+
+<!-- ============================================ 8 SNIPPETS & TRIGGERS -->
+<section class="chapter">
+<h1><small>Chapter 8</small>Snippets and output triggers</h1>
+<h2>8.1 Snippets</h2>
+<p><b>File → Edit Snippets…</b> opens <code>snippets.txt</code> in your editor. One snippet per line:</p>
+<pre># AmberSSH snippets — one per line:   name = command
+# {host} {user} {port} expand from the active session; any other {name}
+# prompts for a value. A literal \n sends Enter. Run them from the
+# command palette (Ctrl+Shift+P, type the name).
+tail-syslog = sudo tail -f /var/log/syslog\n
+disk = df -h {mount}\n
+whoami-here = echo {user}@{host}:{port}\n</pre>
+<p><code>{host}</code>, <code>{user}</code> and <code>{port}</code> are filled in from the active session. Any other <code>{name}</code> prompts you for a value when the snippet runs. A literal <code>\n</code> sends Enter, so a snippet without one is typed but not executed. Run a snippet from the command palette by typing its name.</p>
+
+<h2>8.2 Output triggers</h2>
+<p><b>File → Edit Output Triggers…</b> opens <code>triggers.txt</code>, one regular expression per line (ECMAScript syntax, case-insensitive):</p>
+<pre># AmberSSH output triggers — one regular expression per line
+# (ECMAScript syntax, case-insensitive). When a line of output matches:
+# the status line shows it, the visual bell rings, and a Windows
+# notification appears if the window is in the background.
+build (succeeded|failed)
+^error:
+segmentation fault</pre>
+<p>When a line of output matches, the status line shows the line, the visual bell fires (the shockwave, if it is on), the tab's activity spark burns red for a few seconds, and a Windows notification appears if the window is in the background. Triggers are a way to walk away from a long build.</p>
+</section>
+
+<!-- ==================================================== 9 SFTP BROWSER -->
+<section class="chapter">
+<h1><small>Chapter 9</small>The SFTP browser</h1>
+<p><kbd>Ctrl+Shift+B</kbd> (or File → SFTP Browser) opens a two-pane file browser over the active session's connection: your machine on the left, the remote host on the right, and a transfer queue beneath. It needs a connected SSH session. The browser has its own tabs (<kbd>Ctrl+T</kbd> new, <kbd>Ctrl+W</kbd> close) so several hosts can be open at once.</p>
+<table>
+<tr><th>Button</th><th>Does</th></tr>
+<tr><td>← Download <kbd>F5</kbd></td><td>Copies the selected remote items into the local folder</td></tr>
+<tr><td>Upload → <kbd>F5</kbd></td><td>Copies the selected local items to the remote folder</td></tr>
+<tr><td>Open/Edit <kbd>F4</kbd></td><td>Downloads the remote file to a temporary copy, opens it in its associated application, and <b>uploads it back every time you save</b></td></tr>
+<tr><td>Rename <kbd>F2</kbd></td><td>Renames the selected item</td></tr>
+<tr><td>New Folder <kbd>F7</kbd></td><td>Creates a directory in the focused pane</td></tr>
+<tr><td>Delete <kbd>F8</kbd></td><td>Deletes the selection after confirmation</td></tr>
+<tr><td>Permissions</td><td>Edits the mode bits of a remote file</td></tr>
+<tr><td>Refresh <kbd>Ctrl+R</kbd></td><td>Re-reads both listings</td></tr>
+<tr><td>Cancel Transfer / Clear Done</td><td>Stops the selected transfer / removes finished ones from the queue</td></tr>
+</table>
+<p>Double-click a folder to enter it, <code>..</code> to go up; the path field above each pane accepts a typed path. Transfers run in the background with their state, size and progress in the queue; the window's taskbar button shows overall progress. <kbd>Ctrl</kbd>+clicking a file path in the terminal (Chapter 4) opens the browser at that path.</p>
+<p>Every interface skin (Chapter 14) dresses the browser as well: Solder Mask routes a copper bus down the gutter between the panes, Reference shows twin VU meters for download and upload, Horologe a power-reserve gauge, Tenmoku leaves the gutter as raw clay.</p>
+</section>
+
+<!-- ====================================================== 10 WORKSPACES -->
+<section class="chapter">
+<h1><small>Chapter 10</small>Workspaces</h1>
+<p>A workspace is a named set of sessions you open together. Open the sessions you want, then <b>File → Workspaces → Save Workspace…</b> and give it a name. Later, choosing the workspace from the same menu (or from the command palette) opens every session in it, each in its own tab.</p>
+<ul>
+  <li>A workspace stores <b>saved profiles</b>, so every session in it must be a saved session first — the status line says so if one is not.</li>
+  <li>Split panes are reopened as separate tabs.</li>
+  <li>Workspaces live in <code>workspaces.jsonl</code>; the menu offers Delete for each.</li>
+</ul>
+<p>The application also remembers the last set of open sessions and offers to reopen them; workspaces are for sets you return to deliberately — "the three build boxes", "prod and its bastion".</p>
+</section>
+
+<!-- ============================================ 11 LOGGING & RECORDING -->
+<section class="chapter">
+<h1><small>Chapter 11</small>Logging and recording</h1>
+<h2>11.1 Session logs</h2>
+<p><kbd>Ctrl+Shift+L</kbd> starts and stops logging the session's output to a text file. The <b>Logging</b> page of the connection manager sets it up per profile: what to log (all session output, or nothing), the file name with date and host tokens (<code>Y M D</code> date, <code>T</code> time, <code>H</code> host, <code>P</code> port), whether to append to an existing file or overwrite it, and whether to flush frequently. When a profile has logging configured it starts as soon as the session opens; <kbd>Ctrl+Shift+L</kbd> still toggles it.</p>
+<div class="note">The log is the terminal stream, so passwords typed at a prompt that does not echo are not in it — but anything the server prints is. Treat logs as sensitive.</div>
+
+<h2>11.2 Recording and playback</h2>
+<p><b>File → Record Session (asciinema)…</b> writes an <code>.cast</code> file — the asciinema v2 format, so it plays in any asciinema player and on asciinema.org. <b>File → Play Recording…</b> plays a <code>.cast</code> file in a local tab with no server involved: the recording is fed through the same terminal and the same particles as a live session, with every effect and skin applied. AmberSSH also starts in playback mode from the command line: <code>AmberSSH.exe --play recording.cast</code>.</p>
+</section>
+
+<!-- ============================================= 12 PORT FORWARDING -->
+<section class="chapter">
+<h1><small>Chapter 12</small>Port forwarding and jump hosts</h1>
+<p><b>File → Port Forwarding / Jump Host…</b> edits the forwards for the active session; the <b>SSH → Tunnels</b> page stores them with a profile. One forward per line, in OpenSSH's notation:</p>
+<pre>L8080:localhost:80        # local 8080 → port 80 on the remote host
+L5432:db.internal:5432    # local 5432 → a host only the server can reach
+R9000:localhost:3000      # remote 9000 → port 3000 on this machine
+D1080                     # SOCKS proxy on local 1080</pre>
+<p>The SSH page's <b>Jump host</b> (<code>user@host[:port]</code>) connects through a bastion first and opens the real session over it. <b>Don't start a shell or command at all</b> turns a profile into a pure tunnel: the session connects, opens its forwards, and shows no prompt.</p>
+</section>
+
+<!-- ============================================================ 13 SECURITY -->
+<section class="chapter">
+<h1><small>Chapter 13</small>Security</h1>
+<h2>13.1 Credentials</h2>
+<p>Passwords and key passphrases are <b>never written to disk by AmberSSH</b>. A secret you choose to remember goes to the Windows Credential Manager under <code>AmberSSH/{profile-uuid}/password</code> or <code>…/key-passphrase</code>; <code>profiles.json</code> records only a boolean saying one exists, and a unit test asserts the file contains no secret fields. A secret you do not remember lives only in a zeroed-on-destruction buffer for the life of the connection. Deleting a profile erases its credentials. <b>Windows Hello for Stored Secrets</b> (File menu) adds a Hello check before any stored secret is used.</p>
+<p>What this does not do: lock pages. A secret must exist in memory to be handed to libssh2, and the operating system may page that memory.</p>
+
+<h2>13.2 Host keys</h2>
+<p>The server's host key is checked after every handshake. On <b>first contact</b> you see the host, port, algorithm and SHA-256 fingerprint and must choose: accept once, accept and save, or cancel (the default). Saved keys are kept in <code>known_hosts</code> under the profile's logical host name (SSH → Host keys).</p>
+<p>A <b>changed key</b> is treated as a serious failure. AmberSSH never continues silently: it shows the expected and received fingerprints, explains that this is either a rebuilt server or an interception attempt, and requires a separate, explicit action to replace the stored key.</p>
+
+<h2>13.3 The terminal as untrusted input</h2>
+<p>Everything a remote host sends is treated as hostile data. The parser bounds its parameter arrays and clamps values, caps OSC payloads at 4 KB (a 200 KB title attempt is a regression test), recovers from malformed sequences without corrupting state, decodes UTF-8 defensively, and <b>no escape sequence can run an operating-system command</b>. The paste guard (Chapter 4) protects the other direction.</p>
+
+<h2>13.4 What is and is not there</h2>
+<ul>
+  <li>No telemetry, no log upload, no automatic host-key acceptance.</li>
+  <li>The logger never receives secret material.</li>
+  <li>Encryption preferences (ciphers, key exchange, host-key algorithms) are configurable on the SSH page; blank means the built-in modern defaults.</li>
+  <li><code>.ppk</code> keys are not read; convert them.</li>
+</ul>
+</section>
+
+<!-- ============================================================ 14 THE LOOK -->
+<section class="chapter">
+<h1><small>Chapter 14</small>The look: appearance, themes and interface skins</h1>
+<p>Three independent choices decide how AmberSSH looks. <b>Appearance</b> is the ground the terminal is drawn on. The <b>theme</b> is the colour ramp the particles glow in. The <b>interface skin</b> is what everything around the terminal — title strip, menus, dialogs, SFTP browser — is made of. Any combination works.</p>
+
+<h2>14.1 Appearance (View menu)</h2>
+<table>
+<tr><th>Mode</th><th>What it is</th></tr>
+<tr><td>Dark</td><td>Black glass. The default; the particles glow additively on it.</td></tr>
+<tr><td>Light (paper)</td><td>A light ground with dark ink; the glow becomes a soft halo.</td></tr>
+<tr><td>Paperwhite</td><td>Warm e-ink: the whole image is composited to greyscale on paper.</td></tr>
+<tr><td>Pixel Art</td><td>The PICO-8 sixteen-colour palette, pixelated in the composite.</td></tr>
+</table>
+<p>Alongside these: <b>Text Shadow</b> (Off / Soft / Medium / Strong) drops a shadow under the crisp core, and <b>Text Sharpness</b> chooses Soft (the glow over the letter), Crisp (the letter over the glow) or Razor (the letter drawn after bloom, for maximum legibility).</p>
+
+<h2>14.2 Themes (View menu)</h2>
+<p>A theme is a five-stop colour ramp from dim to hot. Amber Nixie · Emerald CRT · Ice Cathode · Violet Haze · Blood Cell · Paper White · Brass Gaslight — and <b>Custom</b>, edited in <b>Customize Theme…</b> with three colour pickers. The <b>Colours</b> page can also set an ANSI palette per profile: <b>Amber Miami</b> maps the sixteen colours onto the theme, <b>Classic xterm</b> keeps them.</p>
+<p><b>Per-host rules.</b> A theme can follow the host: rules of the form <code>pattern=themeId</code>, comma-separated, with <code>*</code> wildcards (<code>*.prod.*=4,bastion=2</code>). First match wins. The same mechanism exists for motion styles.</p>
+<p><b>Night Shift</b> (Effects) warms the whole image: Off, After dark (by the clock), or Always warm.</p>
+
+<h2>14.3 Text</h2>
+<p><b>Font</b> chooses the terminal face: JetBrains Mono, Cascadia Mono, Consolas, Courier New, Lucida Console, Cascadia Code, Fira Code, Hack, Source Code Pro, IBM Plex Mono, Iosevka, Space Mono, Ubuntu Mono, or a custom family. Open-source faces that are not installed are downloaded the first time you pick them and kept in the fonts folder. <b>Font Style</b> chooses Modern (the crisp core), Dot Matrix 8-pin or Dot Matrix 12-pin — the particles quantise to a printer pin grid. <b>Render</b> chooses Particle + Crisp Core (the default) or Particles Only. <b>Syntax Tint</b> colours recognisable output — paths, numbers, errors — by kind.</p>
+
+<h2>14.4 Interface skins (View → Interface Style)</h2>
+<p>A skin is a complete material for every surface outside the terminal grid. The grid itself is never touched: the text is the picture. Each skin has its own palette, typeface, silhouette and one mechanic that no other skin has.</p>
+<div class="skin"><b>Cyberpunk</b> — near-black ground, cyan and magenta neon, leaning chamfered tabs, HUD bracket ticks and faint scanlines. The original.</div>
+<div class="skin"><b>Classic</b> — the plain strip, coloured by the terminal theme.</div>
+<div class="skin"><b>LCARS</b> — the Okudagram standard: pill segments, the elbow frame, black lettering on Melrose, Golden Tanoi, Chestnut Rose and Lilac, numeric tags on every block.</div>
+<div class="skin"><b>Nostromo</b> — the 1979 ship computer. Green phosphor, everything square, heavy scanlines, capitals throughout, amber for alarms only.</div>
+<div class="skin"><b>Blueprint</b> — a cyanotype drafting sheet. Nothing is filled; every control is a hairline outline with drafting ticks.</div>
+<div class="skin"><b>Brass &amp; Nixie</b> — a warm instrument panel: walnut, brushed brass bars with black engraving, amber nixie digits.</div>
+<div class="skin"><b>Swiss Grid</b> — the one light chrome. Paper, black type, a single red, hard right angles, no ornament.</div>
+<div class="skin"><b>Neo-Tokyo</b> — red on black, hard forward slants, capitals, and yellow-black hazard striping on anything destructive.</div>
+<div class="skin"><b>Steampunk</b> — coal and walnut with brass filigree, gear trains and a tiling brass rail; a Bookman face.</div>
+<div class="skin"><b>Solder Mask</b> — a populated circuit board. Dividers are routed copper traces with 45° mitres and gold vias; tabs are edge-connector fingers; every control carries a silkscreen designator.</div>
+<div class="skin"><b>Horologe</b> — haute horlogerie. A sunburst dial, a rehaut minute track along every long edge, controls raised as applied indices rather than filled, lume for the active piece, exactly one blued screw per surface. Jost.</div>
+<div class="skin"><b>Letterpress</b> — a one-ink press on cotton stock. Everything printed is oxblood; inactive controls are blind-debossed with no ink at all; copper foil marks the active tab and the primary action. EB Garamond.</div>
+<div class="skin"><b>Atelier</b> — full-grain oxblood leather, saddle-stitched in cream thread inside a painted edge, a brass rivet on the active piece, fields lined with a charcoal check. Josefin Sans.</div>
+<div class="skin"><b>Reference</b> — boutique hi-fi. Brushed aluminium, engraved lettering, an amber LED on anything that can be active, blue-lit VU meters for anything that is a level. Bahnschrift.</div>
+<div class="skin"><b>Tenmoku</b> — studio pottery. A hare's-fur iron glaze that pools darker at every edge and thins to rust along the rim, oil-spot flecks, a raw stoneware foot under every panel, one cinnabar chop on the active piece. Alegreya.</div>
+<p>Skins whose typeface is not installed (Jost, EB Garamond, Josefin Sans, Alegreya) fetch it the first time they are selected and use their installed fallback until it arrives. The title strip letters in the skin's face too.</p>
+</section>
+
+<!-- ============================================================ 15 MOTION -->
+<section class="chapter">
+<h1><small>Chapter 15</small>Motion</h1>
+<p>When a character appears, its particles arrive from somewhere; when it disappears, they leave. The <b>Motion</b> menu chooses how.</p>
+<h2>15.1 Arrival styles</h2>
+<div class="cols2">
+<p><b>Direct</b> — a short morph from wherever the particles are. The baseline.<br>
+<b>Nebula Twist</b> — a slow spiral into place.<br>
+<b>Digital Rain</b> — glyphs fall in from above.<br>
+<b>Quantum Flux</b> — a jittering uncertainty that collapses.<br>
+<b>Sonic Boom</b> — an outward ring that snaps back.<br>
+<b>Magnetic Assemble</b> — filings drawn to a pole.<br>
+<b>Cyclone</b> — a vortex that tightens onto the letter.<br>
+<b>Fountain</b> — an upward burst that settles.<br>
+<b>Glitch</b> — horizontal tearing that resolves.<br>
+<b>Slipstream</b> — a sideways streak.<br>
+<b>Tumble</b> — the glyph rolls in.<br>
+<b>Mothership (ID4)</b> — a shadow descends, then the light.</p>
+<p><b>Starwake</b> — a ballistic wake behind each glyph, scaled by Motion Speed.<br>
+<b>Gunmetal Iris</b> — an aperture opening on the letter.<br>
+<b>Ominous Signal</b> — a slow, low pulse before it resolves.<br>
+<b>Hunter Vision</b> — a thermal bloom that cools into type.<br>
+<b>Film Burn</b> — the frame scorches through.<br>
+<b>Sandfall</b> — grains pour down and heap into the glyph.<br>
+<b>Weld</b> — a bead of sparks along the stroke.<br>
+<b>Murmuration</b> — a flock that turns as one and lands.<br>
+<b>Hammer</b> — struck into place with a shock.<br>
+<b>Game of Life</b> — cells evolve into the letter.<br>
+<b>Surface</b> — the glyph rises through a liquid surface.</p>
+</div>
+<p>All styles share the same rules: full-screen application updates crossfade at ten times speed, bulk repaints use a top-to-bottom reveal wave, scroll-like frames suppress entrance effects, stable cells quietly settle toward Direct, and <b>Motion Speed</b> (Slow 0.5× / Normal / Fast 1.5× / Hyper 2× / Custom) scales everything including the cursor.</p>
+
+<h2>15.2 Departure styles</h2>
+<p><b>Fade</b>, <b>Ash</b> (particles lift and grey), <b>Smoke</b> (they curl upward), <b>Sand</b> (they pour down), <b>Shatter</b> (they fly apart). A departing particle is taken off its spring, so the two axes never fight.</p>
+
+<h2>15.3 Reduced motion</h2>
+<p><b>Motion → Reduced Motion</b> replaces every depth effect, flash and rotation with a short Direct morph. It is the accessibility setting and it overrides every style.</p>
+</section>
+
+<!-- =========================================================== 16 EFFECTS -->
+<section class="chapter">
+<h1><small>Chapter 16</small>Effects</h1>
+<p>Everything here is in the <b>Effects</b> and <b>Density</b> menus, and every item is optional.</p>
+<table>
+<tr><th>Effect</th><th>What it does</th></tr>
+<tr><td>Density</td><td>Particles per cell: Auto (48–128, driven by frame time), 32 Performance, 64 Balanced, 96 High Clarity, 128 Ultra, 256 Ultra Max, or Custom. More particles, more GPU.</td></tr>
+<tr><td>Bloom Glow</td><td>The HDR halo around the letters; Low / Medium / High.</td></tr>
+<tr><td>Twinkle</td><td>The sparse sparkle layer: Off / Subtle / Full.</td></tr>
+<tr><td>Trails</td><td>Motion trails on moving particles: Off / Low / Medium / High.</td></tr>
+<tr><td>Background</td><td>Off, Embers (rising warm motes), Starfield (parallax stars), Cosmic Dust (drifting haze).</td></tr>
+<tr><td>Scanlines · Vignette · Gas Drift</td><td>CRT hairlines, corner darkening, and the slow curl-noise drift that keeps a still screen alive.</td></tr>
+<tr><td>Miami Sunset Selection</td><td>The drifting gradient on selected text.</td></tr>
+<tr><td>Pointer Force (Alt+Drag)</td><td>The radial force field under <kbd>Alt</kbd>+drag.</td></tr>
+<tr><td>Visual Bell</td><td>BEL rings a shockwave through the field. Over-use is muted automatically (five in two seconds mutes for five).</td></tr>
+<tr><td>Activity Heat Map</td><td>Cells that change often glow warmer.</td></tr>
+<tr><td>Latency Ghosting</td><td>A ghost of what you typed is shown until the server echoes it — you can see round-trip time.</td></tr>
+<tr><td>Audio-Reactive Turbulence</td><td>The field responds to what the machine is playing.</td></tr>
+<tr><td>Boot Sequence on Connect</td><td>A short power-on sequence before the first prompt.</td></tr>
+<tr><td>Phosphor Persistence</td><td>P39 afterglow: bright cells fade out slowly instead of vanishing.</td></tr>
+<tr><td>Phosphor Warm-up on Connect</td><td>A new session's glow rises over the first seconds like a tube warming.</td></tr>
+<tr><td>Depth Parallax</td><td>The field tilts slightly with the pointer.</td></tr>
+<tr><td>Window Slosh</td><td>The field lags the frame when the window moves.</td></tr>
+<tr><td>Spotlight the Running Command</td><td>Dims everything but the current command's output (needs shell integration).</td></tr>
+<tr><td>Night Shift</td><td>Off / After dark / Always warm.</td></tr>
+<tr><td>Cube Session Switch</td><td>Compiz-style cube rotation on <kbd>Ctrl+Tab</kbd>.</td></tr>
+<tr><td>Screensaver</td><td>Free-drifting field after 1 / 5 / 15 minutes idle.</td></tr>
+<tr><td>Remote Vitals in Title Bar</td><td>CPU, memory and network of the active host.</td></tr>
+<tr><td>Color Diagnostic Screen</td><td>A local tab showing the palette, attributes and a test pattern — useful for checking a theme.</td></tr>
+</table>
+<p>The <b>Effects</b> page of the connection manager applies an effect preset when a session opens, and can override the font family and size for that profile alone.</p>
+</section>
+
+<!-- ============================================ 17 CONNECTION MANAGER -->
+<section class="chapter">
+<h1><small>Chapter 17</small>Connection manager reference</h1>
+<table>
+<tr><th>Page</th><th>Settings</th></tr>
+<tr><td>Session</td><td>Host name or IP, port, connection type (SSH / Serial / Telnet / Rlogin), the Saved Sessions list with Load / Save / Delete, close-window-on-exit behaviour.</td></tr>
+<tr><td>Logging</td><td>What to log, the file name with <code>Y M D T H P</code> tokens, append or overwrite, flush frequently.</td></tr>
+<tr><td>Terminal</td><td>Auto wrap, implicit CR/LF, local echo and line editing (Auto / Force off / Force on), the answerback to <code>^E</code>.</td></tr>
+<tr><td>Keyboard</td><td>Backspace as Control-H or Control-? (127), initial state of the cursor keys and numeric keypad.</td></tr>
+<tr><td>Bell</td><td>What a bell does; the automatic mute when over-used; flash the taskbar entry when the window is not active.</td></tr>
+<tr><td>Features</td><td>Allow application cursor keys and keypad modes, xterm mouse reporting, remote-controlled resizing, the alternate screen, remote title changes, remote clearing of scrollback.</td></tr>
+<tr><td>Window</td><td>Columns and rows, lines of scrollback, what happens on resize (change the size of the font, change rows and columns, forbid resizing), full screen on Alt-Enter.</td></tr>
+<tr><td>Appearance</td><td>Cursor appearance (block / underline / vertical bar) and blinking, gap between text and window edge.</td></tr>
+<tr><td>Behaviour</td><td>Window title, warn before closing a connected session, window closes on Alt-F4, system menu on Alt-Space, full screen on Alt-Enter.</td></tr>
+<tr><td>Translation</td><td>Character set: UTF-8, ISO-8859-1, CP437 (DOS); how bold text is indicated.</td></tr>
+<tr><td>Selection</td><td>Mouse button actions (Windows, Compromise, xterm), rectangular selection by default, auto-copy to the clipboard.</td></tr>
+<tr><td>Colours</td><td>ANSI palette (Amber Miami / Classic xterm), allow the terminal to specify colours and use 256-colour / truecolour modes, a preset (Classic Amber, Clean Amber, Deep Phosphor…).</td></tr>
+<tr><td>Connection</td><td>TCP keepalives, disable Nagle's algorithm, connection timeout, IPv4 / IPv6 / Auto, the logical host name used for host-key storage.</td></tr>
+<tr><td>Data</td><td>Username, environment variables (<code>NAME=value</code>, one per line).</td></tr>
+<tr><td>Proxy</td><td>Proxy type (None, HTTP CONNECT, SOCKS…), host and port, excluded hosts with wildcards, DNS lookup at the proxy end, whether to proxy local connections.</td></tr>
+<tr><td>SSH</td><td>Compression, cipher / key-exchange / host-key algorithm preferences (blank = modern defaults), jump host, don't start a shell (tunnels only).</td></tr>
+<tr><td>SSH → Auth</td><td>Authentication method (password, private key, keyboard-interactive, agent / Pageant), key file, key passphrase, agent forwarding, clear saved credentials.</td></tr>
+<tr><td>SSH → X11</td><td>Enable X11 forwarding (needs a local X server such as VcXsrv, Xming or WSLg, started before connecting).</td></tr>
+<tr><td>SSH → Tunnels</td><td>Port forwards, <code>L</code> / <code>R</code> / <code>D</code> notation (Chapter 12).</td></tr>
+<tr><td>SSH → Host keys</td><td>Manually accepted keys for this host.</td></tr>
+<tr><td>Serial</td><td>COM port, speed (1200 … 921600), data bits, parity (None / Even / Odd), flow control (None / XON-XOFF / RTS-CTS / DSR-DTR).</td></tr>
+<tr><td>Telnet</td><td>Keyboard sends Telnet special commands (Ctrl+C = IP, Ctrl+Z = SUSP, Ctrl+D = EOF).</td></tr>
+<tr><td>Rlogin</td><td>Local username (blank = same as the session username).</td></tr>
+<tr><td>Effects</td><td>Effect preset applied when the session opens; font family and size overrides for this profile.</td></tr>
+</table>
+</section>
+
+<!-- ================================================== 18 FILES & SETTINGS -->
+<section class="chapter">
+<h1><small>Chapter 18</small>Files and settings</h1>
+<p>Everything AmberSSH keeps is under <code>%LOCALAPPDATA%\AmberSSH</code>:</p>
+<table>
+<tr><th>File</th><th>Contents</th></tr>
+<tr><td><code>settings.json</code></td><td>Application settings (below). Safe to delete; defaults return.</td></tr>
+<tr><td><code>profiles.json</code></td><td>Saved sessions — every page's settings, and booleans recording that a secret exists. <b>No secrets.</b></td></tr>
+<tr><td><code>known_hosts</code></td><td>Accepted host keys.</td></tr>
+<tr><td><code>journal.jsonl</code></td><td>The command journal, one JSON record per line: time, duration, exit code, host, directory, command.</td></tr>
+<tr><td><code>snippets.txt</code> · <code>triggers.txt</code></td><td>Chapter 8.</td></tr>
+<tr><td><code>workspaces.jsonl</code></td><td>Chapter 10.</td></tr>
+<tr><td><code>fonts\</code></td><td>Typefaces downloaded on first use (terminal faces and skin faces).</td></tr>
+<tr><td><code>logs\</code></td><td>Session logs, when a profile logs to the default location.</td></tr>
+</table>
+<p>The application folder itself carries <code>shaders\</code> (compiled DXIL) and <code>fonts\</code> (the bundled open-source terminal faces). The portable ZIP from <code>package.ps1</code> contains no user data.</p>
+
+<h3>settings.json keys</h3>
+<p class="small mono">animStyle · appearance · bgStyle · bloomLevel · chrome · crispCore · densityAuto · densityPpc · departStyle · fontFace · fontStyle · fxAudio · fxBell · fxBloom · fxBoot · fxCascade · fxCube · fxDrift · fxGhost · fxHeat · fxLive · fxParallax · fxPersist · fxPointerForce · fxScanlines · fxShockwave · fxSlosh · fxSpotlight · fxVignette · fxWarmup · helloUnlock · hostMotion · hostThemes · journal · miamiSelection · nightShift · palette · pasteGuard · quakeMode · reducedMotion · saverSecs · shadowLevel · sharpness · speedCustomPct · speedLevel · statusBar · syntaxTint · termType · themeC0 · themeC1 · themeC2 · themeId · trailLevel · twinkleLevel · vitals</p>
+<p><code>hostThemes</code> and <code>hostMotion</code> hold the per-host rules (<code>pattern=id</code>, comma-separated, <code>*</code> wildcards; first match wins).</p>
+
+<h3>Command line</h3>
+<p><code>AmberSSH.exe --connect &lt;profile-id&gt;</code> opens a saved session directly (the jump list uses this; <code>ws:&lt;name&gt;</code> opens a workspace). <code>--play &lt;file.cast&gt;</code> opens a recording in a local tab. <code>--diag</code> opens the colour diagnostic screen.</p>
+</section>
+
+<!-- ============================================ 19 KEYBOARD REFERENCE -->
+<section class="chapter">
+<h1><small>Chapter 19</small>Keyboard and mouse reference</h1>
+<table>
+<tr><th>Shortcut</th><th>Action</th></tr>
+<tr><td><kbd>Ctrl+Shift+T</kbd></td><td>New connection</td></tr>
+<tr><td><kbd>Ctrl+Shift+W</kbd></td><td>Close tab</td></tr>
+<tr><td><kbd>Ctrl+Shift+D</kbd></td><td>Disconnect</td></tr>
+<tr><td><kbd>Ctrl+Tab</kbd> / <kbd>Ctrl+Shift+Tab</kbd></td><td>Next / previous session</td></tr>
+<tr><td><kbd>Ctrl+1</kbd> … <kbd>Ctrl+9</kbd></td><td>Jump to tab</td></tr>
+<tr><td><kbd>Ctrl+Shift+E</kbd> / <kbd>Ctrl+Shift+U</kbd></td><td>Split vertical / horizontal</td></tr>
+<tr><td><kbd>Ctrl+Shift</kbd>+arrows</td><td>Move focus between panes</td></tr>
+<tr><td><kbd>Ctrl+Shift+C</kbd> / <kbd>Ctrl+Shift+V</kbd> / <kbd>Shift+Insert</kbd></td><td>Copy / paste</td></tr>
+<tr><td><kbd>Ctrl+Shift+F</kbd>, <kbd>Ctrl+G</kbd></td><td>Search scrollback, repeat search</td></tr>
+<tr><td><kbd>Ctrl+Shift+P</kbd></td><td>Command palette</td></tr>
+<tr><td><kbd>Ctrl+Shift+J</kbd></td><td>Command journal</td></tr>
+<tr><td><kbd>Ctrl+Shift+B</kbd></td><td>SFTP browser</td></tr>
+<tr><td><kbd>Ctrl+Shift+L</kbd></td><td>Log session output</td></tr>
+<tr><td><kbd>Ctrl+Shift+O</kbd></td><td>Fold / expand output at the cursor</td></tr>
+<tr><td><kbd>Ctrl+Up</kbd> / <kbd>Ctrl+Down</kbd></td><td>Previous / next command mark</td></tr>
+<tr><td><kbd>Ctrl+`</kbd></td><td>Quake dropdown (system-wide, when enabled)</td></tr>
+<tr><td><kbd>Ctrl+Plus</kbd> / <kbd>Ctrl+Minus</kbd> / <kbd>Ctrl</kbd>+wheel</td><td>Font size</td></tr>
+<tr><td><kbd>Alt</kbd>+wheel</td><td>Time dial</td></tr>
+<tr><td><kbd>Shift+PgUp</kbd> / <kbd>Shift+PgDn</kbd></td><td>Scroll a page</td></tr>
+<tr><td><kbd>F2</kbd> / <kbd>F3</kbd></td><td>VSync / debug overlay</td></tr>
+<tr><td><kbd>F11</kbd>, <kbd>Alt+Enter</kbd></td><td>Full screen</td></tr>
+<tr><td><kbd>Alt+F4</kbd></td><td>Exit (the Behaviour page can disable it)</td></tr>
+</table>
+<table>
+<tr><th>Mouse</th><th>Action</th></tr>
+<tr><td>Left drag → release</td><td>Select, and copy automatically</td></tr>
+<tr><td>Click</td><td>Clear the selection</td></tr>
+<tr><td>Right click</td><td>Paste</td></tr>
+<tr><td><kbd>Ctrl</kbd>+click</td><td>Open a URL, or a file path in the SFTP browser</td></tr>
+<tr><td><kbd>Alt</kbd>+drag</td><td>Pointer force field</td></tr>
+<tr><td>Wheel · drag past an edge</td><td>Scroll · auto-scroll while selecting</td></tr>
+<tr><td>Click a tab · click the +</td><td>Switch session · new session</td></tr>
+</table>
+</section>
+
+<!-- ============================================ 20 TERMINAL COMPAT -->
+<section class="chapter">
+<h1><small>Chapter 20</small>Terminal compatibility</h1>
+<p>AmberSSH announces <code>TERM=xterm-256color</code> by default; the Terminal page can send <code>screen-256color</code> or <code>xterm-direct</code> instead.</p>
+<h3>Supported</h3>
+<ul>
+  <li><b>Control characters</b> BEL, BS, HT, LF, VT, FF, CR; UTF-8 including sequences split across reads.</li>
+  <li><b>ESC</b> 7 / 8 save and restore cursor, D index, M reverse index, E next line, c reset, ( 0 and ( B charset selection.</li>
+  <li><b>CSI</b> cursor movement (CUU/CUD/CUF/CUB, CNL/CPL, CHA, VPA, CUP/HVP), ED and EL, ICH, DCH, ECH, IL, DL, SU, SD, DECSTBM, SCP/RCP, DSR, DA, DECSCUSR, SGR, DEC private modes.</li>
+  <li><b>SGR</b> reset, bold, dim, italic, underline, blink, reverse, hidden, strikeout, sixteen colours, 256-colour and truecolour.</li>
+  <li><b>DEC modes</b> ?1 application cursor keys, ?7 autowrap, ?25 cursor visibility, ?1049 / ?47 alternate screen, ?2004 bracketed paste, ?1000–?1003 mouse tracking.</li>
+  <li><b>OSC</b> 0 and 2 (window title), 7 (working directory), 52 (clipboard), 133 (prompt marks). Unknown OSCs are consumed and ignored.</li>
+</ul>
+<h3>Partial or not supported</h3>
+<ul>
+  <li>Mouse tracking modes are accepted; pointer events are forwarded to applications that ask for them.</li>
+  <li>OSC 8 hyperlinks are consumed; <kbd>Ctrl</kbd>+click works on the visible URL text.</li>
+  <li>No Sixel or ReGIS graphics, no double-width / double-height lines, no rectangular-area operations.</li>
+</ul>
+<p>Every supported item has unit coverage; the parser is written against hostile input (Chapter 13).</p>
+</section>
+
+<!-- ================================================= 21 BUILDING -->
+<section class="chapter">
+<h1><small>Chapter 21</small>Building from source</h1>
+<p>Windows 11 x64, Visual Studio 2022 or the Build Tools with the Desktop C++ workload and the Windows 11 SDK, CMake 3.24+, and vcpkg with <code>VCPKG_ROOT</code> set.</p>
+<pre>.\build.ps1                       # Release
+.\build.ps1 -Config Debug -Test   # Debug, then the unit tests
+.\build.ps1 -Clean                # wipe build\ first
+.\package.ps1                     # portable ZIP + SHA-256 in dist\</pre>
+<p>Or by hand:</p>
+<pre>cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+  "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+cmake --build build --config Release
+.\build\tests\Release\AmberTests.exe</pre>
+<p>HLSL is compiled to DXIL by DXC as a build step; a shader error fails the build, and a contract test parses the HLSL to make sure the constant buffers still match the C++ side. Dependencies come from the vcpkg manifest: libssh2, OpenSSL, nlohmann-json, Catch2, directx-dxc.</p>
+</section>
+
+<!-- ============================================== 22 TROUBLESHOOTING -->
+<section class="chapter">
+<h1><small>Chapter 22</small>Troubleshooting</h1>
+<table>
+<tr><th>Symptom</th><th>What to do</th></tr>
+<tr><td>"Could not register Ctrl+`"</td><td>Another application owns the hotkey. Quake mode stays off until it is free.</td></tr>
+<tr><td>The window opens but the terminal is blank or slow</td><td>The GPU or driver may not support DirectX 12 well. Set Density to Performance, turn Bloom to Low, and check <kbd>F3</kbd> for frame times.</td></tr>
+<tr><td>A skin's typeface looks wrong the first time</td><td>Its font is being fetched; the installed fallback is used until it arrives, and the status line says when it has.</td></tr>
+<tr><td>"Windows Hello verification failed — stored secrets not used"</td><td>The Hello prompt was cancelled or failed. Type the secret, or turn the gate off in the File menu.</td></tr>
+<tr><td>Host key changed</td><td>Do not accept it casually. Confirm with the server's administrator that the key was regenerated before replacing the stored one.</td></tr>
+<tr><td>Command jumping, folding or the journal do nothing</td><td>The shell is not emitting OSC 133 marks. See Chapter 5.</td></tr>
+<tr><td>A pasted paragraph asked for confirmation</td><td>That is the paste guard. Confirm it, or turn it off in View → Confirm Multi-line Paste.</td></tr>
+<tr><td>The SFTP browser will not open</td><td>It needs a connected SSH session in the active tab; serial, Telnet and playback tabs have no file channel.</td></tr>
+<tr><td>Too much movement</td><td>Motion → Reduced Motion, or turn the time dial down with <kbd>Alt</kbd>+wheel.</td></tr>
+</table>
+
+<h3>Credits</h3>
+<p class="small">The four-layer particle model, the dual-sine brightness animation, the pointer force field and the shockwave follow the design of amber-particle-ssh (MIT); AmberSSH is an independent DirectX 12 / HLSL implementation of the same ideas. The interface skins draw on the published LCARS colour standard and on the Figma boards kept with the project. Bundled and downloaded typefaces are under the SIL Open Font License. See THIRD-PARTY-NOTICES.md in the application folder.</p>
+</section>
+
+</body>
+</html>
