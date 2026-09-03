@@ -1,0 +1,14 @@
+# Sources are LF on disk and stay that way; Git does not rewrite them.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.sln text eol=crlf
+*.vcxproj text eol=crlf
+
+# Binaries
+*.ttf binary
+*.otf binary
+*.png binary
+*.ico binary
+*.jpg binary
+*.wav binary
+*.cso binary
