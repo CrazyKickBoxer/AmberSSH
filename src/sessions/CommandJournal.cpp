@@ -116,7 +116,9 @@ std::string CommandJournal::ToLine(const JournalEntry& e)
       << ",\"d\":" << e.durationSec
       << ",\"x\":" << e.exitCode
       << ",\"i\":" << (e.interrupted ? 1 : 0)
-      << ",\"h\":\"" << JsonEscape(e.host)
+      << ",\"b\":" << e.blockId
+      << ",\"k\":\"" << JsonEscape(e.sessionKey)
+      << "\",\"h\":\"" << JsonEscape(e.host)
       << "\",\"w\":\"" << JsonEscape(e.cwd)
       << "\",\"c\":\"" << JsonEscape(e.command) << "\"}";
     return o.str();
@@ -140,6 +142,9 @@ bool CommandJournal::FromLine(const std::string& line, JournalEntry& out)
         e.exitCode = static_cast<int>(v);
     if (FieldNum(line, "i", v))
         e.interrupted = v != 0.0;
+    if (FieldNum(line, "b", v))
+        e.blockId = static_cast<uint64_t>(v < 0.0 ? 0.0 : v);
+    FieldStr(line, "k", e.sessionKey);
     out = std::move(e);
     return true;
 }

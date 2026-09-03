@@ -349,12 +349,25 @@ void VtParser::DispatchOsc()
     // "133;B" command start, "133;C" output start, "133;D;<code>" finished.
     if (m_oscBuf.rfind("133;", 0) == 0 && m_oscBuf.size() >= 5)
     {
-        char kind = m_oscBuf[4];
+        const char kind = m_oscBuf[4];
         int code = 0;
+        bool hasCode = false;
+        // "133;D" on its own means the command ENDED. It does not mean it
+        // succeeded, and passing 0 for it would put a fabricated success into
+        // the block and the journal. Only "133;D;<digits>" carries a status.
         if (kind == 'D' && m_oscBuf.size() >= 7 && m_oscBuf[5] == ';')
-            code = atoi(m_oscBuf.c_str() + 6);
+        {
+            const char* p = m_oscBuf.c_str() + 6;
+            const bool neg = (*p == '-');
+            const char* d = neg ? p + 1 : p;
+            if (*d >= '0' && *d <= '9')
+            {
+                code = atoi(p);
+                hasCode = true;
+            }
+        }
         if (m_mark)
-            m_mark(kind, code);
+            m_mark(kind, code, hasCode);
         return;
     }
     // OSC 52 — remote clipboard write: "52;<targets>;<base64>". Only writes

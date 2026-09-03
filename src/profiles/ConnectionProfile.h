@@ -221,6 +221,13 @@ struct ConnectionProfile
     bool        restoreCwd = false;
     bool        restoreForwards = true;
 
+    // ---- Terminal > Command blocks (OSC 133) ------------------------------
+    // Tell me when a long command finishes. -1 on either follows the global
+    // setting, matching how palette / themeId defer. A command shorter than
+    // the threshold never notifies — that is the whole point of it.
+    int         notifyCommands = -1;      // -1 global, else amber::NotifyOn
+    int         notifyAfterSeconds = -1;  // -1 global, else seconds
+
     // ---- Connection > Data -----------------------------------------------
     std::string termType = "xterm-256color";
     std::string termSpeed = "38400,38400";

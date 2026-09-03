@@ -10,6 +10,7 @@
 
 #include "../profiles/ConnectionProfile.h"
 #include "../ssh/session.h"
+#include "CommandBlocks.h"
 #include "Guardian.h"
 #include "../term/ImageDecode.h"
 #include "../term/grid.h"
@@ -78,30 +79,31 @@ struct Session
     std::string pendingCwd;      // the remote directory it ran in
     int64_t pendingStartedAt = 0;   // Unix seconds
 
-    // --- output folding ----------------------------------------------------
-    // One fold per completed command: the rows its output occupies, plus the
-    // summary shown in their place when it is collapsed. Rows are ABSOLUTE
-    // ids (TotalPushed + screen row) so they survive scrolling.
-    struct Fold
-    {
-        uint64_t firstRow = 0;    // first output row, inclusive
-        uint64_t lastRow = 0;     // last output row, inclusive
-        int exitCode = 0;
-        double durationSec = 0.0;
-        int lines = 0;
-        bool collapsed = false;
-        std::u32string summary;   // rendered in place of the folded rows
-    };
+    // --- command blocks (sessions/CommandBlocks.h) --------------------------
+    // One block per command the shell reported through OSC 133: the rows its
+    // prompt, input and output occupy, plus what it was and how it went.
+    // Rows are ABSOLUTE ids (TotalPushed + screen row) so they survive
+    // scrolling. A block is metadata REFERENCING the grid — never a copy of
+    // it — so selection, search and copy keep reading the grid itself.
     uint64_t outputStartRow = 0;   // absolute row of the OSC 133 'C' mark
-    std::vector<Fold> folds;
+    std::vector<CommandBlock> blocks;
+    uint64_t nextBlockId = 1;
+    // A reconnect or a full reset restarts Grid::TotalPushed at zero, and
+    // every row id a block holds then points at a row that no longer exists.
+    // Detected as the push counter going backwards, and answered by dropping
+    // the blocks: they reference rows, so rows that are gone take them.
+    uint64_t blocksPushedSeen = 0;
+    uint64_t runningBlockId = 0;   // the block between C and D, 0 = none
+    uint64_t runningBytes = 0;     // output bytes counted since the C mark
+    bool notifyRunning = false;    // "notify me when this one finishes"
     // Display row -> what to draw there, rebuilt each frame. src is a raw
-    // grid view row when foldIndex < 0, otherwise the fold to summarise.
-    struct RowSlot { int src = 0; int foldIndex = -1; };
+    // grid view row when blockIndex < 0, otherwise the block to summarise.
+    struct RowSlot { int src = 0; int blockIndex = -1; };
     std::vector<RowSlot> rowMap;
     bool AnyCollapsed() const
     {
-        for (const Fold& f : folds)
-            if (f.collapsed)
+        for (const CommandBlock& b : blocks)
+            if (b.collapsed)
                 return true;
         return false;
     }

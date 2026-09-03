@@ -49,7 +49,10 @@ public:
     using WriteFn = std::function<void(const char*, size_t)>;   // replies → SSH
     using TitleFn = std::function<void(const std::string&)>;    // OSC 0/2
     using ClipFn  = std::function<void(const std::string&)>;    // OSC 52 base64
-    using MarkFn  = std::function<void(char, int)>;             // OSC 133 marks
+    // OSC 133 marks. hasCode is false when "133;D" arrived with no status
+    // after it: the shell said the command ENDED, not that it succeeded, and
+    // reporting that as exit 0 would invent a result.
+    using MarkFn  = std::function<void(char, int, bool)>;
     using CwdFn   = std::function<void(const std::string&)>;    // OSC 7 cwd
     using ResizeFn = std::function<void(int cols, int rows)>;   // CSI 8;r;c t
     // Inline image at the cursor (Sixel / Kitty). cols/rows are the

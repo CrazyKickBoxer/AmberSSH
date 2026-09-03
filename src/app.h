@@ -201,6 +201,43 @@ private:
     void OnSessionGaveUp(amber::Session& s);
     void GuardianStop(amber::Session& s);     // "stop reconnecting"
     void GuardianRetryNow(amber::Session& s); // "reconnect now"
+
+    // ---- command blocks (sessions/CommandBlocks.h) -----------------------
+    // Blocks are metadata referencing grid rows; every one of these reads the
+    // grid rather than storing text.
+    static constexpr size_t kMaxBlocks = 4000;
+    static int AbsIndexForRow(const amber::Session& s, uint64_t rowId);
+
+    // Un-trimmed: Copy Output must preserve indentation, unlike the RowText
+    // above, which strips it to name a command in the status bar.
+    std::string RowTextRaw(const amber::Session& s, uint64_t rowId) const;
+    std::string BlockOutputText(const amber::Session& s,
+                                const amber::CommandBlock& b) const;
+    std::string FirstOutputLine(const amber::Session& s,
+                                const amber::CommandBlock& b) const;
+    amber::CommandBlock* OpenBlock(amber::Session& s);
+    amber::CommandBlock& BeginBlock(amber::Session& s, uint64_t row);
+    void FinishBlockSummary(amber::Session& s, amber::CommandBlock& b);
+    void NotifyBlockFinished(amber::Session& s, const amber::CommandBlock& b);
+    // The block under the cursor, else the most recent one; nullptr if none.
+    amber::CommandBlock* BlockAtCursor(amber::Session& s);
+    // One of the IdmBlock* commands. blockId names the block explicitly (the
+    // right-click menu knows which one was clicked); 0 means the one at the
+    // cursor, which is what the menu bar and the palette mean.
+    void BlockAction(int cmd, uint64_t blockId = 0);
+    void RebuildBlockSummaries(amber::Session& s);
+    void SaveBlockSnippet(const amber::CommandBlock& b);
+    void SearchWithinBlock(amber::Session& s, const amber::CommandBlock& b);
+    // Scrolls a row into view, expanding the block that hides it. This is
+    // what stops a search from reporting a match inside folded output and
+    // then landing the selection somewhere else.
+    bool RevealRow(amber::Session& s, uint64_t rowId, bool* expandedOut = nullptr);
+    void JumpToBookmark(int dir);
+    bool m_foldShowCwd = false;      // summary carries the working directory
+    bool m_foldFirstLine = true;     // ...and the first line of the output
+    // Completion notifications: the global default a profile defers to.
+    int m_notifyCommands = 0;        // amber::NotifyOn
+    int m_notifyAfterSecs = 30;
     void DrainSessionOutput(amber::Session& s, int budget);
     int  TabHitTest(int px, int py) const;
 
@@ -427,7 +464,9 @@ private:
     double m_lastWeatherSample = 0.0;
     void DrawLiveEffects();
     void UpdateWeather();
-    void OnShellMark(amber::Session& s, char kind, int code);   // OSC 133
+    // OSC 133. hasCode is false for a bare "133;D": the command ended, but
+    // the shell did not say how, and 0 would be a fabricated success.
+    void OnShellMark(amber::Session& s, char kind, int code, bool hasCode);
     void AddEmber(amber::Session& s, bool severe, int rowsBelow);   // error line → red smoulder
     double m_shakeStart = -1e9;        // screen shake anchor
     float m_scrollBarAlpha = 0.0f;     // scroll-position phosphor bar fade
@@ -500,6 +539,8 @@ private:
     bool JournalKey(WPARAM vk);
     void DrawJournal();
     void DrawNotices();   // guardian annotations over the grid (never in it)
+    void DrawBlockGutter();   // command-block bars and metadata, also over it
+    bool m_blockGutter = true;
     // Reads the typed command off the grid between the OSC 133 B and C marks.
     std::string LiftCommandText(const amber::Session& s) const;
     int m_bgStyle = 0;                 // 0 off, 1 Embers, 2 Starfield, 3 Cosmic Dust

@@ -30,6 +30,12 @@ struct JournalEntry
     bool interrupted = false;
     double durationSec = 0.0;
     int64_t startedAt = 0;   // Unix seconds, for "3h ago"
+    // Provenance, so the journal and the live command blocks are one history
+    // rather than two. blockId is session-local and only means anything while
+    // that session is open — a journal entry loaded from disk in a later run
+    // has no live block to jump to, and the UI says so instead of guessing.
+    uint64_t blockId = 0;
+    std::string sessionKey;  // profile id, or the session label
 };
 
 class CommandJournal

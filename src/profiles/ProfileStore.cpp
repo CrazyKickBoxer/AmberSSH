@@ -175,6 +175,8 @@ json ToJson(const ConnectionProfile& p)
         {"reattachCommand", p.reattachCommand},
         {"restoreCwd", p.restoreCwd},
         {"restoreForwards", p.restoreForwards},
+        {"notifyCommands", p.notifyCommands},
+        {"notifyAfterSeconds", p.notifyAfterSeconds},
         {"tcpNoDelay", p.tcpNoDelay},
         {"tcpKeepalive", p.tcpKeepalive},
         {"ipVersion", p.ipVersion},
@@ -334,6 +336,8 @@ bool FromJson(const json& j, ConnectionProfile& out)
     out.reattachCommand = Get<std::string>(j, "reattachCommand", std::string());
     out.restoreCwd = Get<bool>(j, "restoreCwd", false);
     out.restoreForwards = Get<bool>(j, "restoreForwards", true);
+    out.notifyCommands = std::clamp(Get<int>(j, "notifyCommands", -1), -1, 3);
+    out.notifyAfterSeconds = std::clamp(Get<int>(j, "notifyAfterSeconds", -1), -1, 86400);
     out.tcpNoDelay = Get<bool>(j, "tcpNoDelay", true);
     out.tcpKeepalive = Get<bool>(j, "tcpKeepalive", false);
     out.ipVersion = Get<int>(j, "ipVersion", 0);

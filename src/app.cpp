@@ -70,6 +70,26 @@ enum MenuId : int
     IdmGuardianStop = 41600,       // stop reconnecting this session
     IdmGuardianRetry,              // reconnect now, skipping the wait
 
+    // Command blocks. Every one of these acts on the block at the cursor.
+    IdmBlockCopyCommand = 41620,
+    IdmBlockCopyOutput,
+    IdmBlockCopyBoth,
+    IdmBlockFold,                  // fold / expand this one
+    IdmBlockSnippet,               // save the command to snippets.txt
+    IdmBlockBookmark,              // mark it, session-local
+    IdmBlockSearch,                // search inside this block's output
+    IdmBlockRerun,                 // TYPE the command, never run it
+    IdmBlockRerunNow,              // the deliberate run-now gesture
+    IdmBlockNotify,                // tell me when this one finishes
+    IdmBlockPrevBookmark,
+    IdmBlockNextBookmark,
+    IdmBlockSummaryCwd,            // summaries carry the working directory
+    IdmBlockSummaryFirstLine,      // ...and the first line of output
+    IdmBlockGutter,                // the gutter bars and hover metadata
+    IdmBlockNotifyFirst = 41650,   // +0..3 → amber::NotifyOn (global default)
+    IdmBlockNotifyLast = IdmBlockNotifyFirst + 3,
+    IdmBlockNotifyAfter = 41660,   // set the global threshold, in seconds
+
     IdmMotionFirst = 41000,        // +0..N → index into kMotionStyles
     IdmMotionLast  = IdmMotionFirst + kMotionStyleCount - 1,
     IdmReducedMotion = 40120,      // accessibility: short Direct morph only
@@ -1087,6 +1107,13 @@ void App::DrainSessionOutput(amber::Session& s, int budget)
             s.echoRttMs = static_cast<float>((m_time - s.echoSentAt) * 1000.0);
             s.echoClosedAt = m_time;
         }
+        // Bytes the block is charged with. Counted BEFORE the parser runs,
+        // because the C and D marks arrive inside this same stream and the
+        // count has to stop at D. This is bytes received between the two
+        // marks, escape sequences included — which is what the summary means
+        // by a size, and is the only figure AmberSSH can honestly give.
+        if (s.cmdRunning)
+            s.runningBytes += n;
         s.parser.Feed(d, n);
         if (s.logFile)
         {
@@ -1358,8 +1385,8 @@ bool App::StartSession(amber::ConnectionRequest& req)
                                  { return OnInlineImage(*raw, std::move(img), cols, rows); });
     // OSC 133;D — the shell reported a command's exit status: quiet green
     // edge glow for success, red ember wash + ring for failure.
-    session->parser.SetMarkSink([this, raw](char kind, int code)
-                                { OnShellMark(*raw, kind, code); });
+    session->parser.SetMarkSink([this, raw](char kind, int code, bool hasCode)
+                                { OnShellMark(*raw, kind, code, hasCode); });
     // xterm CSI 8 t: the remote app asks for a terminal size (Features page).
     session->parser.SetResizeSink([this, raw](int c, int r) { OnRemoteResize(*raw, c, r); });
     // Every Connection-dialog page that shapes this session: parser
@@ -1652,6 +1679,7 @@ void App::RenderFrame()
     DrawStatusLine();
     DrawLiveEffects();
     DrawNotices();      // guardian annotations: not an effect, always drawn
+    DrawBlockGutter();  // command-block bars: metadata, never terminal text
     DrawPalette();
     DrawJournal();
     DrawPasteGuard();
@@ -2091,10 +2119,18 @@ void App::BuildVisualsFromGrid()
             spotTo = S.grid.TotalPushed() +
                      static_cast<uint64_t>(std::max(0, S.grid.CurY()));
         }
-        else if (!S.folds.empty())
+        else
         {
-            spotFrom = S.folds.back().firstRow;
-            spotTo = S.folds.back().lastRow;
+            // The most recent block that actually printed something. One that
+            // produced no output has no rows to spotlight.
+            for (size_t i = S.blocks.size(); i-- > 0;)
+            {
+                if (!S.blocks[i].hasOutput)
+                    continue;
+                spotFrom = S.blocks[i].outputFirst;
+                spotTo = S.blocks[i].outputLast;
+                break;
+            }
         }
     }
     const uint64_t spotBase = S.grid.TotalPushed() -
@@ -4492,7 +4528,7 @@ void App::OnMouseButton(bool down, int px, int py, bool rightButton, bool middle
             int fold = FoldSummaryAtPx(px, py);
             if (fold >= 0 && HasSession())
             {
-                Foc().folds[static_cast<size_t>(fold)].collapsed = false;
+                Foc().blocks[static_cast<size_t>(fold)].collapsed = false;
                 SetStatus("Expanded output");
                 return;
             }
@@ -5714,6 +5750,45 @@ void App::BuildMenus()
     AppendMenuW(view, MF_STRING, IdmFoldToggle, L"&Fold Output at Cursor\tCtrl+Shift+O");
     AppendMenuW(view, MF_STRING, IdmFoldAll, L"Fold &All Output");
     AppendMenuW(view, MF_STRING, IdmFoldNone, L"&Expand All Output");
+    // ---- the command block at the cursor --------------------------------
+    {
+        HMENU blk = CreatePopupMenu();
+        AppendMenuW(blk, MF_STRING, IdmBlockCopyCommand, L"Copy &Command");
+        AppendMenuW(blk, MF_STRING, IdmBlockCopyOutput, L"Copy &Output");
+        AppendMenuW(blk, MF_STRING, IdmBlockCopyBoth, L"Copy &Both");
+        AppendMenuW(blk, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(blk, MF_STRING, IdmBlockFold, L"&Fold / Expand");
+        AppendMenuW(blk, MF_STRING, IdmBlockSearch, L"&Search in Output...");
+        AppendMenuW(blk, MF_STRING, IdmBlockSnippet, L"Save as S&nippet...");
+        AppendMenuW(blk, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(blk, MF_STRING, IdmBlockBookmark, L"Boo&kmark");
+        AppendMenuW(blk, MF_STRING, IdmBlockPrevBookmark, L"Previous Bookmark");
+        AppendMenuW(blk, MF_STRING, IdmBlockNextBookmark, L"Next Bookmark");
+        AppendMenuW(blk, MF_SEPARATOR, 0, nullptr);
+        // Type-without-running first, and named so, because it is the one
+        // that cannot do anything by itself.
+        AppendMenuW(blk, MF_STRING, IdmBlockRerun, L"&Type the Command (does not run it)");
+        AppendMenuW(blk, MF_STRING, IdmBlockRerunNow, L"&Run the Command Now");
+        AppendMenuW(blk, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(blk, MF_STRING, IdmBlockNotify, L"Notify When &This One Finishes");
+        HMENU note = CreatePopupMenu();
+        AppendMenuW(note, MF_STRING, IdmBlockNotifyFirst + 0, L"Off");
+        AppendMenuW(note, MF_STRING, IdmBlockNotifyFirst + 1, L"Success only");
+        AppendMenuW(note, MF_STRING, IdmBlockNotifyFirst + 2, L"Failure only");
+        AppendMenuW(note, MF_STRING, IdmBlockNotifyFirst + 3, L"Success and failure");
+        AppendMenuW(note, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(note, MF_STRING, IdmBlockNotifyAfter, L"Only after N seconds...");
+        AppendMenuW(blk, MF_POPUP, reinterpret_cast<UINT_PTR>(note),
+                    L"Notify on &Long Commands");
+        AppendMenuW(blk, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(blk, MF_STRING, IdmBlockSummaryCwd,
+                    L"Folded Summary Shows the &Directory");
+        AppendMenuW(blk, MF_STRING, IdmBlockSummaryFirstLine,
+                    L"Folded Summary Shows the First &Line");
+        AppendMenuW(blk, MF_STRING, IdmBlockGutter, L"Show the Block &Gutter");
+        AppendMenuW(view, MF_POPUP, reinterpret_cast<UINT_PTR>(blk),
+                    L"Command &Block");
+    }
     AppendMenuW(view, MF_STRING, IdmViewSyntaxTint, L"Syntax &Tint");
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_POPUP, reinterpret_cast<UINT_PTR>(faceSub),
@@ -5880,6 +5955,20 @@ void App::UpdateMenuChecks()
     check(IdmStatusBar, m_statusBar);
     check(IdmPasteGuard, m_pasteGuard);
     check(IdmViewSyntaxTint, m_syntaxTint);
+    check(IdmBlockSummaryCwd, m_foldShowCwd);
+    check(IdmBlockSummaryFirstLine, m_foldFirstLine);
+    check(IdmBlockGutter, m_blockGutter);
+    check(IdmBlockNotify, HasSession() && Foc().notifyRunning);
+    CheckMenuRadioItem(m_menu, IdmBlockNotifyFirst, IdmBlockNotifyLast,
+                       IdmBlockNotifyFirst + std::clamp(m_notifyCommands, 0, 3),
+                       MF_BYCOMMAND);
+    // Bookmark reflects the block the cursor is in, so the item reports as
+    // well as acts.
+    if (HasSession())
+    {
+        amber::CommandBlock* b = BlockAtCursor(Foc());
+        check(IdmBlockBookmark, b && b->bookmarked);
+    }
     DrawMenuBar(m_hwnd);
 }
 
@@ -6100,6 +6189,15 @@ bool App::HandleMenuCommand(int id)
         SetStatus(std::string("Motion: ") +
                   MotionStyleAt(static_cast<uint32_t>(m_motionStyle)).name +
                   (m_particles.tun.reducedMotion ? " (reduced motion on)" : ""));
+        SaveSettings();
+        UpdateMenuChecks();
+        return true;
+    }
+    if (id >= IdmBlockNotifyFirst && id <= IdmBlockNotifyLast)
+    {
+        m_notifyCommands = id - IdmBlockNotifyFirst;
+        SetStatus(std::string("Long-command notifications: ") +
+                  amber::NotifyOnName(static_cast<amber::NotifyOn>(m_notifyCommands)));
         SaveSettings();
         UpdateMenuChecks();
         return true;
@@ -6365,6 +6463,54 @@ bool App::HandleMenuCommand(int id)
         if (HasSession())
             GuardianRetryNow(Foc());
         return true;
+
+    case IdmBlockCopyCommand:
+    case IdmBlockCopyOutput:
+    case IdmBlockCopyBoth:
+    case IdmBlockFold:
+    case IdmBlockSnippet:
+    case IdmBlockBookmark:
+    case IdmBlockSearch:
+    case IdmBlockRerun:
+    case IdmBlockRerunNow:
+    case IdmBlockNotify:
+    case IdmBlockPrevBookmark:
+    case IdmBlockNextBookmark:
+        BlockAction(id);
+        return true;
+    case IdmBlockSummaryCwd:
+        m_foldShowCwd = !m_foldShowCwd;
+        if (HasSession())
+            ForEachSession([&](amber::Session& s) { RebuildBlockSummaries(s); });
+        SetStatus(m_foldShowCwd ? "Folded summaries show the directory"
+                                : "Folded summaries omit the directory");
+        SaveSettings();
+        return true;
+    case IdmBlockSummaryFirstLine:
+        m_foldFirstLine = !m_foldFirstLine;
+        if (HasSession())
+            ForEachSession([&](amber::Session& s) { RebuildBlockSummaries(s); });
+        SetStatus(m_foldFirstLine ? "Folded summaries show the first output line"
+                                  : "Folded summaries omit the first output line");
+        SaveSettings();
+        return true;
+    case IdmBlockGutter:
+        m_blockGutter = !m_blockGutter;
+        SetStatus(m_blockGutter ? "Command block gutter on"
+                                : "Command block gutter off");
+        SaveSettings();
+        return true;
+    case IdmBlockNotifyAfter:
+    {
+        std::string secs = std::to_string(m_notifyAfterSecs);
+        if (!PromptText("Notify only after a command has run this many seconds", secs))
+            return true;
+        m_notifyAfterSecs = std::clamp(atoi(secs.c_str()), 0, 86400);
+        SetStatus("Long-command notifications after " +
+                  std::to_string(m_notifyAfterSecs) + "s");
+        SaveSettings();
+        return true;
+    }
     case IdmExit:
         PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
         return true;
@@ -6881,6 +7027,11 @@ void App::LoadSettings()
         readInt("\"reducedMotion\"", osAnim ? 0 : 1) != 0;
     m_journalOn = readInt("\"journal\"", 1) != 0;
     m_statusBar = readInt("\"statusBar\"", 1) != 0;
+    m_blockGutter = readInt("\"blockGutter\"", 1) != 0;
+    m_foldShowCwd = readInt("\"blockSummaryCwd\"", 0) != 0;
+    m_foldFirstLine = readInt("\"blockSummaryFirstLine\"", 1) != 0;
+    m_notifyCommands = std::clamp(readInt("\"notifyCommands\"", 0), 0, 3);
+    m_notifyAfterSecs = std::clamp(readInt("\"notifyAfterSecs\"", 30), 0, 86400);
     m_pasteGuard = readInt("\"pasteGuard\"", 1) != 0;
     m_departStyle = std::clamp(readInt("\"departStyle\"", 0), 0, 4);
     m_fxParallax = readInt("\"fxParallax\"", 0) != 0;
@@ -6986,6 +7137,11 @@ void App::SaveSettings()
             "  \"fxPersist\": %d,\n"
             "  \"fxCube\": %d,\n"
             "  \"chrome\": %d,\n"
+            "  \"blockGutter\": %d,\n"
+            "  \"blockSummaryCwd\": %d,\n"
+            "  \"blockSummaryFirstLine\": %d,\n"
+            "  \"notifyCommands\": %d,\n"
+            "  \"notifyAfterSecs\": %d,\n"
             "  \"hostThemes\": \"%s\"\n"
             "}\n",
             m_densityAuto ? 1 : 0, m_densityPpc, m_crispCore ? 1 : 0,
@@ -7011,7 +7167,9 @@ void App::SaveSettings()
             m_fxHeat ? 1 : 0, m_fxGhost ? 1 : 0, m_fxAudio ? 1 : 0,
             m_fxBoot ? 1 : 0, m_saverSecs, m_helloUnlock ? 1 : 0,
             m_vitalsOn ? 1 : 0, m_quake ? 1 : 0, m_sharpness, m_fxLive ? 1 : 0,
-            m_fxPersist ? 1 : 0, m_fxCube ? 1 : 0, m_chromeId, m_hostThemes.c_str());
+            m_fxPersist ? 1 : 0, m_fxCube ? 1 : 0, m_chromeId,
+            m_blockGutter ? 1 : 0, m_foldShowCwd ? 1 : 0, m_foldFirstLine ? 1 : 0,
+            m_notifyCommands, m_notifyAfterSecs, m_hostThemes.c_str());
     fclose(f);
 }
 
@@ -7042,6 +7200,21 @@ void App::BuildPaletteItems()
     add("Disconnect", IdmDisconnect);
     add("Reconnect Now", IdmGuardianRetry);
     add("Stop Reconnecting", IdmGuardianStop);
+    // Command blocks — every action names the block it acts on so the
+    // palette entry reads the same way the menu does.
+    add("Block: Copy Command", IdmBlockCopyCommand);
+    add("Block: Copy Output", IdmBlockCopyOutput);
+    add("Block: Copy Command + Output", IdmBlockCopyBoth);
+    add("Block: Fold / Expand", IdmBlockFold);
+    add("Block: Search in Output...", IdmBlockSearch);
+    add("Block: Save as Snippet...", IdmBlockSnippet);
+    add("Block: Bookmark", IdmBlockBookmark);
+    add("Block: Previous Bookmark", IdmBlockPrevBookmark);
+    add("Block: Next Bookmark", IdmBlockNextBookmark);
+    add("Block: Type the Command (does not run it)", IdmBlockRerun);
+    add("Block: Run the Command Now", IdmBlockRerunNow);
+    add("Block: Notify When This One Finishes", IdmBlockNotify);
+    add(std::string("Block Gutter") + onoff(m_blockGutter), IdmBlockGutter);
     add("Split Vertical", IdmSplitVertical);
     add("Split Horizontal", IdmSplitHorizontal);
     add("Close Split", IdmSplitClose);
@@ -7291,6 +7464,43 @@ bool App::JournalKey(WPARAM vk)
                 SetStatus("Journal: command copied");
             }
             m_swallowChar = true;
+            return true;
+        }
+        return true;
+    case 'J':
+        // Jump to the live block this entry came from, when it is still on
+        // screen. The link is only meaningful inside the session that
+        // recorded it and only while its rows survive; anything else says so
+        // rather than jumping somewhere arbitrary.
+        if (ctrl)
+        {
+            m_swallowChar = true;
+            const amber::JournalEntry* e = selected();
+            if (!e || !HasSession())
+                return true;
+            if (e->blockId == 0)
+            {
+                SetStatus("That entry predates command blocks — no live block "
+                          "to jump to.", 6.0);
+                return true;
+            }
+            amber::Session& s = Foc();
+            const std::string key = s.profile.id.empty() ? s.label : s.profile.id;
+            if (!e->sessionKey.empty() && e->sessionKey != key)
+            {
+                SetStatus("That command ran in a different session.", 5.0);
+                return true;
+            }
+            const amber::CommandBlock* b = amber::BlockById(s.blocks, e->blockId);
+            if (!b)
+            {
+                SetStatus("That command has scrolled out of this session's "
+                          "buffer.", 6.0);
+                return true;
+            }
+            m_jrnOpen = false;
+            RevealRow(s, b->promptRow);
+            SetStatus("Jumped to \"" + e->command + "\"", 4.0);
             return true;
         }
         return true;
@@ -7645,6 +7855,207 @@ void App::DrawNotices()
     }
 }
 
+// Command blocks, as a gutter. A hairline bar in the left margin spanning
+// each block's output, coloured by outcome; the block under the pointer
+// brightens and shows its metadata at the right-hand end of its first row.
+//
+// Restrained on purpose: this is an annotation layer over the grid, drawn
+// from block metadata. Nothing is inserted into the terminal stream, so the
+// summary line cannot appear in a copy, a search or a session log — the same
+// rule the guardian notices follow.
+void App::DrawBlockGutter()
+{
+    if (!m_blockGutter || !HasSession() || m_minimized)
+        return;
+    amber::Session& F = Foc();
+    if (F.blocks.empty() || F.grid.AltActive())
+        return;
+
+    int co = 0, ro = 0;
+    PaneOffset(F, co, ro);
+    const float dpi = static_cast<float>(m_dpi) / 96.0f;
+    const int rows = F.grid.Rows(), cols = F.grid.Cols();
+    const float paneX = m_gm.originX + static_cast<float>(co) * m_gm.cellW;
+    const float paneW = static_cast<float>(cols) * m_gm.cellW;
+    const int64_t top = static_cast<int64_t>(F.grid.TotalPushed()) -
+                        F.grid.ViewOffset();
+
+    const amber::ChromeSpec& ch = amber::Chrome();
+    const bool skin = amber::ChromeSkinned();
+    const bool lightGround = m_appearance == 1 || m_appearance == 2;
+    const PrimLayer ink = lightGround ? PrimLayer::OverBlend : PrimLayer::Over;
+
+    // Which block owns each DISPLAY row. Going through the fold map rather
+    // than computing view rows arithmetically is what makes the bar follow
+    // what is actually drawn: a collapsed block occupies one row on screen,
+    // not the hundred-and-twenty it references.
+    //
+    // Merged walk, not a search per row. Blocks and display rows both ascend,
+    // so one cursor over each answers every row in a single pass — a
+    // BlockIndexAtRow per row would be rows x blocks every frame, which is
+    // 200,000 comparisons once a session has a few thousand of them.
+    std::vector<int> rowBlock(static_cast<size_t>(std::max(0, rows)), -1);
+    {
+        size_t cur = 0;
+        int64_t prevSrc = -1;
+        for (int d = 0; d < rows; ++d)
+        {
+            const int src = (d < static_cast<int>(F.rowMap.size())) ? F.rowMap[d].src : d;
+            const uint64_t abs = static_cast<uint64_t>(top + src);
+            // The fold map is monotonic, but be defensive: a row that went
+            // backwards restarts the cursor rather than silently mismatching.
+            if (src < prevSrc)
+                cur = 0;
+            prevSrc = src;
+            while (cur < F.blocks.size())
+            {
+                const amber::CommandBlock& b = F.blocks[cur];
+                const uint64_t last = b.hasOutput ? b.outputLast
+                                                  : std::max(b.promptRow, b.inputRow);
+                if (last >= abs)
+                    break;
+                ++cur;
+            }
+            if (cur < F.blocks.size() && abs >= F.blocks[cur].promptRow)
+                rowBlock[static_cast<size_t>(d)] = static_cast<int>(cur);
+        }
+    }
+
+    // The block under the pointer, in the same display-row space.
+    int hoverIdx = -1;
+    if (m_gm.cellH > 0.0f)
+    {
+        const int hd = static_cast<int>((static_cast<float>(m_lastMousePy) -
+                                         m_gm.originY) / m_gm.cellH) - ro;
+        const float hx = static_cast<float>(m_lastMousePx);
+        if (hd >= 0 && hd < rows && hx >= paneX - 8.0f * dpi && hx <= paneX + paneW)
+            hoverIdx = rowBlock[static_cast<size_t>(hd)];
+    }
+
+    auto outcomeColour = [&](const amber::CommandBlock& b, float out[3]) {
+        if (b.running)
+        {
+            if (skin) SrgbToLinear(ch.neonB, out);
+            else AmberRampCpu(0.85f, out);
+        }
+        else if (b.Failed())
+        {
+            if (skin) SrgbToLinear(ch.danger, out);
+            else { out[0] = 1.0f; out[1] = 0.30f; out[2] = 0.10f; }
+        }
+        else if (b.Unknown())
+        {
+            // Neither succeeded nor failed. A third colour, because painting
+            // it as either would be a claim AmberSSH cannot make.
+            out[0] = out[1] = out[2] = 0.62f;
+        }
+        else
+        {
+            if (skin) SrgbToLinear(ch.neonA, out);
+            else AmberRampCpu(0.70f, out);
+        }
+    };
+
+    // Walk the display rows, emitting one bar per run of rows owned by the
+    // same block.
+    for (int d = 0; d < rows;)
+    {
+        const int idx = rowBlock[static_cast<size_t>(d)];
+        if (idx < 0)
+        {
+            ++d;
+            continue;
+        }
+        int e = d;
+        while (e + 1 < rows && rowBlock[static_cast<size_t>(e + 1)] == idx)
+            ++e;
+        const amber::CommandBlock& b = F.blocks[static_cast<size_t>(idx)];
+        const int64_t a = d, z = e;
+        const size_t i = static_cast<size_t>(idx);
+        d = e + 1;
+
+        float rgb[3];
+        outcomeColour(b, rgb);
+        const bool hot = static_cast<int>(i) == hoverIdx;
+        const float alpha = b.bookmarked ? 0.95f : hot ? 0.85f : 0.45f;
+        const float w = (b.bookmarked || hot) ? 3.0f * dpi : 2.0f * dpi;
+        const float y0 = m_gm.originY + static_cast<float>(a + ro) * m_gm.cellH;
+        const float y1 = m_gm.originY + static_cast<float>(z + 1 + ro) * m_gm.cellH;
+        float bar[4] = { rgb[0], rgb[1], rgb[2], alpha };
+        m_prims.AddRectRgba(paneX - 6.0f * dpi, y0, w, y1 - y0, bar, 0.0f, ink);
+
+        // The metadata line: only for the block under the pointer, and only
+        // for one that has finished. A running block gets the elapsed clock
+        // below instead.
+        if (!hot || b.running)
+            continue;
+        std::string meta = amber::FormatOutcome(b);
+        meta += "  " + amber::FormatDuration(b.durationSec);
+        if (b.lines > 0)
+            meta += "  " + std::to_string(b.lines) +
+                    (b.lines == 1 ? " line" : " lines");
+        if (b.bytes > 0)
+            meta += "  " + amber::FormatBytes(b.bytes);
+        if (!b.cwd.empty())
+            meta += "  " + b.cwd;
+        if (b.startedAt > 0)
+        {
+            const std::time_t t = static_cast<std::time_t>(b.startedAt);
+            std::tm tmv{};
+            if (localtime_s(&tmv, &t) == 0)
+            {
+                char clock[16];
+                snprintf(clock, sizeof(clock), "  %02d:%02d", tmv.tm_hour, tmv.tm_min);
+                meta += clock;
+            }
+        }
+        meta = " " + meta + " ";
+
+        float tw = m_prims.MeasureText(meta, m_sampler);
+        if (tw > paneW * 0.9f)
+            continue;                     // no room: the bar alone will do
+        const float lx = paneX + paneW - tw;
+        const float ly = m_gm.originY + static_cast<float>(a + ro) * m_gm.cellH;
+        float pad[4] = { 0.0f, 0.0f, 0.0f, lightGround ? 0.92f : 0.88f };
+        if (lightGround)
+        { pad[0] = 0.92f; pad[1] = 0.91f; pad[2] = 0.88f; }
+        m_prims.AddRectRgba(lx, ly, tw, m_gm.cellH, pad, 0.0f, PrimLayer::OverBlend);
+        if (lightGround)
+            m_prims.AddTextCore(lx, ly, meta, rgb, 1.0f, m_sampler);
+        else
+            m_prims.AddTextRgb(lx, ly, meta, rgb, m_sampler);
+    }
+
+    // A running command counts up, at the right-hand end of the row its
+    // output started on. This is the "show elapsed time" the spec asks for,
+    // and it costs the shell nothing: the prompt is never touched.
+    if (F.cmdRunning && F.outputStartRow > 0)
+    {
+        const int64_t vr = static_cast<int64_t>(F.outputStartRow) - top;
+        if (vr >= 0 && vr < rows)
+        {
+            std::string t = " " + amber::FormatDuration(m_time - F.cmdStart);
+            if (F.notifyRunning)
+                t += "  will report";
+            t += " ";
+            const float tw = m_prims.MeasureText(t, m_sampler);
+            const float lx = paneX + paneW - tw;
+            const float ly = m_gm.originY + static_cast<float>(vr + ro) * m_gm.cellH;
+            float rgb[3];
+            if (skin) SrgbToLinear(ch.neonB, rgb);
+            else AmberRampCpu(0.85f, rgb);
+            float pad[4] = { 0.0f, 0.0f, 0.0f, lightGround ? 0.92f : 0.88f };
+            if (lightGround)
+            { pad[0] = 0.92f; pad[1] = 0.91f; pad[2] = 0.88f; }
+            m_prims.AddRectRgba(lx, ly, tw, m_gm.cellH, pad, 0.0f, PrimLayer::OverBlend);
+            if (lightGround)
+                m_prims.AddTextCore(lx, ly, t, rgb, 1.0f, m_sampler);
+            else
+                m_prims.AddTextRgb(lx, ly, t, rgb, m_sampler);
+        }
+    }
+}
+
 void App::DrawJournal()
 {
     if (!m_jrnOpen)
@@ -7788,7 +8199,7 @@ void App::DrawJournal()
     // Key legend along the foot, so the two Enter behaviours are discoverable.
     const float hy = y0 + boxH - pad - lineH * 0.9f;
     m_prims.AddText(tx, hy,
-                    "enter insert   ctrl+enter run   ctrl+c copy   del forget",
+                    "enter insert   ctrl+enter run   ctrl+j jump   ctrl+c copy   del forget",
                     0.34f, m_sampler);
 }
 
@@ -7907,8 +8318,174 @@ std::string App::LiftCommandText(const amber::Session& s) const
     return out;
 }
 
-void App::OnShellMark(amber::Session& s, char kind, int code)
+// ------------------------------------------------------------ block ranges
+// An absolute row id addresses AbsCell at a different index: AbsCell counts
+// from the oldest retained line, the id counts from the first line ever
+// pushed. Returns -1 when the row has been trimmed away.
+int App::AbsIndexForRow(const amber::Session& s, uint64_t rowId)
 {
+    const Grid& g = s.grid;
+    const uint64_t base = g.TotalPushed() -
+                          static_cast<uint64_t>(g.ScrollbackSize());
+    if (rowId < base)
+        return -1;
+    const int idx = static_cast<int>(rowId - base);
+    return idx < g.ScrollbackSize() + g.Rows() ? idx : -1;
+}
+
+// One line of the grid, trailing blanks removed. Reads the canonical grid;
+// no block ever stores text.
+std::string App::RowTextRaw(const amber::Session& s, uint64_t rowId) const
+{
+    const int idx = AbsIndexForRow(s, rowId);
+    if (idx < 0)
+        return {};
+    const Grid& g = s.grid;
+    std::string line;
+    for (int c = 0; c < g.Cols(); ++c)
+    {
+        const Cell& cell = g.AbsCell(idx, c);
+        if (cell.flags & CellWideTail)
+            continue;
+        AppendUtf8(line, cell.cp == 0 ? U' ' : cell.cp);
+    }
+    while (!line.empty() && (line.back() == ' ' || line.back() == '\t'))
+        line.pop_back();
+    return line;
+}
+
+// The output of a block, as text, straight out of the grid. Rows that have
+// been trimmed are simply absent — never guessed at.
+std::string App::BlockOutputText(const amber::Session& s, const amber::CommandBlock& b) const
+{
+    if (!b.hasOutput)
+        return {};
+    std::string out;
+    for (uint64_t r = b.outputFirst; r <= b.outputLast; ++r)
+    {
+        if (AbsIndexForRow(s, r) < 0)
+            continue;
+        out += RowTextRaw(s, r);
+        out += "\n";
+    }
+    return out;
+}
+
+std::string App::FirstOutputLine(const amber::Session& s, const amber::CommandBlock& b) const
+{
+    if (!b.hasOutput)
+        return {};
+    // Bounded: a block whose first hundred rows are blank is not worth
+    // walking further for a summary line.
+    const uint64_t stop = std::min(b.outputLast, b.outputFirst + 99);
+    for (uint64_t r = b.outputFirst; r <= stop; ++r)
+    {
+        std::string line = RowTextRaw(s, r);
+        const size_t a = line.find_first_not_of(" \t");
+        if (a == std::string::npos)
+            continue;
+        return line.substr(a);
+    }
+    return {};
+}
+
+// The block currently being assembled: the last one, while it has not yet
+// been finished by a 'D'. Returns nullptr when there is none.
+amber::CommandBlock* App::OpenBlock(amber::Session& s)
+{
+    if (s.blocks.empty())
+        return nullptr;
+    amber::CommandBlock& b = s.blocks.back();
+    return b.hasExit || b.interrupted ? nullptr : &b;
+}
+
+// Starts a block at `row`. Any block still open is closed first, truthfully:
+// a new prompt means the previous command ended, but the shell never said
+// how, so it gets no exit status rather than a made-up one.
+amber::CommandBlock& App::BeginBlock(amber::Session& s, uint64_t row)
+{
+    if (amber::CommandBlock* prev = OpenBlock(s))
+    {
+        prev->running = false;
+        prev->hasExit = false;
+        if (prev->outputFirst > 0 && row > prev->outputFirst)
+        {
+            prev->outputLast = row - 1;
+            prev->hasOutput = true;
+            prev->lines = static_cast<int>(prev->outputLast - prev->outputFirst + 1);
+        }
+        FinishBlockSummary(s, *prev);
+    }
+    amber::CommandBlock b;
+    b.id = s.nextBlockId++;
+    b.sessionKey = s.profile.id.empty() ? s.label : s.profile.id;
+    b.promptRow = row;
+    b.inputRow = row;
+    s.blocks.push_back(std::move(b));
+    // Blocks are bounded by the scrollback that backs them, and by a ceiling
+    // so a session that runs for days cannot grow the list without limit.
+    const uint64_t oldest = s.grid.TotalPushed() -
+                            static_cast<uint64_t>(s.grid.ScrollbackSize());
+    amber::TrimBlocks(s.blocks, oldest);
+    if (s.blocks.size() > kMaxBlocks)
+        s.blocks.erase(s.blocks.begin(),
+                       s.blocks.begin() + (s.blocks.size() - kMaxBlocks));
+    return s.blocks.back();
+}
+
+void App::FinishBlockSummary(amber::Session& s, amber::CommandBlock& b)
+{
+    // The first non-blank line of the output is usually the useful part of a
+    // long log, so a collapsed block can show it. Read from the grid, never
+    // stored: the block holds no output text of its own.
+    std::string first;
+    if (b.hasOutput && m_foldFirstLine)
+        first = FirstOutputLine(s, b);
+    b.summary = amber::BuildSummary(b, m_foldShowCwd, first);
+}
+
+// A command finished. Two separate reasons to speak up: the user explicitly
+// asked to be told about THIS one, or it ran long enough to cross the
+// profile's threshold. Neither ever fires for a fast command by accident.
+void App::NotifyBlockFinished(amber::Session& s, const amber::CommandBlock& b)
+{
+    const bool asked = s.notifyRunning && s.runningBlockId == b.id;
+    s.notifyRunning = false;
+
+    // -1 on either profile field means "follow the global setting".
+    const amber::NotifyOn mode =
+        s.profile.notifyCommands < 0
+            ? static_cast<amber::NotifyOn>(std::clamp(m_notifyCommands, 0, 3))
+            : static_cast<amber::NotifyOn>(std::clamp(s.profile.notifyCommands, 0, 3));
+    const int threshold = s.profile.notifyAfterSeconds < 0 ? m_notifyAfterSecs
+                                                           : s.profile.notifyAfterSeconds;
+
+    const bool byPolicy = amber::ShouldNotifyCompletion(mode, threshold, b);
+    if (!asked && !byPolicy)
+        return;
+
+    const std::string text = amber::CompletionText(b);
+    // In the foreground the status line is enough and a toast would be rude;
+    // a toast is for work you walked away from.
+    if (!m_focused || m_minimized)
+    {
+        m_tray.Toast(L"AmberSSH — " + WideFromUtf8(s.Caption()), WideFromUtf8(text));
+        s.unread = true;
+    }
+    else if (HasSession() && &s == &Cur())
+    {
+        SetStatus(text, 8.0);
+    }
+}
+
+void App::OnShellMark(amber::Session& s, char kind, int code, bool hasCode)
+{
+    // Anything that is not a mark AmberSSH understands is ignored outright.
+    // A shell (or a hostile server) can emit "OSC 133;X"; it must not create
+    // a block, move a boundary, or disturb the ones that exist.
+    if (kind != 'A' && kind != 'B' && kind != 'C' && kind != 'D')
+        return;
+
     // Command-boundary bookkeeping for the tide marks / running pulse.
     uint64_t rowId = s.grid.TotalPushed() +
                      static_cast<uint64_t>(std::max(0, s.grid.CurY()));
@@ -7918,93 +8495,110 @@ void App::OnShellMark(amber::Session& s, char kind, int code)
         if (s.marks.size() > 400)
             s.marks.erase(s.marks.begin(), s.marks.begin() + 100);
     }
+    if (kind == 'A')
+        BeginBlock(s, rowId);
+
     if (kind == 'B')
     {
         // End of the prompt: everything typed from here to the cursor at 'C'
         // is the command, so remember exactly where the user's text starts.
         s.promptRowId = rowId;
         s.promptCol = s.grid.CurX();
+        // A shell that emits B without A still gets a block.
+        amber::CommandBlock* b = OpenBlock(s);
+        if (!b)
+            b = &BeginBlock(s, rowId);
+        b->inputRow = rowId;
+        b->inputCol = s.grid.CurX();
     }
     if (kind == 'C')
     {
         s.cmdRunning = true;
         s.cmdStart = m_time;
-        s.pendingCmd = m_journalOn ? LiftCommandText(s) : std::string();
+        // The command text is lifted whether or not the journal is capturing:
+        // the block needs it for Copy Command and Rerun, and it costs one
+        // walk of at most ten rows.
+        s.pendingCmd = LiftCommandText(s);
         s.pendingCwd = s.cwd;
         s.pendingStartedAt = static_cast<int64_t>(std::time(nullptr));
         s.promptCol = -1;
         s.outputStartRow = rowId;
+        s.runningBytes = 0;
+
+        amber::CommandBlock* b = OpenBlock(s);
+        if (!b)
+            b = &BeginBlock(s, rowId);     // C with no A and no B
+        b->command = s.pendingCmd;
+        b->cwd = s.pendingCwd;
+        b->startedAt = s.pendingStartedAt;
+        b->outputFirst = rowId;
+        b->running = true;
+        s.runningBlockId = b->id;
     }
     if (kind == 'D')
     {
         s.cmdRunning = false;
         // A failed command leaves the taskbar button red for a few seconds,
         // so a failure that happened while you were in another window is
-        // still visible when you come back.
-        if (code != 0 && HasSession() && &Cur() == &s)
+        // still visible when you come back. An absent status is not a
+        // failure, so it does not light it.
+        if (hasCode && code != 0 && HasSession() && &Cur() == &s)
             m_tbErrorUntil = m_time + 6.0;
-        // Record a fold for this command's output. Created expanded: folding
-        // is something the user asks for, never something that happens to
-        // their screen on its own.
-        if (s.outputStartRow > 0 && rowId > s.outputStartRow && !s.grid.AltActive())
+
+        // Finish the open block. A 'D' with no matching 'C' has nothing to
+        // close, and inventing a block for it would put a command with no
+        // rows into the list.
+        amber::CommandBlock* b = OpenBlock(s);
+        if (b && b->running)
         {
-            amber::Session::Fold f;
-            f.firstRow = s.outputStartRow;
-            f.lastRow = rowId - 1;
-            f.exitCode = code;
-            f.durationSec = std::max(0.0, m_time - s.cmdStart);
-            f.lines = static_cast<int>(f.lastRow - f.firstRow + 1);
-            char meta[96];
-            snprintf(meta, sizeof(meta), "  [%d line%s, %.1fs%s]", f.lines,
-                     f.lines == 1 ? "" : "s", f.durationSec,
-                     code == 0 ? "" : ", failed");
-            std::string head = "\xE2\x96\xB8 " +
-                               (s.pendingCmd.empty() ? std::string("output")
-                                                     : s.pendingCmd);
-            if (head.size() > 100)
-                head = head.substr(0, 100) + "\xE2\x80\xA6";
-            const std::string line = head + meta;
-            f.summary.clear();
-            for (size_t i = 0; i < line.size();)
+            b->running = false;
+            b->hasExit = hasCode;
+            b->exitCode = hasCode ? code : 0;
+            b->endedAt = static_cast<int64_t>(std::time(nullptr));
+            b->durationSec = std::max(0.0, m_time - s.cmdStart);
+            b->bytes = s.runningBytes;
+            // Output rows: everything between the C mark and here. A command
+            // that printed nothing has none, and folding it would hide a row
+            // that belongs to the next prompt.
+            if (s.outputStartRow > 0 && rowId > s.outputStartRow &&
+                !s.grid.AltActive())
             {
-                unsigned char b0 = static_cast<unsigned char>(line[i]);
-                char32_t cp = b0;
-                int n = 1;
-                if (b0 >= 0xF0) { cp = b0 & 0x07u; n = 4; }
-                else if (b0 >= 0xE0) { cp = b0 & 0x0Fu; n = 3; }
-                else if (b0 >= 0xC0) { cp = b0 & 0x1Fu; n = 2; }
-                for (int k = 1; k < n && i + k < line.size(); ++k)
-                    cp = (cp << 6) | (static_cast<unsigned char>(line[i + k]) & 0x3Fu);
-                f.summary.push_back(cp);
-                i += n;
+                b->outputFirst = s.outputStartRow;
+                b->outputLast = rowId - 1;
+                b->hasOutput = true;
+                b->lines = static_cast<int>(b->outputLast - b->outputFirst + 1);
             }
-            s.folds.push_back(std::move(f));
-            // Drop folds whose rows have fallen out of the scrollback.
-            const uint64_t oldest = s.grid.TotalPushed() -
-                                    static_cast<uint64_t>(s.grid.ScrollbackSize());
-            s.folds.erase(std::remove_if(s.folds.begin(), s.folds.end(),
-                                         [oldest](const amber::Session::Fold& f2) {
-                                             return f2.lastRow < oldest;
-                                         }),
-                          s.folds.end());
+            else
+            {
+                b->hasOutput = false;
+                b->lines = 0;
+            }
+            FinishBlockSummary(s, *b);
+            NotifyBlockFinished(s, *b);
         }
+        s.runningBlockId = 0;
+        s.runningBytes = 0;
         s.outputStartRow = 0;
-        if (!s.pendingCmd.empty())
+        if (!s.pendingCmd.empty() && m_journalOn)
         {
             amber::JournalEntry e;
             e.host = s.Caption();
             e.cwd = s.pendingCwd;
             e.command = s.pendingCmd;
-            e.exitCode = code;
+            // An absent status is recorded as unknown, not as success.
+            e.exitCode = hasCode ? code : -1;
+            e.interrupted = !hasCode;
             e.durationSec = std::max(0.0, m_time - s.cmdStart);
             e.startedAt = s.pendingStartedAt;
+            e.blockId = b ? b->id : 0;
+            e.sessionKey = s.profile.id.empty() ? s.label : s.profile.id;
             m_journal.Add(std::move(e));
-            s.pendingCmd.clear();
         }
+        s.pendingCmd.clear();
     }
     // Exit-code flash: quiet green on success, red wash + ring on failure —
-    // active tab only.
-    if (kind != 'D' || !HasSession() || &Cur() != &s || m_minimized)
+    // active tab only. Without a reported status there is nothing to flash.
+    if (kind != 'D' || !hasCode || !HasSession() || &Cur() != &s || m_minimized)
         return;
     m_exitFlashStart = m_time;
     if (code == 0)
@@ -8019,8 +8613,18 @@ void App::OnShellMark(amber::Session& s, char kind, int code)
         m_exitFlashCol[0] = 1.00f;
         m_exitFlashCol[1] = 0.12f;
         m_exitFlashCol[2] = 0.05f;
-        m_exitFlashAmt = 0.85f;
-        TriggerShockwave();
+        // Reduced Motion keeps the colour — a failure must still be visible —
+        // but drops it to a tint and skips the shockwave entirely. The
+        // information stays; the movement goes.
+        if (m_particles.tun.reducedMotion)
+        {
+            m_exitFlashAmt = 0.25f;
+        }
+        else
+        {
+            m_exitFlashAmt = 0.85f;
+            TriggerShockwave();
+        }
     }
 }
 
@@ -9016,8 +9620,8 @@ void App::PlayRecordingFile(const std::wstring& path)
         amber::Session* raw = session.get();
         session->parser.SetImageSink([this, raw](amber::DecodedImage&& img, int cols, int rows)
                                      { return OnInlineImage(*raw, std::move(img), cols, rows); });
-        session->parser.SetMarkSink([this, raw](char kind, int code)
-                                    { OnShellMark(*raw, kind, code); });
+        session->parser.SetMarkSink([this, raw](char kind, int code, bool hasCode)
+                                    { OnShellMark(*raw, kind, code, hasCode); });
         // OSC 7 is terminal state like any other, and the command journal
         // records the directory a command ran in — a recording that carries
         // the marks must carry the working directory with them.
@@ -9146,18 +9750,28 @@ void App::SearchNext()
             continue;
 
         m_searchAbsRow = r;
-        int sb = g.ScrollbackSize();
-        int off = std::clamp(sb - r + g.Rows() / 2, 0, sb);
-        g.SnapView();
-        g.ScrollView(off);
-        int vr = r - (sb - g.ViewOffset());
+        // Search reads the raw grid, so it finds matches inside collapsed
+        // command blocks too. That is deliberate — silently skipping folded
+        // output would make the result depend on what happened to be folded.
+        // The block is expanded so the match is actually visible, and the
+        // status line says so.
+        const uint64_t rowId = g.TotalPushed() -
+                               static_cast<uint64_t>(g.ScrollbackSize()) +
+                               static_cast<uint64_t>(r);
+        bool expanded = false;
+        RevealRow(F, rowId, &expanded);
+        const int sb = g.ScrollbackSize();
+        const int vr = r - (sb - g.ViewOffset());
         F.selActive = true;
         F.selecting = false;
         F.selStartR = F.selEndR = vr;
         F.selStartC = static_cast<int>(p);
         F.selEndC = static_cast<int>(p + needle.size()) - 1;
         F.selAnimStart = m_lastFrameTime;
-        SetStatus("Found \"" + m_searchTerm + "\" — Ctrl+G for previous", 4.0);
+        SetStatus(expanded ? "Found \"" + m_searchTerm +
+                                 "\" inside a folded command — expanded it"
+                           : "Found \"" + m_searchTerm + "\" — Ctrl+G for previous",
+                  4.0);
         return;
     }
     m_searchAbsRow = -1;
@@ -9917,6 +10531,59 @@ void App::ShowContextMenu(int px, int py)
     AppendMenuW(m, MF_STRING, 3, L"Select &All");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, 4, L"Clear Scroll&back");
+    // If the click landed inside a recognised command block, its actions go
+    // here — which is the place the spec asks for them, on the block itself.
+    // The submenu is absent entirely when there is no block under the
+    // pointer, rather than present and inert.
+    // Held as an ID, not a pointer: TrackPopupMenu runs its own modal message
+    // loop, and any block appended while it is up would reallocate the vector
+    // out from under a pointer taken now.
+    uint64_t hitId = 0;
+    bool hitBookmarked = false;
+    std::string hitCommand;
+    if (HasSession())
+    {
+        int hr = 0, hc = 0;
+        if (CellFromPx(px, py, hr, hc))
+        {
+            amber::Session& s = Foc();
+            int co = 0, ro = 0;
+            PaneOffset(s, co, ro);
+            const uint64_t row = s.grid.TotalPushed() -
+                                 static_cast<uint64_t>(s.grid.ViewOffset()) +
+                                 static_cast<uint64_t>(std::max(0, hr - ro));
+            if (const amber::CommandBlock* b = amber::BlockAtRow(s.blocks, row))
+            {
+                hitId = b->id;
+                hitBookmarked = b->bookmarked;
+                hitCommand = b->command;
+            }
+        }
+    }
+    if (hitId != 0)
+    {
+        HMENU blk = CreatePopupMenu();
+        AppendMenuW(blk, MF_STRING, IdmBlockCopyCommand, L"Copy &Command");
+        AppendMenuW(blk, MF_STRING, IdmBlockCopyOutput, L"Copy &Output");
+        AppendMenuW(blk, MF_STRING, IdmBlockCopyBoth, L"Copy &Both");
+        AppendMenuW(blk, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(blk, MF_STRING, IdmBlockFold, L"&Fold / Expand");
+        AppendMenuW(blk, MF_STRING, IdmBlockSearch, L"&Search in Output...");
+        AppendMenuW(blk, MF_STRING, IdmBlockSnippet, L"Save as S&nippet...");
+        AppendMenuW(blk, MF_STRING | (hitBookmarked ? MF_CHECKED : 0),
+                    IdmBlockBookmark, L"Boo&kmark");
+        AppendMenuW(blk, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(blk, MF_STRING, IdmBlockRerun, L"&Type the Command (does not run it)");
+        AppendMenuW(blk, MF_STRING, IdmBlockRerunNow, L"&Run the Command Now");
+        AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+        std::wstring label = L"Command Block";
+        if (!hitCommand.empty())
+        {
+            std::string c = hitCommand.substr(0, 40);
+            label += L": " + WideFromUtf8(c);
+        }
+        AppendMenuW(m, MF_POPUP, reinterpret_cast<UINT_PTR>(blk), label.c_str());
+    }
     POINT pt = { px, py };
     ClientToScreen(m_hwnd, &pt);
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
@@ -9942,7 +10609,10 @@ void App::ShowContextMenu(int px, int py)
         F.grid.SetScrollbackMax(static_cast<size_t>(std::max(0, F.profile.scrollbackLines)));
         SetStatus("Scrollback cleared.");
         break;
-    default: break;
+    default:
+        if (cmd >= IdmBlockCopyCommand && cmd <= IdmBlockNextBookmark)
+            BlockAction(cmd, hitId);
+        break;
     }
 }
 
@@ -10011,7 +10681,8 @@ void App::SplitPane(bool vertical)
     p->parser.SetCwdSink([raw](const std::string& dir) { raw->cwd = dir; });
     p->parser.SetImageSink([this, raw](amber::DecodedImage&& img, int cols, int rows)
                            { return OnInlineImage(*raw, std::move(img), cols, rows); });
-    p->parser.SetMarkSink([this, raw](char kind, int code) { OnShellMark(*raw, kind, code); });
+    p->parser.SetMarkSink([this, raw](char kind, int code, bool hasCode)
+                          { OnShellMark(*raw, kind, code, hasCode); });
 
     ApplyProfileToSession(*p);          // same PuTTY-page behaviour as the parent
     P.paneVertical = vertical;
@@ -10068,11 +10739,27 @@ std::string App::RowText(const amber::Session& s, uint64_t rowId) const
 void App::BuildFoldMap(amber::Session& s)
 {
     const Grid& g = s.grid;
+    // A reset (a reconnect, or ESC c) restarts TotalPushed, so every row id
+    // the blocks hold is stale. Drop them rather than leave the gutter
+    // pointing at rows that are not the rows those commands ran on.
+    if (g.TotalPushed() < s.blocksPushedSeen)
+    {
+        s.blocks.clear();
+        s.runningBlockId = 0;
+        s.outputStartRow = 0;
+        s.notifyRunning = false;
+    }
+    s.blocksPushedSeen = g.TotalPushed();
+    // Rows that have scrolled out of the buffer take their blocks with them.
+    // Done here, once a frame, rather than only when a command finishes, so a
+    // session producing output without marks still bounds the list.
+    amber::TrimBlocks(s.blocks,
+                      g.TotalPushed() - static_cast<uint64_t>(g.ScrollbackSize()));
     const int rows = g.Rows();
     s.rowMap.assign(static_cast<size_t>(std::max(0, rows)), amber::Session::RowSlot{});
     // The alternate screen has no scrollback and no command structure, and a
     // full-screen app owns every row: folding must never touch it.
-    if (s.folds.empty() || g.AltActive() || !s.AnyCollapsed())
+    if (s.blocks.empty() || g.AltActive() || !s.AnyCollapsed())
     {
         for (int i = 0; i < rows; ++i)
             s.rowMap[i] = { i, -1 };
@@ -10084,10 +10771,10 @@ void App::BuildFoldMap(amber::Session& s)
     {
         const uint64_t abs = base + static_cast<uint64_t>(src);
         int hit = -1;
-        for (size_t i = 0; i < s.folds.size(); ++i)
+        for (size_t i = 0; i < s.blocks.size(); ++i)
         {
-            const amber::Session::Fold& f = s.folds[i];
-            if (f.collapsed && abs >= f.firstRow && abs <= f.lastRow)
+            const amber::CommandBlock& f = s.blocks[i];
+            if (f.collapsed && f.hasOutput && abs >= f.outputFirst && abs <= f.outputLast)
             {
                 hit = static_cast<int>(i);
                 break;
@@ -10097,7 +10784,7 @@ void App::BuildFoldMap(amber::Session& s)
         {
             s.rowMap[d] = { src, hit };
             // Skip the rest of the folded block in one step.
-            const uint64_t last = s.folds[static_cast<size_t>(hit)].lastRow;
+            const uint64_t last = s.blocks[static_cast<size_t>(hit)].outputLast;
             src += static_cast<int>(last - abs) + 1;
         }
         else
@@ -10113,16 +10800,18 @@ Cell App::FoldedCell(const amber::Session& s, int viewRow, int col) const
     if (viewRow < 0 || viewRow >= static_cast<int>(s.rowMap.size()))
         return s.grid.ViewCell(viewRow, col);
     const amber::Session::RowSlot& slot = s.rowMap[static_cast<size_t>(viewRow)];
-    if (slot.foldIndex < 0)
+    if (slot.blockIndex < 0)
         return s.grid.ViewCell(slot.src, col);
-    // Synthetic summary row: the fold's own text, in the accent colour so it
+    // Synthetic summary row: the block's own text, in the accent colour so it
     // reads as chrome rather than as output.
-    const amber::Session::Fold& f = s.folds[static_cast<size_t>(slot.foldIndex)];
+    const amber::CommandBlock& f = s.blocks[static_cast<size_t>(slot.blockIndex)];
     Cell out;
     out.cp = (col >= 0 && col < static_cast<int>(f.summary.size()))
                  ? f.summary[static_cast<size_t>(col)]
                  : U' ';
-    const uint32_t rgb = (f.exitCode == 0) ? 0xFFB000 : 0xFF6B4A;
+    // Three outcomes, three colours: succeeded, failed, and not known —
+    // which is neither of the other two and must not be painted as either.
+    const uint32_t rgb = f.Failed() ? 0xFF6B4A : f.Unknown() ? 0xC0C0C0 : 0xFFB000;
     out.fg = amber::ColRgb((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
     out.attr = AttrDim;
     return out;
@@ -10145,7 +10834,334 @@ int App::FoldSummaryAtPx(int px, int py) const
     row -= ro;
     if (row < 0 || row >= static_cast<int>(s.rowMap.size()))
         return -1;
-    return s.rowMap[static_cast<size_t>(row)].foldIndex;
+    return s.rowMap[static_cast<size_t>(row)].blockIndex;
+}
+
+// Scrolls the view so `rowId` is on screen, expanding the block that hides it
+// if one does. Returns false when the row has been trimmed away.
+//
+// The expansion is the whole point. Search reads the raw grid, so it has
+// always FOUND text inside a collapsed block — but it then computed a view
+// row from the grid position and ignored the fold map, landing the selection
+// on whatever happened to be drawn there. A hidden match was reported as
+// found and then shown somewhere else entirely.
+bool App::RevealRow(amber::Session& s, uint64_t rowId, bool* expandedOut)
+{
+    if (expandedOut)
+        *expandedOut = false;
+    const int idx = AbsIndexForRow(s, rowId);
+    if (idx < 0)
+        return false;
+    for (amber::CommandBlock& b : s.blocks)
+    {
+        if (!b.collapsed || !b.hasOutput)
+            continue;
+        if (rowId < b.outputFirst || rowId > b.outputLast)
+            continue;
+        b.collapsed = false;
+        if (expandedOut)
+            *expandedOut = true;
+    }
+    BuildFoldMap(s);
+    Grid& g = s.grid;
+    const int sb = g.ScrollbackSize();
+    g.SnapView();
+    const int back = std::clamp(sb - idx + g.Rows() / 2, 0, sb);
+    g.SetView(back);
+    return true;
+}
+
+// Steps between bookmarked blocks, oldest to newest.
+void App::JumpToBookmark(int dir)
+{
+    if (!HasSession())
+        return;
+    amber::Session& s = Foc();
+    std::vector<uint64_t> marks;
+    for (const amber::CommandBlock& b : s.blocks)
+        if (b.bookmarked)
+            marks.push_back(b.promptRow);
+    if (marks.empty())
+    {
+        SetStatus("No bookmarked commands in this session.", 5.0);
+        return;
+    }
+    const Grid& g = s.grid;
+    const uint64_t here = g.TotalPushed() - static_cast<uint64_t>(g.ViewOffset());
+    uint64_t target = marks.front();
+    if (dir > 0)
+    {
+        target = marks.front();
+        for (uint64_t m : marks)
+            if (m > here) { target = m; break; }
+    }
+    else
+    {
+        target = marks.back();
+        for (size_t i = marks.size(); i-- > 0;)
+            if (marks[i] < here) { target = marks[i]; break; }
+    }
+    if (!RevealRow(s, target))
+    {
+        SetStatus("That bookmark's rows have scrolled out of the buffer.", 5.0);
+        return;
+    }
+    SetStatus("Bookmark " + std::to_string(marks.size()) + " in this session", 3.0);
+}
+
+// ---------------------------------------------------------- block actions
+// Everything a command block can do. Each reads the canonical grid for its
+// text; no action writes into the terminal, and the two that could send
+// something to the shell are deliberately split so the safe one is the
+// default.
+void App::BlockAction(int cmd, uint64_t blockId)
+{
+    if (!HasSession())
+        return;
+    amber::Session& s = Foc();
+    // A named block wins: the right-click menu knows exactly which one the
+    // user pointed at, and falling back to the cursor would act on a
+    // different command than the one they clicked.
+    amber::CommandBlock* b = nullptr;
+    if (blockId != 0)
+        b = const_cast<amber::CommandBlock*>(amber::BlockById(s.blocks, blockId));
+    if (!b)
+        b = BlockAtCursor(s);
+    if (!b)
+    {
+        SetStatus("No command blocks yet — this needs shell integration "
+                  "(OSC 133) on the remote host.", 6.0);
+        return;
+    }
+    switch (cmd)
+    {
+    case IdmBlockCopyCommand:
+        if (b->command.empty())
+        {
+            SetStatus("That block has no command text.", 4.0);
+            return;
+        }
+        SetClipboardText(b->command);
+        SetStatus("Copied the command.");
+        return;
+
+    case IdmBlockCopyOutput:
+    {
+        const std::string out = BlockOutputText(s, *b);
+        if (out.empty())
+        {
+            SetStatus("That command produced no output still in the scrollback.", 5.0);
+            return;
+        }
+        SetClipboardText(out);
+        SetStatus("Copied " + std::to_string(b->lines) + " lines of output.");
+        return;
+    }
+
+    case IdmBlockCopyBoth:
+    {
+        std::string all = b->command;
+        if (!all.empty())
+            all += "\n";
+        all += BlockOutputText(s, *b);
+        if (all.empty())
+        {
+            SetStatus("Nothing to copy from that block.", 4.0);
+            return;
+        }
+        SetClipboardText(all);
+        SetStatus("Copied the command and its output.");
+        return;
+    }
+
+    case IdmBlockFold:
+        if (!b->hasOutput)
+        {
+            SetStatus("That command produced no output to fold.", 4.0);
+            return;
+        }
+        b->collapsed = !b->collapsed;
+        SetStatus(b->collapsed ? "Folded output" : "Expanded output");
+        return;
+
+    case IdmBlockSnippet:
+        SaveBlockSnippet(*b);
+        return;
+
+    case IdmBlockBookmark:
+        b->bookmarked = !b->bookmarked;
+        FinishBlockSummary(s, *b);
+        SetStatus(b->bookmarked
+                      ? "Bookmarked. Bookmarks last as long as the rows they "
+                        "point at — they are not saved."
+                      : "Bookmark removed.",
+                  6.0);
+        return;
+
+    case IdmBlockSearch:
+        SearchWithinBlock(s, *b);
+        return;
+
+    case IdmBlockRerun:
+    case IdmBlockRerunNow:
+    {
+        if (b->command.empty())
+        {
+            SetStatus("That block has no command text to run.", 4.0);
+            return;
+        }
+        if (!s.Live())
+        {
+            SetStatus("This session is not connected.", 4.0);
+            return;
+        }
+        // Type it, do not run it. A command recalled by accident has to be
+        // readable and editable before it can do anything — the same rule the
+        // journal already follows. Running is a separate, deliberate item.
+        std::string text = b->command;
+        if (cmd == IdmBlockRerunNow)
+            text += "\r";
+        SendToShell(text);
+        SetStatus(cmd == IdmBlockRerunNow ? "Ran the command."
+                                          : "Typed the command — press Enter to run it.");
+        return;
+    }
+
+    case IdmBlockNotify:
+        if (!s.cmdRunning)
+        {
+            SetStatus("Nothing is running in this session.", 4.0);
+            return;
+        }
+        s.notifyRunning = !s.notifyRunning;
+        SetStatus(s.notifyRunning
+                      ? "Will report when this command finishes."
+                      : "Will not report when this command finishes.");
+        return;
+
+    case IdmBlockPrevBookmark:
+    case IdmBlockNextBookmark:
+        JumpToBookmark(cmd == IdmBlockNextBookmark ? 1 : -1);
+        return;
+
+    default:
+        return;
+    }
+}
+
+// Appends the block's command to snippets.txt under a name the user picks.
+void App::SaveBlockSnippet(const amber::CommandBlock& b)
+{
+    if (b.command.empty())
+    {
+        SetStatus("That block has no command text to save.", 4.0);
+        return;
+    }
+    // A snippet line is "name = command", so neither half may carry a newline
+    // and the name may not contain the separator.
+    std::string name = b.command.substr(0, 40);
+    if (!PromptText("Save snippet as", name) || name.empty())
+        return;
+    for (char& c : name)
+        if (c == '=' || c == '\r' || c == '\n')
+            c = ' ';
+    while (!name.empty() && name.back() == ' ')
+        name.pop_back();
+    if (name.empty())
+    {
+        SetStatus("A snippet needs a name.", 4.0);
+        return;
+    }
+    std::string text = b.command;
+    for (char& c : text)
+        if (c == '\r' || c == '\n')
+            c = ' ';
+
+    const std::filesystem::path p = amber::DataRoot() / "snippets.txt";
+    std::error_code ec;
+    std::filesystem::create_directories(p.parent_path(), ec);
+    FILE* f = _wfopen(p.wstring().c_str(), L"ab");
+    if (!f)
+    {
+        SetStatus("Could not write snippets.txt.", 5.0);
+        return;
+    }
+    const std::string line = name + " = " + text + "\n";
+    fwrite(line.data(), 1, line.size(), f);
+    fclose(f);
+    LoadSnippets();
+    SetStatus("Saved snippet \"" + name + "\".");
+}
+
+// Search restricted to one block's output rows. Reports where it landed
+// rather than moving the global search cursor, so F3 still means what it did.
+void App::SearchWithinBlock(amber::Session& s, const amber::CommandBlock& b)
+{
+    if (!b.hasOutput)
+    {
+        SetStatus("That command produced no output to search.", 4.0);
+        return;
+    }
+    std::string term = m_searchTerm;
+    if (!PromptText("Search inside this command's output", term) || term.empty())
+        return;
+    m_searchTerm = term;
+    auto lower = [](std::string t) {
+        for (char& c : t)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return t;
+    };
+    const std::string needle = lower(term);
+    int hits = 0;
+    uint64_t firstHit = 0;
+    for (uint64_t r = b.outputFirst; r <= b.outputLast; ++r)
+    {
+        if (lower(RowTextRaw(s, r)).find(needle) == std::string::npos)
+            continue;
+        if (hits++ == 0)
+            firstHit = r;
+    }
+    if (hits == 0)
+    {
+        SetStatus("\"" + term + "\" is not in that command's output.", 5.0);
+        return;
+    }
+    RevealRow(s, firstHit);
+    SetStatus("\"" + term + "\": " + std::to_string(hits) + " line" +
+                  (hits == 1 ? "" : "s") + " in this block — F3 for the next "
+                  "match anywhere",
+              6.0);
+}
+
+// The block the cursor sits in — or, when the view is scrolled back, the one
+// under the top of the view — else the most recent one with output. Returns
+// nullptr only when there are no blocks at all.
+amber::CommandBlock* App::BlockAtCursor(amber::Session& s)
+{
+    if (s.blocks.empty())
+        return nullptr;
+    const Grid& g = s.grid;
+    // Scrolled back: the user is looking at history, so the block they mean
+    // is the one on screen, not the one at the live cursor.
+    const uint64_t probe =
+        g.ViewOffset() > 0
+            ? g.TotalPushed() - static_cast<uint64_t>(g.ViewOffset()) +
+                  static_cast<uint64_t>(std::max(0, g.Rows() / 2))
+            : g.TotalPushed() + static_cast<uint64_t>(std::max(0, g.CurY()));
+    if (amber::CommandBlock* b = amber::BlockAtRow(s.blocks, probe))
+        return b;
+    for (size_t i = s.blocks.size(); i-- > 0;)
+        if (s.blocks[i].hasOutput)
+            return &s.blocks[i];
+    return &s.blocks.back();
+}
+
+// Re-renders every summary, after a setting that changes what they say.
+void App::RebuildBlockSummaries(amber::Session& s)
+{
+    for (amber::CommandBlock& b : s.blocks)
+        if (!b.running)
+            FinishBlockSummary(s, b);
 }
 
 void App::FoldAll(bool collapsed)
@@ -10153,15 +11169,19 @@ void App::FoldAll(bool collapsed)
     if (!HasSession())
         return;
     amber::Session& s = Foc();
-    if (s.folds.empty())
+    if (s.blocks.empty())
     {
         SetStatus("Nothing to fold yet — this needs shell integration "
                   "(OSC 133) on the remote host", 5.0);
         return;
     }
     int n = 0;
-    for (amber::Session::Fold& f : s.folds)
+    for (amber::CommandBlock& f : s.blocks)
     {
+        // A block that printed nothing has no rows to hide; collapsing it
+        // would put a summary row where the next prompt belongs.
+        if (!f.hasOutput)
+            continue;
         if (f.collapsed != collapsed)
             ++n;
         f.collapsed = collapsed;
@@ -10177,19 +11197,18 @@ void App::ToggleFoldAtCursor()
     if (!HasSession())
         return;
     amber::Session& s = Foc();
-    if (s.folds.empty())
+    if (s.blocks.empty())
     {
         SetStatus("Nothing to fold yet — this needs shell integration "
                   "(OSC 133) on the remote host", 5.0);
         return;
     }
-    // The fold the cursor sits in, else the most recent one.
-    const uint64_t cur = s.grid.TotalPushed() +
-                         static_cast<uint64_t>(std::max(0, s.grid.CurY()));
-    amber::Session::Fold* pick = &s.folds.back();
-    for (amber::Session::Fold& f : s.folds)
-        if (cur >= f.firstRow && cur <= f.lastRow)
-            pick = &f;
+    amber::CommandBlock* pick = BlockAtCursor(s);
+    if (!pick || !pick->hasOutput)
+    {
+        SetStatus("That command produced no output to fold.", 4.0);
+        return;
+    }
     pick->collapsed = !pick->collapsed;
     SetStatus(pick->collapsed ? "Folded output" : "Expanded output");
 }
@@ -10947,8 +11966,8 @@ void App::StartDiagSession()
         amber::Session* raw = session.get();
         session->parser.SetImageSink([this, raw](amber::DecodedImage&& img, int cols, int rows)
                                      { return OnInlineImage(*raw, std::move(img), cols, rows); });
-        session->parser.SetMarkSink([this, raw](char kind, int code)
-                                    { OnShellMark(*raw, kind, code); });
+        session->parser.SetMarkSink([this, raw](char kind, int code, bool hasCode)
+                                    { OnShellMark(*raw, kind, code, hasCode); });
         session->parser.SetCwdSink([raw](const std::string& dir) { raw->cwd = dir; });
     }
     m_sessions.push_back(std::move(session));
