@@ -144,9 +144,15 @@ SOCKET OpenLoopbackListener(int port, int* boundPort = nullptr)
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = htons(static_cast<u_short>(port));
-    BOOL yes = TRUE;
-    setsockopt(s, SOL_SOCKET, SO_REUSEADDR,
-               reinterpret_cast<const char*>(&yes), sizeof(yes));
+    // Deliberately NO SO_REUSEADDR. On Windows that option does not mean what
+    // it means on POSIX: it lets a second socket bind the SAME address and
+    // port while the first is still listening, and the two then split
+    // incoming connections between them at the kernel's discretion. With it
+    // set, a forward that was already up bound a second time in silence
+    // instead of reporting "port busy" — which is exactly the duplicate
+    // listener a reconnect must not create. A plain bind fails with
+    // WSAEADDRINUSE instead, and rebinding after our own listener closes
+    // still works, so nothing is lost.
     if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
         listen(s, 8) != 0)
     {

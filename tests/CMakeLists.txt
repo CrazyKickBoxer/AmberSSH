@@ -16,6 +16,7 @@ add_executable(AmberTests
     WorkspaceTests.cpp
     PasteGuardTests.cpp
     LocalSessionTests.cpp
+    GuardianTests.cpp
 
     ${CMAKE_SOURCE_DIR}/src/term/vtparser.cpp
     ${CMAKE_SOURCE_DIR}/src/term/grid.cpp
@@ -30,6 +31,7 @@ add_executable(AmberTests
     ${CMAKE_SOURCE_DIR}/src/profiles/ProfileStore.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/Chrome.cpp
     ${CMAKE_SOURCE_DIR}/src/sessions/CommandJournal.cpp
+    ${CMAKE_SOURCE_DIR}/src/sessions/Guardian.cpp
     ${CMAKE_SOURCE_DIR}/src/sessions/Workspaces.cpp
 )
 

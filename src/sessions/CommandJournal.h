@@ -24,6 +24,10 @@ struct JournalEntry
     std::string cwd;         // remote working directory (OSC 7), may be empty
     std::string command;     // the text the user actually typed
     int exitCode = 0;        // OSC 133;D code; -1 when the session ended first
+    // The link died while this command was running. AmberSSH never saw an
+    // exit status and will not invent one: exitCode stays -1 and means
+    // "unknown", not "failed".
+    bool interrupted = false;
     double durationSec = 0.0;
     int64_t startedAt = 0;   // Unix seconds, for "3h ago"
 };

@@ -95,6 +95,15 @@ enum class BoldStyle    { Colour = 0, Font = 1, Both = 2 };
 enum class SerialParity { None = 0, Odd = 1, Even = 2, Mark = 3, Space = 4 };
 enum class SerialFlow   { None = 0, XonXoff = 1, RtsCts = 2, DsrDtr = 3 };
 
+// Session Guardian. What happens when a connection that WAS up goes away.
+// Off is the default: reconnecting is a thing the user opts into, per profile.
+enum class ReconnectMode { Off = 0, Ask = 1, Automatic = 2 };
+
+// How a reconnected session rejoins work that was already running. Only a
+// persistent multiplexer can actually do that; None is honest about the fact
+// that a plain shell's processes died with the old connection.
+enum class ReattachMode  { None = 0, Tmux = 1, Screen = 2, Custom = 3 };
+
 struct ConnectionProfile
 {
     static constexpr int kSchemaVersion = 2;
@@ -187,11 +196,30 @@ struct ConnectionProfile
     // ---- Connection -------------------------------------------------------
     int         connectTimeoutSeconds = 15;
     int         keepaliveSeconds = 30;
-    bool        autoReconnect = false;
     bool        tcpNoDelay = true;
     bool        tcpKeepalive = false;
     int         ipVersion = 0;       // 0 auto, 1 IPv4, 2 IPv6
     std::string logicalHost;         // known_hosts name override
+
+    // ---- Connection > Guardian -------------------------------------------
+    // Reconnect only ever arms after a session has connected once; a failure
+    // on the FIRST connect is a configuration problem, not a dropped link,
+    // and looping on it would only replay the same mistake.
+    ReconnectMode reconnectMode = ReconnectMode::Off;
+    int         reconnectMaxAttempts = 6;    // 0 = keep trying until stopped
+    int         reconnectJitterPercent = 20; // spreads a fleet of tabs apart
+    bool        reconnectNotify = true;      // toast on success / give-up
+    bool        reconnectBanner = true;      // in-terminal annotation line
+    // Rejoining remote work. tmux/screen attach if the session exists and
+    // create it otherwise; neither form kills or detaches anything.
+    ReattachMode reattachMode = ReattachMode::None;
+    std::string reattachSession = "amberssh";   // tmux/screen session name
+    std::string reattachCommand;                // Custom mode, run verbatim
+    // AmberSSH-managed state to put back. The working directory is only
+    // restored when there is no multiplexer — tmux and screen bring their
+    // own panes back, each already where it was.
+    bool        restoreCwd = false;
+    bool        restoreForwards = true;
 
     // ---- Connection > Data -----------------------------------------------
     std::string termType = "xterm-256color";

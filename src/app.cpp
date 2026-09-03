@@ -31,6 +31,7 @@
 #include <cmath>
 #include <filesystem>
 #include <thread>
+#include <map>
 #include <unordered_map>
 
 #pragma comment(lib, "comdlg32.lib")
@@ -62,6 +63,12 @@ enum MenuId : int
     // every fixed id — see the note on IdmMotionFirst.
     IdmLocalFirst = 41500,         // +0..31 → DiscoverLocalShells()
     IdmLocalLast = IdmLocalFirst + 31,
+
+    // Session Guardian. Fixed ids, parked above every growing range so the
+    // 40122 accident (the motion range eating About and the Journal) cannot
+    // repeat here; the static_assert below is what actually enforces it.
+    IdmGuardianStop = 41600,       // stop reconnecting this session
+    IdmGuardianRetry,              // reconnect now, skipping the wait
 
     IdmMotionFirst = 41000,        // +0..N → index into kMotionStyles
     IdmMotionLast  = IdmMotionFirst + kMotionStyleCount - 1,
@@ -256,6 +263,8 @@ static_assert(IdmLocalFirst > IdmMotionFirst + 256,
               "the local-shell range must clear the motion range as it grows");
 static_assert(IdmMotionFirst > IdmWorkspaceLast && IdmMotionFirst > IdmSnippetLast,
               "keep IdmMotionFirst above every other menu id");
+static_assert(IdmGuardianStop > IdmLocalLast,
+              "the guardian ids must clear the local-shell range as it grows");
 
 // Terminal typefaces. Indices 0-6 are preserved for saved profiles; newer
 // faces are appended. Missing fonts fall back automatically (SetFontFamily
@@ -757,18 +766,46 @@ void App::PumpSshEvents()
     // (or pane) must keep making progress and must never stall another.
     ForEachSession([&](amber::Session& s)
     {
-        // With auto-reconnect on and a session that WAS connected, a drop
-        // becomes a scheduled retry with exponential backoff (1..32 s).
-        auto maybeReconnect = [&](const std::string& why) -> bool
+        // A drop goes to the Guardian, which owns classification, the security
+        // gates, the backoff ladder and the retry limit (sessions/Guardian.h).
+        // Everything here does is translate its answer into tab state.
+        auto onDrop = [&](const std::string& why) -> bool
         {
-            if (!s.profile.autoReconnect || !s.everConnected || s.userClosed)
+            NoteInterruptedCommand(s, why);
+            // Only the FIRST drop of an outage is annotated. Every failed
+            // retry is another drop, and one line per attempt would bury the
+            // screen in identical notices.
+            const bool firstOfEpisode = !s.guardian.Armed();
+            s.guardian.OnDrop(why, m_time);
+            const amber::GuardianState g = s.guardian.State();
+            if (g == amber::GuardianState::Idle ||
+                g == amber::GuardianState::ConnectionLost)
+            {
+                // Not armed: either the guardian is off, the drop was clean,
+                // or this session never connected in the first place.
+                if (s.guardian.NeedsConsent())
+                {
+                    s.state = amber::SessionState::Disconnected;
+                    s.status = s.guardian.StatusText(m_time);
+                    if (firstOfEpisode)
+                        AddNotice(s, 1, "connection lost: " + why);
+                    return true;      // the consent prompt runs below
+                }
                 return false;
-            int wait = 1 << std::min(s.reconnectAttempt, 5);
-            s.reconnectAttempt++;
-            s.reconnectAt = m_time + static_cast<double>(wait);
+            }
+            if (amber::GuardianTerminal(g))
+            {
+                // Authentication or the host key stopped it. The tab reports
+                // the real reason; the existing warning flow is untouched.
+                s.state = amber::SessionState::Error;
+                s.status = s.guardian.StatusText(m_time);
+                AddNotice(s, 1, s.status);
+                return true;
+            }
             s.state = amber::SessionState::Reconnecting;
-            s.status = why + " — reconnecting in " + std::to_string(wait) +
-                       "s (attempt " + std::to_string(s.reconnectAttempt) + ")";
+            s.status = s.guardian.StatusText(m_time);
+            if (firstOfEpisode)
+                AddNotice(s, 1, "connection lost: " + why);
             return true;
         };
 
@@ -795,14 +832,18 @@ void App::PumpSshEvents()
                 s.parser.Reset();
                 s.localPending.clear();   // any undrained boot text is moot
                 s.everConnected = true;
-                s.reconnectAttempt = 0;
+                s.guardian.OnConnected(m_time);
+                if (s.guardian.JustReconnected())
+                {
+                    s.guardian.ClearJustReconnected();
+                    OnSessionRecovered(s);
+                }
                 if (HasSession() && &s == &Cur())
                     SetWindowTextW(m_hwnd, WideFromUtf8(TitleFor(s)).c_str());
                 break;
 
             case SshEventType::Closed:
-                if (!maybeReconnect(ev.text.empty() ? "connection closed"
-                                                    : ev.text))
+                if (!onDrop(ev.text.empty() ? "connection closed" : ev.text))
                 {
                     s.state = amber::SessionState::Disconnected;
                     s.status = ev.text.empty() ? "connection closed" : ev.text;
@@ -815,7 +856,7 @@ void App::PumpSshEvents()
                 break;
 
             case SshEventType::Error:
-                if (!maybeReconnect(ev.text))
+                if (!onDrop(ev.text))
                 {
                     s.state = amber::SessionState::Error;
                     s.status = ev.text;
@@ -823,6 +864,33 @@ void App::PumpSshEvents()
                         s.closeRequested = true;
                 }
                 break;
+            }
+        }
+
+        // Ask mode: one modal question per loss episode, never per attempt,
+        // and never for a drop the guardian already refused on security
+        // grounds — those states are terminal and never ask.
+        if (s.guardian.NeedsConsent())
+        {
+            const std::wstring body =
+                L"The connection to " + WideFromUtf8(s.label) + L" was lost:\r\n\r\n" +
+                WideFromUtf8(s.guardian.LastReason()) +
+                L"\r\n\r\nReconnect?\r\n\r\n"
+                L"Processes that were running in a plain shell have already "
+                L"ended and cannot be recovered.";
+            const int answer = MessageBoxW(m_hwnd, body.c_str(),
+                                           L"AmberSSH — connection lost",
+                                           MB_YESNO | MB_ICONQUESTION);
+            s.guardian.GrantConsent(answer == IDYES, m_time);
+            if (answer == IDYES)
+            {
+                s.state = amber::SessionState::Reconnecting;
+                s.status = s.guardian.StatusText(m_time);
+            }
+            else
+            {
+                s.state = amber::SessionState::Disconnected;
+                s.status = "reconnect declined";
             }
         }
 
@@ -1457,12 +1525,21 @@ void App::RenderFrame()
     // Cap parser work per frame, but drain every session so no tab starves.
     ForEachSession([&](amber::Session& s) { DrainSessionOutput(s, 64); });
 
-    // Auto-reconnect scheduler: sessions whose backoff timer has elapsed.
+    // Session Guardian: one Tick per session per frame. Tick returns true
+    // exactly once per attempt, when the backoff has elapsed; the worker
+    // thread must have finished first, because Start() joins it and the old
+    // thread is what releases this session's forward listeners.
     ForEachSession([&](amber::Session& s)
     {
-        if (s.state == amber::SessionState::Reconnecting &&
-            !s.ssh.Running() && m_time >= s.reconnectAt)
+        if (s.ssh.Running())
+            return;
+        if (s.guardian.Tick(m_time))
             StartReconnect(s);
+        else if (s.guardian.Armed() && s.state == amber::SessionState::Reconnecting)
+            s.status = s.guardian.StatusText(m_time);   // count the wait down
+        else if (s.guardian.State() == amber::GuardianState::GaveUp &&
+                 s.state == amber::SessionState::Reconnecting)
+            OnSessionGaveUp(s);
     });
 
     // ---- CPU compose ----------------------------------------------------
@@ -1574,6 +1651,7 @@ void App::RenderFrame()
     DrawStatusBar();
     DrawStatusLine();
     DrawLiveEffects();
+    DrawNotices();      // guardian annotations: not an effect, always drawn
     DrawPalette();
     DrawJournal();
     DrawPasteGuard();
@@ -3783,6 +3861,11 @@ void App::DrawStatusBar()
         { pip[0] = 1.0f; pip[1] = 0.70f; pip[2] = 0.10f; }
         else if (s.state != amber::SessionState::Connected)
         { pip[0] = 1.0f; pip[1] = 0.25f; pip[2] = 0.18f; }
+        // A session waiting on the guardian pulses, so the bar distinguishes
+        // "down and coming back" from "down and staying down" at a glance.
+        if (s.guardian.Armed())
+            pip[3] = 0.45f + 0.5f * static_cast<float>(
+                                        0.5 + 0.5 * std::sin(m_time * 4.0));
         const float ps = 6.0f * dpi;
         m_prims.AddRectRgba(lx, y0 + (h - ps) * 0.5f, ps, ps, pip, 0.0f, barInk);
         lx += ps + 8.0f * dpi;
@@ -3800,6 +3883,25 @@ void App::DrawStatusBar()
         // trusting it let the status message overlap the directory.
         emit(lx, textY, where, dim);
         lx += m_prims.MeasureText(where, m_sampler) + 16.0f * dpi;
+
+        // Guardian read-out, in the skin's danger colour: what the reconnect
+        // machine is doing, counted down, so nothing about it is a surprise.
+        const std::string g = s.guardian.StatusText(m_time);
+        if (!g.empty())
+        {
+            float warn[3];
+            if (skin)
+                SrgbToLinear(s.guardian.State() == amber::GuardianState::Reconnected
+                                 ? ch.neonA
+                                 : ch.danger,
+                             warn);
+            else if (s.guardian.State() == amber::GuardianState::Reconnected)
+            { warn[0] = 0.25f; warn[1] = 0.95f; warn[2] = 0.45f; }
+            else
+            { warn[0] = 1.0f; warn[1] = 0.45f; warn[2] = 0.12f; }
+            emit(lx, textY, g, warn);
+            lx += m_prims.MeasureText(g, m_sampler) + 16.0f * dpi;
+        }
     }
     // The transient message lives here now instead of floating over output.
     if (!m_status.empty() && m_time < m_statusUntil)
@@ -4185,6 +4287,7 @@ bool App::OnKeyDown(WPARAM vk)
         if (vk == 'D')
         {
             Foc().userClosed = true;   // never auto-reconnect a manual close
+            Foc().guardian.OnUserDisconnect();
             Foc().ssh.Disconnect();
             Foc().state = amber::SessionState::Disconnected;
             Foc().status = "disconnected";
@@ -5352,6 +5455,8 @@ void App::BuildMenus()
     AppendMenuW(file, MF_STRING, IdmNewConnection, L"&New Connection...\tCtrl+Shift+T");
     AppendMenuW(file, MF_STRING, IdmCloseTab, L"&Close Tab\tCtrl+Shift+W");
     AppendMenuW(file, MF_STRING, IdmDisconnect, L"&Disconnect\tCtrl+Shift+D");
+    AppendMenuW(file, MF_STRING, IdmGuardianRetry, L"&Reconnect Now");
+    AppendMenuW(file, MF_STRING, IdmGuardianStop, L"Stop Reconnec&ting");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IdmSftpPanel, L"SFTP &Browser...\tCtrl+Shift+B");
     AppendMenuW(file, MF_STRING, IdmLogSession, L"&Log Session Output...\tCtrl+Shift+L");
@@ -6243,7 +6348,22 @@ bool App::HandleMenuCommand(int id)
         return true;
     case IdmDisconnect:
         if (HasSession())
+        {
+            // Tell the guardian FIRST. Without this, asking to disconnect a
+            // profile set to reconnect automatically would immediately bring
+            // the session back — the menu item would appear not to work.
+            Cur().userClosed = true;
+            Cur().guardian.OnUserDisconnect();
             Cur().ssh.Disconnect();
+        }
+        return true;
+    case IdmGuardianStop:
+        if (HasSession())
+            GuardianStop(Foc());
+        return true;
+    case IdmGuardianRetry:
+        if (HasSession())
+            GuardianRetryNow(Foc());
         return true;
     case IdmExit:
         PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
@@ -6920,6 +7040,8 @@ void App::BuildPaletteItems()
     add("New Connection...", IdmNewConnection);
     add("Close Tab", IdmCloseTab);
     add("Disconnect", IdmDisconnect);
+    add("Reconnect Now", IdmGuardianRetry);
+    add("Stop Reconnecting", IdmGuardianStop);
     add("Split Vertical", IdmSplitVertical);
     add("Split Horizontal", IdmSplitHorizontal);
     add("Close Split", IdmSplitClose);
@@ -7367,6 +7489,162 @@ void App::DrawPasteGuard()
                     "enter paste   esc cancel", 0.45f, m_sampler);
 }
 
+// Session Guardian annotations. These are drawn OVER the grid at an absolute
+// row id — the same anchoring the tide marks and the error embers use — and
+// are never fed to the parser, so a "connection lost" line cannot end up in a
+// selection, a scrollback search or a session log. The grid stays the record
+// of what the server actually sent.
+//
+// Skinned like every other surface: the colours come from the active
+// ChromeSpec, and on a light ground the additive text path is swapped for
+// opaque core glyphs, because adding light to paper does nothing.
+void App::DrawNotices()
+{
+    if (!HasSession() || m_minimized)
+        return;
+    amber::Session& F = Foc();
+    if (F.notices.empty())
+        return;
+
+    int co = 0, ro = 0;
+    PaneOffset(F, co, ro);
+    const float dpi = static_cast<float>(m_dpi) / 96.0f;
+    const int rows = F.grid.Rows(), cols = F.grid.Cols();
+    const float paneX = m_gm.originX + static_cast<float>(co) * m_gm.cellW;
+    const float paneW = static_cast<float>(cols) * m_gm.cellW;
+    const int64_t top = static_cast<int64_t>(F.grid.TotalPushed()) - F.grid.ViewOffset();
+
+    // A reconnect resets the grid, and every row id from before it then
+    // points nowhere. Re-anchor rather than discard: "the link went away" is
+    // exactly the annotation worth keeping across the reset.
+    const uint64_t pushed = F.grid.TotalPushed();
+    if (pushed < F.noticesPushedSeen)
+        for (amber::Session::Notice& n : F.notices)
+            n.rowId = pushed;
+    F.noticesPushedSeen = pushed;
+
+    // Notices whose row has fallen out of the scrollback have nothing left to
+    // point at.
+    const uint64_t oldest = pushed - static_cast<uint64_t>(F.grid.ScrollbackSize());
+    F.notices.erase(std::remove_if(F.notices.begin(), F.notices.end(),
+                                   [oldest](const amber::Session::Notice& n)
+                                   { return n.rowId + 1 < oldest; }),
+                    F.notices.end());
+
+    const amber::ChromeSpec& ch = amber::Chrome();
+    const bool skin = amber::ChromeSkinned();
+    const bool lightGround = m_appearance == 1 || m_appearance == 2;
+    // Several notices can land on one row — a drop and its recovery bracket a
+    // grid reset, so both end up anchored to the same line. They stack
+    // upwards from it instead of overprinting each other.
+    std::map<int64_t, int> slots;
+
+    for (const amber::Session::Notice& n : F.notices)
+    {
+        const int64_t vr = static_cast<int64_t>(n.rowId) - top;
+        if (vr < 0 || vr >= rows)
+            continue;
+        const int slot = slots[vr]++;
+
+        // Warning takes the skin's danger colour, recovery its primary accent,
+        // plain information its secondary one — so every style says the same
+        // three things in its own palette.
+        float rgb[3];
+        if (skin)
+            SrgbToLinear(n.kind == 1 ? ch.danger : n.kind == 2 ? ch.neonA : ch.neonB,
+                         rgb);
+        else if (n.kind == 1)
+        { rgb[0] = 1.00f; rgb[1] = 0.38f; rgb[2] = 0.10f; }
+        else if (n.kind == 2)
+        { rgb[0] = 0.20f; rgb[1] = 0.95f; rgb[2] = 0.45f; }
+        else
+            AmberRampCpu(0.75f, rgb);
+
+        // A skin's accent is chosen to read on the CHROME's ground, which is
+        // not this one. Letterpress's near-black red on the terminal's black
+        // is invisible; lift (or on paper, deepen) it until it carries.
+        float ink3[3] = { rgb[0], rgb[1], rgb[2] };
+        {
+            const float luma = 0.2126f * ink3[0] + 0.7152f * ink3[1] + 0.0722f * ink3[2];
+            if (!lightGround && luma < 0.20f && luma > 0.0f)
+            {
+                const float k = std::min(6.0f, 0.20f / luma);
+                for (float& c : ink3)
+                    c = std::min(1.0f, c * k);
+            }
+            else if (lightGround && luma > 0.55f)
+            {
+                const float k = 0.55f / luma;
+                for (float& c : ink3)
+                    c *= k;
+            }
+        }
+
+        // A notice cools to a scar after half a minute rather than vanishing:
+        // it is the record of where the link broke.
+        const float age = static_cast<float>(m_time - n.t);
+        const float a = age < 30.0f ? 1.0f - 0.55f * (age / 30.0f) : 0.45f;
+        const float y = m_gm.originY + static_cast<float>(vr + ro) * m_gm.cellH;
+        const float hair = std::max(1.0f, 1.4f * dpi);
+        const PrimLayer ink = lightGround ? PrimLayer::OverBlend : PrimLayer::Over;
+
+        // The label sits at the right-hand end of the rule, on its own ground,
+        // so it never has to fight the terminal text underneath it.
+        const float room = paneW * 0.92f;
+        std::string body = n.text;
+        if (m_prims.MeasureText(" " + body + " ", m_sampler) > room)
+        {
+            // Trim whole code points off the end, then mark the cut.
+            while (!body.empty() &&
+                   m_prims.MeasureText(" " + body + "\xE2\x80\xA6 ", m_sampler) > room)
+            {
+                body.pop_back();
+                while (!body.empty() &&
+                       (static_cast<unsigned char>(body.back()) & 0xC0) == 0x80)
+                    body.pop_back();
+            }
+            body += "\xE2\x80\xA6";
+        }
+        const std::string label = " " + body + " ";
+        const float tw = m_prims.MeasureText(label, m_sampler);
+        const float lx = paneX + paneW - tw;
+        // Stacked DOWNWARDS from the row. Upwards loses the newest notice off
+        // the top of the pane, and the newest one — "reconnected" — is the one
+        // the reader most wants.
+        const float ly = y - m_gm.cellH * 0.5f +
+                         m_gm.cellH * static_cast<float>(slot);
+        if (ly + m_gm.cellH > m_gm.originY + static_cast<float>(rows) * m_gm.cellH)
+            continue;                     // no room left below: drop this one
+
+        float rule[4] = { ink3[0], ink3[1], ink3[2], 0.55f * a };
+        // The rule stops where the label starts. Drawn across it, the
+        // additive Over pass lands on top of the blended label ground and
+        // strikes the text through.
+        const float ruleW = std::max(0.0f, lx - paneX - 6.0f * dpi);
+        if (slot == 0 && ruleW > 0.0f)
+        {
+            m_prims.AddRectRgba(paneX, y, ruleW, hair, rule, 0.0f, ink);
+            // A stub in the left margin, matching the tide marks, so the eye
+            // finds the row even when the label is trimmed away.
+            m_prims.AddRectRgba(paneX - 5.0f * dpi, y - 2.0f * dpi, 4.0f * dpi,
+                                hair + 4.0f * dpi, rule, 0.0f, ink);
+        }
+
+        // The label's ground is the TERMINAL's, not the chrome's: the notice
+        // sits over the grid, not on a strip. Painting it with ChromeSpec::bg
+        // put a near-white plate under a dark-skin accent on the light skins
+        // and swallowed the text whole.
+        float pad[4] = { 0.0f, 0.0f, 0.0f, lightGround ? 0.92f : 0.88f };
+        if (lightGround)
+        { pad[0] = 0.92f; pad[1] = 0.91f; pad[2] = 0.88f; }
+        m_prims.AddRectRgba(lx, ly, tw, m_gm.cellH, pad, 0.0f, PrimLayer::OverBlend);
+        if (lightGround)
+            m_prims.AddTextCore(lx, ly, label, ink3, 1.0f, m_sampler);
+        else
+            m_prims.AddTextRgb(lx, ly, label, ink3, m_sampler);
+    }
+}
+
 void App::DrawJournal()
 {
     if (!m_jrnOpen)
@@ -7457,7 +7735,13 @@ void App::DrawJournal()
         // Exit status as a coloured pip: green succeeded, red failed. This is
         // the column the eye lands on when hunting "the one that broke".
         float pip[4] = { 0.10f, 0.85f, 0.32f, sel ? 1.0f : 0.75f };
-        if (e.exitCode != 0)
+        if (e.interrupted)
+        {
+            // Amber, not red: the link died mid-command and the outcome was
+            // never reported. "Unknown" is a third state, not a failure.
+            pip[0] = 1.0f; pip[1] = 0.68f; pip[2] = 0.10f;
+        }
+        else if (e.exitCode != 0)
         {
             pip[0] = 1.0f; pip[1] = 0.20f; pip[2] = 0.12f;
         }
@@ -9111,22 +9395,200 @@ void App::StartReconnect(amber::Session& s)
     cfg.proxyPass = s.savedProxyPassword.Reveal();
     cfg.cols = std::max(2, s.grid.Cols());
     cfg.rows = std::max(2, s.grid.Rows());
+    // Guardian > Reattach: "re-establish port forwards". Off means a
+    // reconnected session comes back WITHOUT its tunnels, which is what
+    // somebody wants when a listener is shared with another tool. The first
+    // connect always gets them — the setting is about the reconnect.
+    if (s.everConnected && !s.profile.restoreForwards)
+        cfg.forwards.clear();
 
     amber::Session* raw = &s;
     s.parser.SetWriter([raw](const char* d, size_t n) { raw->ssh.Send(d, n); });
-    if (s.everConnected)
+    // Nothing is fed to the parser here. The old build wrote a yellow
+    // "[amberssh: reconnecting...]" line into the grid, which then turned up
+    // in selections, scrollback searches and session logs as if the server
+    // had sent it. The annotation is drawn over the view instead.
+    // A duplicated split pane comes through here too, and that is a first
+    // connect, not a reconnect — the tab should say so.
+    s.state = s.everConnected ? amber::SessionState::Reconnecting
+                              : amber::SessionState::Connecting;
+    s.status = s.guardian.StatusText(m_time);
+    if (s.status.empty())
+        s.status = "connecting...";
+
+    // What to put back once the link is up. Built now, from the profile and
+    // the last known directory, so a failure to build is reported before the
+    // attempt rather than in the middle of it.
     {
-        const char note[] = "\r\n\x1b[33m[amberssh: reconnecting...]\x1b[0m\r\n";
-        s.parser.Feed(reinterpret_cast<const uint8_t*>(note),
-                      sizeof(note) - 1);
+        amber::RestoreRequest rr;
+        rr.reattach = s.profile.reattachMode;
+        rr.reattachSession = s.profile.reattachSession;
+        rr.reattachCustom = s.profile.reattachCommand;
+        rr.restoreCwd = s.profile.restoreCwd;
+        rr.cwd = s.cwd;
+        std::string rerr;
+        s.restorePlan = amber::BuildRestorePlan(rr, rerr);
+        if (!rerr.empty())
+            SetStatus("Reattach: " + rerr, 8.0);
     }
-    s.state = amber::SessionState::Connecting;
-    s.status = "connecting...";
-    s.ssh.Start(cfg);
+
+    if (!s.ssh.Start(cfg))
+    {
+        // The worker refused to start (a thread still winding down). Hand it
+        // back to the guardian as a transient failure rather than leaving the
+        // tab wedged in Reconnecting with nothing scheduled.
+        amber::ScrubString(cfg.password);
+        amber::ScrubString(cfg.passphrase);
+        amber::ScrubString(cfg.proxyPass);
+        s.guardian.OnDrop("could not start the connection", m_time);
+        s.status = s.guardian.StatusText(m_time);
+        return;
+    }
     amber::ScrubString(cfg.password);
     amber::ScrubString(cfg.passphrase);
     amber::ScrubString(cfg.proxyPass);
     s.ssh.RequestResize(cfg.cols, cfg.rows);
+}
+
+// ---------------------------------------------------------------- guardian
+// A view annotation: drawn over the grid at the row the cursor is on, never
+// written into it. See Session::Notice.
+void App::AddNotice(amber::Session& s, int kind, const std::string& text)
+{
+    if (!s.profile.reconnectBanner)
+        return;
+    amber::Session::Notice n;
+    n.rowId = s.grid.TotalPushed() + static_cast<uint64_t>(std::max(0, s.grid.CurY()));
+    n.t = m_time;
+    n.kind = kind;
+    n.text = text.size() > 160 ? text.substr(0, 160) : text;
+    s.notices.push_back(std::move(n));
+    if (s.notices.size() > 64)
+        s.notices.erase(s.notices.begin());
+}
+
+// A command was running when the link died. Its outcome is unknowable from
+// here, so it is recorded as interrupted and never given an exit code.
+void App::NoteInterruptedCommand(amber::Session& s, const std::string& why)
+{
+    if (!s.cmdRunning)
+        return;
+    s.cmdRunning = false;
+    s.hadInterrupted = true;
+    s.interrupted.command = s.pendingCmd;
+    s.interrupted.cwd = s.pendingCwd;
+    s.interrupted.startedAt = s.pendingStartedAt;
+    s.interrupted.ranForSec = std::max(0.0, m_time - s.cmdStart);
+    if (!s.pendingCmd.empty() && m_journalOn)
+    {
+        amber::JournalEntry e;
+        e.host = s.Caption();
+        e.cwd = s.pendingCwd;
+        e.command = s.pendingCmd;
+        e.exitCode = -1;          // unknown, and stays unknown
+        e.interrupted = true;
+        e.durationSec = s.interrupted.ranForSec;
+        e.startedAt = s.pendingStartedAt;
+        m_journal.Add(std::move(e));
+    }
+    s.pendingCmd.clear();
+    s.outputStartRow = 0;
+    AddNotice(s, 1, "interrupted while a command was running — its outcome is "
+                    "unknown (" + why + ")");
+}
+
+// A reconnect attempt succeeded.
+void App::OnSessionRecovered(amber::Session& s)
+{
+    char msg[128];
+    snprintf(msg, sizeof(msg), "reconnected after %.1f s",
+             s.guardian.LastOutageSec());
+    AddNotice(s, 2, msg);
+    if (HasSession() && &s == &Cur())
+        SetStatus(std::string("Reconnected to ") + s.label + " after " +
+                      std::to_string(static_cast<int>(s.guardian.LastOutageSec() + 0.5)) + "s",
+                  6.0);
+    if (s.hadInterrupted)
+    {
+        s.hadInterrupted = false;
+        AddNotice(s, 1, s.interrupted.command.empty()
+                            ? std::string("the command that was running did not survive the drop")
+                            : ("\"" + s.interrupted.command +
+                               "\" was interrupted — AmberSSH does not know how it ended"));
+    }
+    // The restore plan, sent once. It is only ever a reattach command and a
+    // cd, both built by BuildRestorePlan; nothing the user typed is replayed.
+    for (const amber::RestoreStep& step : s.restorePlan)
+    {
+        const std::string line = step.text + "\n";
+        s.ssh.Send(line.data(), line.size());
+        AddNotice(s, 0, (step.kind == amber::RestoreStep::Kind::Reattach
+                             ? "reattach: "
+                             : "restored directory: ") + step.text);
+    }
+    s.restorePlan.clear();
+    // Only while the window is in the background, and only on the outcome —
+    // never once per failed attempt.
+    if (s.profile.reconnectNotify && (!m_focused || m_minimized))
+    {
+        m_tray.Toast(L"AmberSSH — " + WideFromUtf8(s.Caption()),
+                     WideFromUtf8(msg));
+        s.unread = true;
+    }
+}
+
+// "Stop reconnecting" — the user takes the session off the guardian's hands.
+void App::GuardianStop(amber::Session& s)
+{
+    if (!s.guardian.Armed() && !s.guardian.NeedsConsent())
+    {
+        SetStatus("This session is not waiting to reconnect.", 4.0);
+        return;
+    }
+    s.guardian.StopByUser();
+    s.state = amber::SessionState::Disconnected;
+    s.status = s.guardian.StatusText(m_time);
+    s.restorePlan.clear();
+    AddNotice(s, 1, "reconnect stopped");
+    SetStatus("Reconnect stopped for " + s.label + ".", 5.0);
+}
+
+// "Reconnect now" — collapses the remaining wait, and is also the way back
+// out of "gave up". The attempt itself still runs the whole authentication
+// and host-key check: what changes is only that a human asked for it.
+void App::GuardianRetryNow(amber::Session& s)
+{
+    if (s.ssh.Running())
+    {
+        SetStatus("This session is still connected.", 4.0);
+        return;
+    }
+    if (!s.everConnected)
+    {
+        SetStatus("This session has never connected — open it from the "
+                  "connection manager.", 6.0);
+        return;
+    }
+    s.userClosed = false;
+    s.guardian.RetryNow(m_time);
+    s.state = amber::SessionState::Reconnecting;
+    s.status = s.guardian.StatusText(m_time);
+    SetStatus("Reconnecting to " + s.label + "...", 4.0);
+}
+
+// Every retry was used up.
+void App::OnSessionGaveUp(amber::Session& s)
+{
+    s.state = amber::SessionState::Error;
+    s.status = s.guardian.StatusText(m_time);
+    AddNotice(s, 1, s.status);
+    s.restorePlan.clear();
+    if (s.profile.reconnectNotify && (!m_focused || m_minimized))
+    {
+        m_tray.Toast(L"AmberSSH — " + WideFromUtf8(s.Caption()),
+                     WideFromUtf8(s.status + " — " + s.guardian.LastReason()));
+        s.unread = true;
+    }
 }
 
 // ============================================================ profile plumbing
@@ -9233,6 +9695,15 @@ void App::ApplyProfileToSession(amber::Session& s)
     s.lineEditing = p.localLineEdit == amber::TriState::On;
     s.logRaw = p.logMode == amber::LogMode::All;
     s.logFlush = p.logFlush;
+    // Session Guardian: the reconnect policy travels with the profile, and
+    // the jitter seed is derived from the profile id so two tabs on the same
+    // host back off on different schedules instead of retrying in lockstep.
+    amber::GuardianPolicy gp;
+    gp.mode = p.reconnectMode;
+    gp.maxAttempts = std::max(0, p.reconnectMaxAttempts);
+    gp.jitterPercent = std::clamp(p.reconnectJitterPercent, 0, 50);
+    gp.seed = amber::SeedFromId(p.id.empty() ? (p.host + p.username) : p.id);
+    s.guardian.Configure(gp);
 }
 
 // Appearance / Effects pages: renderer-wide overrides the profile asks for.

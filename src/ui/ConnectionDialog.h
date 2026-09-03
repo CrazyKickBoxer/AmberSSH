@@ -45,7 +45,8 @@ public:
         Session, Logging,
         Terminal, Keyboard, Bell, Features,
         Window, Appearance, Behaviour, Translation, Selection, Colours,
-        Connection, Data, Proxy, Ssh, SshAuth, SshX11, SshTunnels, SshHostKeys,
+        Connection, Guardian, Reattach, Data, Proxy, Ssh, SshAuth, SshX11,
+        SshTunnels, SshHostKeys,
         Serial, Telnet, Rlogin, Local,
         Effects,
         Count
@@ -89,6 +90,7 @@ private:
     void ReadFields(ConnectionProfile& p);            // controls → profile
     void WriteFields(const ConnectionProfile& p);     // profile → controls
     void SyncAuthEnabled();
+    void SyncGuardianEnabled();   // reattach fields follow the reattach mode
     void SyncProtocol();
     void BrowseForKey();
     void SetStatus(const std::wstring& text);

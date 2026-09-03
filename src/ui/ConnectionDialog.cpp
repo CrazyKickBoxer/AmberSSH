@@ -201,6 +201,9 @@ enum : int
     IdProxyPassword = 330, IdRememberProxyPassword,
     IdSerialPort = 340,
     IdLocalShell = 350, IdLocalExe,
+    IdReconnectMode = 360,      // 3 radios: 360..362
+    IdReattachMode = 370,       // 4 radios: 370..373
+    IdReattachSession = 380, IdReattachCommand,
 
     IdFieldFirst = 1000,
 };
@@ -464,6 +467,7 @@ LRESULT ConnectionDialog::Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         Layout();
         WriteFields(ConnectionProfile{});   // defaults into every control
         SyncAuthEnabled();
+        SyncGuardianEnabled();
         ShowPage(Page::Session);
         RefreshSessionList();
         return 0;
@@ -795,6 +799,11 @@ LRESULT ConnectionDialog::Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             SyncAuthEnabled();
             return 0;
         }
+        if (id >= IdReattachMode && id < IdReattachMode + 4)
+        {
+            SyncGuardianEnabled();
+            return 0;
+        }
         switch (id)
         {
         case IdOpen:
@@ -1090,12 +1099,60 @@ void ConnectionDialog::DefineFields()
     // ---- Connection ------------------------------------------------------
     num(Page::Connection, &P::connectTimeoutSeconds, L"Connection timeout (seconds)", 90);
     num(Page::Connection, &P::keepaliveSeconds, L"Seconds between keepalives (0 = off)", 90);
-    chk(Page::Connection, &P::autoReconnect, L"Reconnect automatically after a dropped connection");
     chk(Page::Connection, &P::tcpNoDelay, L"Disable Nagle's algorithm (TCP_NODELAY)");
     chk(Page::Connection, &P::tcpKeepalive, L"Enable TCP keepalives (SO_KEEPALIVE)");
     choice(Page::Connection, Kind::RadioRow, &P::ipVersion, L"Internet protocol version",
            { L"Auto", L"IPv4", L"IPv6" });
     str(Page::Connection, &P::logicalHost, L"Logical name of remote host (for host-key storage)");
+    note(Page::Connection, L"What happens when a connection drops is on the Guardian page.");
+
+    // ---- Guardian --------------------------------------------------------
+    choice(Page::Guardian, Kind::RadioRow, &P::reconnectMode,
+           L"When a connected session loses its link",
+           { L"Do nothing", L"Ask me", L"Reconnect automatically" }, IdReconnectMode);
+    num(Page::Guardian, &P::reconnectMaxAttempts,
+        L"Attempts before giving up (0 = keep trying until stopped)", 90);
+    num(Page::Guardian, &P::reconnectJitterPercent,
+        L"Backoff jitter, per cent (0-50)", 90);
+    note(Page::Guardian, L"Waits grow 1s, 2s, 5s, 10s, 30s and then hold at 30s. Jitter spreads\r\n"
+                         L"tabs apart so a fleet pointed at one server does not stampede it when\r\n"
+                         L"the server or the VPN comes back.");
+    note(Page::Guardian, L"Reconnect never resumes past a security question. A changed host key,\r\n"
+                         L"a rejected key, a missing password or a failed authentication stops it\r\n"
+                         L"and hands the decision to you. Reconnect only arms after a session has\r\n"
+                         L"connected once: a failure on the first connect is a settings problem.");
+    // Kept short: an uppercase skin renders these labels wider than the
+    // lower-case source, and a long one runs off the right edge of the page.
+    chk(Page::Guardian, &P::reconnectNotify, L"Notify me on the outcome");
+    chk(Page::Guardian, &P::reconnectBanner, L"Mark the drop and the recovery");
+    note(Page::Guardian, L"A notification is raised only when AmberSSH is in the background, and\r\n"
+                         L"only when a session reconnects or gives up — never per failed attempt.\r\n"
+                         L"The mark is drawn over the view, not written into the terminal, so it\r\n"
+                         L"never appears in a copy, a search or a session log.");
+
+    // ---- Guardian > Reattach ---------------------------------------------
+    choice(Page::Reattach, Kind::RadioRow, &P::reattachMode,
+           L"After reconnecting, rejoin",
+           { L"Nothing (a new shell)", L"tmux", L"screen", L"A command I give" },
+           IdReattachMode);
+    str(Page::Reattach, &P::reattachSession, L"tmux / screen session name", 260,
+        IdReattachSession);
+    str(Page::Reattach, &P::reattachCommand,
+        L"Custom reattach command (run once, after authentication)", -1,
+        IdReattachCommand);
+    note(Page::Reattach, L"tmux runs   tmux attach-session -t NAME || tmux new-session -s NAME\r\n"
+                         L"screen runs screen -R NAME\r\n"
+                         L"Both attach when the session exists and create it otherwise. Neither\r\n"
+                         L"kills a session or detaches anybody else.");
+    note(Page::Reattach, L"Processes that were running in a plain shell died with the old\r\n"
+                         L"connection and cannot be brought back. Only a multiplexer already\r\n"
+                         L"running on the server can carry work across a drop.");
+
+    chk(Page::Reattach, &P::restoreCwd, L"Return to the last known directory");
+    chk(Page::Reattach, &P::restoreForwards, L"Re-establish port forwards");
+    note(Page::Reattach, L"The directory comes from OSC 7 and is skipped when reattaching, since\r\n"
+                         L"a multiplexer brings its own panes back already in place. Forwards\r\n"
+                         L"include the SOCKS proxies, and are rebuilt on the new connection.");
 
     // ---- Data ------------------------------------------------------------
     str(Page::Data, &P::termType, L"Terminal-type string", 260);
@@ -1500,6 +1557,8 @@ void ConnectionDialog::BuildTree(HWND parent)
     insert(window, L"Selection", Page::Selection);
     insert(window, L"Colours", Page::Colours);
     HTREEITEM conn = insert(TVI_ROOT, L"Connection", Page::Connection);
+    HTREEITEM guard = insert(conn, L"Guardian", Page::Guardian);
+    insert(guard, L"Reattach", Page::Reattach);
     insert(conn, L"Data", Page::Data);
     insert(conn, L"Proxy", Page::Proxy);
     HTREEITEM ssh = insert(conn, L"SSH", Page::Ssh);
@@ -1513,7 +1572,7 @@ void ConnectionDialog::BuildTree(HWND parent)
     insert(conn, L"Rlogin", Page::Rlogin);
     insert(TVI_ROOT, L"Effects", Page::Effects);
 
-    for (HTREEITEM it : { session, term, window, conn, ssh })
+    for (HTREEITEM it : { session, term, window, conn, ssh, guard })
         SendMessageW(m_tree, TVM_EXPAND, TVE_EXPAND, (LPARAM)it);
     SendMessageW(m_tree, TVM_SELECTITEM, TVGN_CARET, (LPARAM)session);
 }
@@ -1853,6 +1912,7 @@ void ConnectionDialog::LoadSelectedProfile()
     }
 
     SyncAuthEnabled();
+    SyncGuardianEnabled();
     SetStatus(L"Loaded \"" + Widen(p.name.empty() ? p.host : p.name) + L"\".");
 }
 
@@ -2013,6 +2073,23 @@ void ConnectionDialog::SyncAuthEnabled()
     EnableWindow(GetDlgItem(m_dlg, IdBrowseKey), key);
     EnableWindow(GetDlgItem(m_dlg, IdPassphrase), key);
     EnableWindow(GetDlgItem(m_dlg, IdRememberPassphrase), key);
+}
+
+void ConnectionDialog::SyncGuardianEnabled()
+{
+    // The session name only means something for tmux and screen; the command
+    // only for Custom. Greying the rest is how the page says which one of the
+    // three the far end will actually be asked to run.
+    Field* mode = FindField(IdReattachMode);
+    const int idx = mode ? _wtoi(FieldValue(*mode).c_str()) : 0;
+    const bool named = idx == 1 || idx == 2;      // tmux / screen
+    const bool custom = idx == 3;
+    if (Field* f = FindField(IdReattachSession))
+        for (HWND h : f->ctrls)
+            EnableWindow(h, named);
+    if (Field* f = FindField(IdReattachCommand))
+        for (HWND h : f->ctrls)
+            EnableWindow(h, custom);
 }
 
 void ConnectionDialog::SyncProtocol()

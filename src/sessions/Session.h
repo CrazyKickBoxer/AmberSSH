@@ -10,6 +10,7 @@
 
 #include "../profiles/ConnectionProfile.h"
 #include "../ssh/session.h"
+#include "Guardian.h"
 #include "../term/ImageDecode.h"
 #include "../term/grid.h"
 #include "../term/vtparser.h"
@@ -187,17 +188,46 @@ struct Session
     size_t castNext = 0;
     double castPlayStart = 0.0;
 
-    // --- auto-reconnect ------------------------------------------------------
+    // --- session guardian ----------------------------------------------------
     // Secrets are retained in locked memory only while this session lives, so
     // reconnects and the SFTP browser work without re-prompting; scrubbed on
     // destruction.
     SecureString savedPassword, savedPassphrase, savedProxyPassword;
     bool logRaw = false;         // Logging: all session output (else printable)
     bool logFlush = false;       // Logging: flush after every write
-    int reconnectAttempt = 0;
-    double reconnectAt = 0.0;
+    // The reconnect state machine (sessions/Guardian.h). Everything about
+    // "did it drop, will it come back, how many times have we tried" lives
+    // there; this struct only carries what the UI has to draw.
+    Guardian guardian;
     bool everConnected = false;
     bool userClosed = false;    // manual disconnect — never auto-reconnect
+    // Sent to the far end once, after the next successful connect. Built by
+    // BuildRestorePlan, so it can only ever be a reattach command and a cd.
+    std::vector<RestoreStep> restorePlan;
+    // What OSC 133 said was running when the link died. Kept so the journal
+    // and the annotation can say "interrupted, outcome unknown" instead of
+    // inventing an exit code.
+    bool hadInterrupted = false;
+    InterruptedCommand interrupted;
+
+    // --- view annotations (NOT terminal content) -----------------------------
+    // Drawn over the grid at an absolute row id, exactly like the tide marks
+    // and the error embers. Nothing here is ever fed to the parser, so a
+    // notice cannot appear in a selection, a scrollback search or a session
+    // log — the grid stays the truth about what the server sent.
+    struct Notice
+    {
+        uint64_t rowId = 0;
+        double t = 0.0;
+        int kind = 0;         // 0 info, 1 warning, 2 recovered
+        std::string text;
+    };
+    std::vector<Notice> notices;
+    // A reconnect resets the parser and the grid, so every absolute row id
+    // from before it points at a row that no longer exists. Detected the way
+    // the inline images detect it — the push counter going backwards — and
+    // repaired by re-anchoring the surviving notices to the new top.
+    uint64_t noticesPushedSeen = 0;
 
     // --- split panes ---------------------------------------------------------
     // A tab's secondary pane is owned by its primary session; paneFocus picks

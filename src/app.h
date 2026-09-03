@@ -194,6 +194,13 @@ private:
     void SelectTab(int index, int dir = 0);
     void CycleTab(int delta);
     void PumpSshEvents();              // drains every session, not just active
+    // ---- session guardian (sessions/Guardian.h) --------------------------
+    void AddNotice(amber::Session& s, int kind, const std::string& text);
+    void NoteInterruptedCommand(amber::Session& s, const std::string& why);
+    void OnSessionRecovered(amber::Session& s);
+    void OnSessionGaveUp(amber::Session& s);
+    void GuardianStop(amber::Session& s);     // "stop reconnecting"
+    void GuardianRetryNow(amber::Session& s); // "reconnect now"
     void DrainSessionOutput(amber::Session& s, int budget);
     int  TabHitTest(int px, int py) const;
 
@@ -492,6 +499,7 @@ private:
     void FilterJournal();
     bool JournalKey(WPARAM vk);
     void DrawJournal();
+    void DrawNotices();   // guardian annotations over the grid (never in it)
     // Reads the typed command off the grid between the OSC 133 B and C marks.
     std::string LiftCommandText(const amber::Session& s) const;
     int m_bgStyle = 0;                 // 0 off, 1 Embers, 2 Starfield, 3 Cosmic Dust

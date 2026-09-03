@@ -1,5 +1,6 @@
 #include "ProfileStore.h"
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -160,7 +161,20 @@ json ToJson(const ConnectionProfile& p)
         // Connection
         {"connectTimeoutSeconds", p.connectTimeoutSeconds},
         {"keepaliveSeconds", p.keepaliveSeconds},
-        {"autoReconnect", p.autoReconnect},
+        // Guardian. "autoReconnect" is the Stage 1 key and is still written
+        // so an older build reading this file behaves the way it used to;
+        // "reconnectMode" is the truth and wins on load when present.
+        {"autoReconnect", p.reconnectMode != ReconnectMode::Off},
+        {"reconnectMode", EnumInt(p.reconnectMode)},
+        {"reconnectMaxAttempts", p.reconnectMaxAttempts},
+        {"reconnectJitterPercent", p.reconnectJitterPercent},
+        {"reconnectNotify", p.reconnectNotify},
+        {"reconnectBanner", p.reconnectBanner},
+        {"reattachMode", EnumInt(p.reattachMode)},
+        {"reattachSession", p.reattachSession},
+        {"reattachCommand", p.reattachCommand},
+        {"restoreCwd", p.restoreCwd},
+        {"restoreForwards", p.restoreForwards},
         {"tcpNoDelay", p.tcpNoDelay},
         {"tcpKeepalive", p.tcpKeepalive},
         {"ipVersion", p.ipVersion},
@@ -302,7 +316,24 @@ bool FromJson(const json& j, ConnectionProfile& out)
     // Connection
     out.connectTimeoutSeconds = Get<int>(j, "connectTimeoutSeconds", 15);
     out.keepaliveSeconds = Get<int>(j, "keepaliveSeconds", 30);
-    out.autoReconnect = Get<bool>(j, "autoReconnect", false);
+    // Guardian. A file written before Stage 2 has only "autoReconnect", so
+    // that is what the mode defaults to; once "reconnectMode" is present it
+    // is authoritative and the old key is ignored.
+    {
+        const bool legacy = Get<bool>(j, "autoReconnect", false);
+        const ReconnectMode fallback =
+            legacy ? ReconnectMode::Automatic : ReconnectMode::Off;
+        out.reconnectMode = EnumFrom(j, "reconnectMode", fallback, 2);
+    }
+    out.reconnectMaxAttempts = std::clamp(Get<int>(j, "reconnectMaxAttempts", 6), 0, 1000);
+    out.reconnectJitterPercent = std::clamp(Get<int>(j, "reconnectJitterPercent", 20), 0, 50);
+    out.reconnectNotify = Get<bool>(j, "reconnectNotify", true);
+    out.reconnectBanner = Get<bool>(j, "reconnectBanner", true);
+    out.reattachMode = EnumFrom(j, "reattachMode", d.reattachMode, 3);
+    out.reattachSession = Get<std::string>(j, "reattachSession", d.reattachSession);
+    out.reattachCommand = Get<std::string>(j, "reattachCommand", std::string());
+    out.restoreCwd = Get<bool>(j, "restoreCwd", false);
+    out.restoreForwards = Get<bool>(j, "restoreForwards", true);
     out.tcpNoDelay = Get<bool>(j, "tcpNoDelay", true);
     out.tcpKeepalive = Get<bool>(j, "tcpKeepalive", false);
     out.ipVersion = Get<int>(j, "ipVersion", 0);

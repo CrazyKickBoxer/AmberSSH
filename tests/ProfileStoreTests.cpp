@@ -253,6 +253,98 @@ TEST_CASE("every PuTTY-page option survives a save/load round trip", "[profiles]
     REQUIRE(text.find("\"password\"") == std::string::npos);
 }
 
+TEST_CASE("guardian settings survive a round trip", "[profiles][guardian]")
+{
+    auto file = TempFile("guardian-roundtrip");
+    std::filesystem::remove(file);
+
+    ConnectionProfile p = Sample();
+    p.reconnectMode = ReconnectMode::Ask;
+    p.reconnectMaxAttempts = 0;
+    p.reconnectJitterPercent = 35;
+    p.reconnectNotify = false;
+    p.reconnectBanner = false;
+    p.reattachMode = ReattachMode::Screen;
+    p.reattachSession = "build-2";
+    p.reattachCommand = "zellij attach main";
+    p.restoreCwd = true;
+    p.restoreForwards = false;
+    {
+        ProfileStore s;
+        s.Upsert(p);
+        std::string err;
+        REQUIRE(s.SaveTo(file, &err));
+    }
+    ProfileStore r;
+    REQUIRE(r.LoadFrom(file));
+    const ConnectionProfile* g = r.Find(p.id);
+    REQUIRE(g != nullptr);
+    REQUIRE(g->reconnectMode == ReconnectMode::Ask);
+    REQUIRE(g->reconnectMaxAttempts == 0);
+    REQUIRE(g->reconnectJitterPercent == 35);
+    REQUIRE_FALSE(g->reconnectNotify);
+    REQUIRE_FALSE(g->reconnectBanner);
+    REQUIRE(g->reattachMode == ReattachMode::Screen);
+    REQUIRE(g->reattachSession == "build-2");
+    REQUIRE(g->reattachCommand == "zellij attach main");
+    REQUIRE(g->restoreCwd);
+    REQUIRE_FALSE(g->restoreForwards);
+
+    SECTION("the legacy autoReconnect key is still written for older builds")
+    {
+        const std::string text = ReadAll(file);
+        REQUIRE(text.find("\"autoReconnect\": true") != std::string::npos);
+    }
+    SECTION("out-of-range guardian values are repaired on load")
+    {
+        ConnectionProfile bad = Sample();
+        bad.reconnectJitterPercent = 900;
+        bad.reconnectMaxAttempts = -4;
+        auto f2 = TempFile("guardian-clamp");
+        std::filesystem::remove(f2);
+        ProfileStore s;
+        s.Upsert(bad);
+        REQUIRE(s.SaveTo(f2, nullptr));
+        ProfileStore r2;
+        REQUIRE(r2.LoadFrom(f2));
+        const ConnectionProfile* c = r2.Find(bad.id);
+        REQUIRE(c != nullptr);
+        REQUIRE(c->reconnectJitterPercent <= 50);
+        REQUIRE(c->reconnectMaxAttempts >= 0);
+        std::filesystem::remove(f2);
+    }
+    std::filesystem::remove(file);
+}
+
+TEST_CASE("a profile written before Stage 2 keeps its reconnect behaviour",
+          "[profiles][guardian][compat]")
+{
+    // The Stage 1 file had one boolean. It has to keep meaning what it meant.
+    auto file = TempFile("guardian-legacy");
+    std::filesystem::remove(file);
+    {
+        std::ofstream out(file, std::ios::binary);
+        out << R"({"version":2,"profiles":[
+          {"id":"11111111-1111-4111-8111-111111111111","name":"old on",
+           "host":"a.example","port":22,"autoReconnect":true},
+          {"id":"22222222-2222-4222-8222-222222222222","name":"old off",
+           "host":"b.example","port":22,"autoReconnect":false}]})";
+    }
+    ProfileStore r;
+    REQUIRE(r.LoadFrom(file));
+    const ConnectionProfile* on = r.Find("11111111-1111-4111-8111-111111111111");
+    const ConnectionProfile* off = r.Find("22222222-2222-4222-8222-222222222222");
+    REQUIRE(on != nullptr);
+    REQUIRE(off != nullptr);
+    REQUIRE(on->reconnectMode == ReconnectMode::Automatic);
+    REQUIRE(off->reconnectMode == ReconnectMode::Off);
+    // And the Stage 2 defaults are what a file that says nothing gets.
+    REQUIRE(on->reattachMode == ReattachMode::None);
+    REQUIRE_FALSE(on->restoreCwd);
+    REQUIRE(on->reconnectMaxAttempts == 6);
+    std::filesystem::remove(file);
+}
+
 TEST_CASE("a serial profile is valid without a host and keeps its port type",
           "[profiles][putty]")
 {
