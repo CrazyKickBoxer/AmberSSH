@@ -3,7 +3,7 @@
 # Samples the logo's alpha and a GDI+-rendered wordmark on a fine grid, jitters
 # each sample, and draws a soft glow pass under a crisp core pass.
 param(
-  [string]$Logo = 'C:\apps\AmberSSH\assets\logo.png',
+  [string]$Logo = (Join-Path $PSScriptRoot '../../assets/logo.png'),
   [string]$OutPath = (Join-Path $PSScriptRoot 'manual_hero.png')
 )
 $ErrorActionPreference = "Stop"
