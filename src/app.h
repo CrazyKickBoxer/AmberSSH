@@ -42,7 +42,7 @@ public:
     // playPath: open this asciinema .cast in a local playback tab instead of
     // the connection manager (--play <file>).
     bool Init(HWND hwnd, bool diagMode = false, const std::string& connectId = {},
-              const std::wstring& playPath = {});
+              const std::wstring& playPath = {}, const std::string& localShell = {});
     // Open an asciinema .cast in a local playback tab (File menu, --play).
     void PlayRecordingFile(const std::wstring& path);
     void Shutdown();
@@ -178,6 +178,10 @@ private:
 
     bool ShowConnectionDialog();       // modal; creates and starts a session
     bool StartSession(amber::ConnectionRequest& req);   // from any source
+    // Opens a local console session for a discovered shell key ("pwsh",
+    // "wsl:Ubuntu"...). The profile is ephemeral: nothing is saved unless the
+    // user saves it from the connection manager.
+    bool NewLocalSession(const std::string& shellKey);
     bool ConnectProfileById(const std::string& id);     // jump list / --connect
     bool UnlockSecrets();              // Windows Hello gate for remembered secrets
     void UpdateJumpList();             // taskbar "Saved Sessions" jump list

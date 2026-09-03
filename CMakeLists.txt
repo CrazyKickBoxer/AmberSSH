@@ -43,6 +43,7 @@ set(AMBER_SOURCES
     src/platform/Notify.h     src/platform/Notify.cpp
     src/platform/JumpList.h   src/platform/JumpList.cpp
     src/platform/Hello.h      src/platform/Hello.cpp
+    src/platform/ConPty.h     src/platform/ConPty.cpp
     src/ssh/SftpClient.h      src/ssh/SftpClient.cpp
     src/ui/SftpBrowser.h      src/ui/SftpBrowser.cpp
     src/ui/ForwardsDialog.h   src/ui/ForwardsDialog.cpp

@@ -46,7 +46,7 @@ public:
         Terminal, Keyboard, Bell, Features,
         Window, Appearance, Behaviour, Translation, Selection, Colours,
         Connection, Data, Proxy, Ssh, SshAuth, SshX11, SshTunnels, SshHostKeys,
-        Serial, Telnet, Rlogin,
+        Serial, Telnet, Rlogin, Local,
         Effects,
         Count
     };

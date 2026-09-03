@@ -14,6 +14,7 @@
 #include "ui/AboutDialog.h"
 #include "ui/SkinDraw.h"
 #include "ui/SkinFinish.h"
+#include "platform/ConPty.h"
 #include "ui/ConnectionDialog.h"
 #include "ui/SftpPanel.h"
 #include "ui/Theme.h"
@@ -56,6 +57,12 @@ enum MenuId : int
     // The motion range GROWS with the style table, so it lives above every
     // other id. It used to sit at 40100 and, at 23 styles, had grown over
     // Reduced Motion / About / Journal and swallowed their commands.
+    // Local shells discovered on this machine. Like the motion range this
+    // GROWS at runtime (a new WSL distro adds an entry), so it lives above
+    // every fixed id — see the note on IdmMotionFirst.
+    IdmLocalFirst = 41500,         // +0..31 → DiscoverLocalShells()
+    IdmLocalLast = IdmLocalFirst + 31,
+
     IdmMotionFirst = 41000,        // +0..N → index into kMotionStyles
     IdmMotionLast  = IdmMotionFirst + kMotionStyleCount - 1,
     IdmReducedMotion = 40120,      // accessibility: short Direct morph only
@@ -245,6 +252,8 @@ static_assert(IdmThemeLast - IdmThemeFirst + 1 == kThemeCount,
 // The motion range is the only one that grows every time a style is added, so
 // it must stay above every fixed id. Adding the 23rd style once pushed
 // IdmMotionLast to 40122 and silently ate About and the Journal.
+static_assert(IdmLocalFirst > IdmMotionFirst + 256,
+              "the local-shell range must clear the motion range as it grows");
 static_assert(IdmMotionFirst > IdmWorkspaceLast && IdmMotionFirst > IdmSnippetLast,
               "keep IdmMotionFirst above every other menu id");
 
@@ -279,7 +288,7 @@ constexpr float kBloomLevels[3] = { 0.25f, 0.50f, 0.90f };
 
 // ---------------------------------------------------------------------- init
 bool App::Init(HWND hwnd, bool diagMode, const std::string& connectId,
-               const std::wstring& playPath)
+               const std::wstring& playPath, const std::string& localShell)
 {
     m_hwnd = hwnd;
     m_diagMode = diagMode;
@@ -413,6 +422,15 @@ bool App::Init(HWND hwnd, bool diagMode, const std::string& connectId,
         PlayRecordingFile(playPath);
         if (m_sessions.empty())
             return false;           // unreadable recording: exit cleanly
+        UpdateGridDims();
+        return true;
+    }
+
+    // --local <shell>: a console on this machine instead of the manager.
+    if (!localShell.empty())
+    {
+        if (!NewLocalSession(localShell))
+            return false;
         UpdateGridDims();
         return true;
     }
@@ -1102,6 +1120,26 @@ void App::DrainSessionOutput(amber::Session& s, int budget)
     }
 }
 
+
+bool App::NewLocalSession(const std::string& shellKey)
+{
+    amber::LocalShell sh;
+    if (!amber::ResolveShellByKey(shellKey, sh))
+    {
+        SetStatus(shellKey + " is not installed on this machine.", 5.0);
+        return false;
+    }
+    // An ephemeral profile: a local session is usually a thing you want now,
+    // not a thing you name. Saving one is a deliberate act in the manager.
+    amber::ConnectionRequest req;
+    req.profile.id = amber::MakeUuid();
+    req.profile.name = sh.name;
+    req.profile.protocol = amber::Protocol::Local;
+    req.profile.localShellKey = sh.key;
+    req.profile.localShellIntegration = true;
+    req.profile.closeOnExit = amber::CloseOnExit::CleanOnly;
+    return StartSession(req);
+}
 bool App::ShowConnectionDialog()
 {
     amber::ConnectionRequest req;
@@ -1185,6 +1223,12 @@ bool App::StartSession(amber::ConnectionRequest& req)
         const amber::ConnectionProfile& pr = req.profile;
         switch (pr.protocol)
         {
+        case amber::Protocol::Local:
+            // A local tab is named for its shell. Letting the shell's own title
+            // win would put "C:\Windows\System32\cmd.exe" on the tab, which is
+            // what cmd sets it to and tells the user nothing.
+            session->label = pr.name.empty() ? std::string("local") : pr.name;
+            break;
         case amber::Protocol::Serial:
             session->label = pr.serialPort + " @ " + std::to_string(pr.serialBaud);
             break;
@@ -5955,6 +5999,14 @@ bool App::HandleMenuCommand(int id)
         UpdateMenuChecks();
         return true;
     }
+    if (id >= IdmLocalFirst && id <= IdmLocalLast)
+    {
+        const std::vector<amber::LocalShell> shells = amber::DiscoverLocalShells();
+        size_t i = static_cast<size_t>(id - IdmLocalFirst);
+        if (i < shells.size())
+            NewLocalSession(shells[i].key);
+        return true;
+    }
     if (id >= IdmWorkspaceFirst && id <= IdmWorkspaceLast)
     {
         size_t i = static_cast<size_t>(id - IdmWorkspaceFirst);
@@ -6873,6 +6925,11 @@ void App::BuildPaletteItems()
     add("Close Split", IdmSplitClose);
     add(std::string("Broadcast Input to Both Panes") + onoff(m_broadcast), IdmBroadcast);
     add("Toggle Fullscreen", IdmViewFullscreen);
+    {
+        const std::vector<amber::LocalShell> shells = amber::DiscoverLocalShells();
+        for (size_t i = 0; i < shells.size() && i < 32; ++i)
+            add("New Local: " + shells[i].name, IdmLocalFirst + static_cast<int>(i));
+    }
     add("SFTP Panel", IdmSftpPanel);
     add("Import Profiles (PuTTY / OpenSSH config)", IdmImportProfiles);
     add("Search Scrollback", IdmSearchScrollback);
@@ -9133,6 +9190,12 @@ void App::BuildSshConfig(const amber::ConnectionProfile& p, SshConfig& cfg) cons
     cfg.telnetPassive = p.telnetPassive;
     cfg.telnetNewline = p.telnetNewline;
     cfg.rloginLocalUser = p.rloginLocalUser;
+    cfg.localShellKey = p.localShellKey;
+    cfg.localExe = p.localExe;
+    cfg.localArgs = p.localArgs;
+    cfg.localCwd = p.localCwd;
+    cfg.localEnv = p.localEnv;
+    cfg.localShellIntegration = p.localShellIntegration;
     cfg.serialPort = p.serialPort;
     cfg.serialBaud = p.serialBaud;
     cfg.serialDataBits = p.serialDataBits;

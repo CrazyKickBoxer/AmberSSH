@@ -42,7 +42,7 @@ inline AuthMethod AuthMethodFromName(const std::string& name)
 }
 
 // Connection type (PuTTY: SSH / Serial / Other: Telnet, Rlogin, Raw).
-enum class Protocol { Ssh = 0, Telnet = 1, Rlogin = 2, Raw = 3, Serial = 4 };
+enum class Protocol { Ssh = 0, Telnet = 1, Rlogin = 2, Raw = 3, Serial = 4, Local = 5 };
 
 inline const char* ProtocolName(Protocol p)
 {
@@ -52,6 +52,7 @@ inline const char* ProtocolName(Protocol p)
     case Protocol::Rlogin: return "rlogin";
     case Protocol::Raw:    return "raw";
     case Protocol::Serial: return "serial";
+    case Protocol::Local:  return "local";
     case Protocol::Ssh:    default: return "ssh";
     }
 }
@@ -62,6 +63,7 @@ inline Protocol ProtocolFromName(const std::string& n)
     if (n == "rlogin") return Protocol::Rlogin;
     if (n == "raw")    return Protocol::Raw;
     if (n == "serial") return Protocol::Serial;
+    if (n == "local")  return Protocol::Local;
     return Protocol::Ssh;
 }
 
@@ -73,6 +75,7 @@ inline int ProtocolDefaultPort(Protocol p)
     case Protocol::Rlogin: return 513;
     case Protocol::Raw:    return 0;
     case Protocol::Serial: return 0;
+    case Protocol::Local:  return 0;
     case Protocol::Ssh:    default: return 22;
     }
 }
@@ -237,6 +240,21 @@ struct ConnectionProfile
     SerialParity serialParity = SerialParity::None;
     SerialFlow  serialFlow = SerialFlow::None;
 
+
+    // ---- Connection > Local (ConPTY) --------------------------------------
+    // A local console session. `localShellKey` names a discovered shell
+    // ("pwsh", "powershell", "cmd", "gitbash", "wsl:Ubuntu"); it is resolved
+    // at launch so a profile keeps working when a shell is upgraded or moved.
+    // An empty key means the executable below is the whole answer.
+    std::string localShellKey;
+    std::string localExe;            // console executable, bare name allowed
+    std::string localArgs;
+    std::string localCwd;            // empty = the user's profile directory
+    std::string localEnv;            // NAME=value per line
+    bool        localShellIntegration = true;   // per-session OSC 7 / OSC 133
+    // Elevation is deliberately NOT a profile field. Launching elevated has
+    // to be an explicit, visible action, never a property a saved session can
+    // carry silently.
     // ---- Connection > Telnet ---------------------------------------------
     bool        telnetPassive = false;   // negotiation: respond only
     bool        telnetKeyboard = false;  // Ctrl+C/Z/D send IP/SUSP/EOF
@@ -253,6 +271,8 @@ struct ConnectionProfile
     {
         if (id.empty())
             return false;
+        if (protocol == Protocol::Local)
+            return !localExe.empty() || !localShellKey.empty();
         if (protocol == Protocol::Serial)
             return !serialPort.empty();
         return !host.empty() && port > 0 && port <= 65535;

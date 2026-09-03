@@ -64,6 +64,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int nCmdSho
             while (*p && *p != L' ')
                 playPath.push_back(*p++);
     }
+    // --local <shell-key>: open a local console session straight away
+    // ("pwsh", "cmd", "wsl:Ubuntu"). Same path the menu and palette use.
+    std::string localShell;
+    if (const wchar_t* l = lpCmdLine ? wcsstr(lpCmdLine, L"--local") : nullptr)
+    {
+        l += 7;
+        while (*l == L' ' || *l == L'=')
+            ++l;
+        while (*l && *l != L' ')
+            localShell.push_back(static_cast<char>(*l++));
+    }
     amber::InitAppUserModelId();
 
     WNDCLASSEXW wc = {};
@@ -111,7 +122,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int nCmdSho
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&app));
     try
     {
-        if (!app.Init(hwnd, diagMode, connectId, playPath))
+        if (!app.Init(hwnd, diagMode, connectId, playPath, localShell))
         {
             MessageBoxW(hwnd, L"Failed to initialize DirectX 12 renderer.",
                         L"AmberSSH", MB_ICONERROR);

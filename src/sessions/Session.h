@@ -240,6 +240,10 @@ struct Session
     // Caption shown on the tab.
     std::string Caption() const
     {
+        // A local shell names its tab after itself: cmd and PowerShell set
+        // their window title to their own executable path, which is noise.
+        if (profile.protocol == Protocol::Local && !label.empty())
+            return label;
         if (!remoteTitle.empty())
             return remoteTitle;
         if (!label.empty())

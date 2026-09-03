@@ -4,6 +4,7 @@
 // (RFC 1282 handshake and window-size messages), Raw TCP, and Serial COM
 // ports (DCB: baud / data bits / stop bits / parity / flow control).
 #include "session.h"
+#include "../platform/ConPty.h"
 #include "transport.h"
 
 #include <winsock2.h>
@@ -14,6 +15,8 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
+#include <thread>
 
 namespace
 {
@@ -986,6 +989,177 @@ closed:
         if (hs)
             CloseHandle(reinterpret_cast<HANDLE>(hs));
     }
+    PostEvent(SshEventType::Closed, closeReason);
+    m_running.store(false);
+}
+
+// ---------------------------------------------------------------- local
+// A local console through the Windows pseudoconsole. The shape matches the
+// serial transport — open a handle, pump bytes into the same ring, drain the
+// same out-queue — with one difference that matters: a pipe read blocks with
+// no timeout, so it runs on its own thread. The main loop then never waits on
+// the child, which is what keeps resize and disconnect responsive while a
+// build is pouring output.
+void SshSession::ThreadMainLocal(SshConfig cfg)
+{
+    m_remoteEcho.store(true);      // the shell echoes, like an SSH channel
+    m_cleanClose.store(false);
+
+    amber::ConPtyConfig pc;
+    pc.exe = WidenA(cfg.localExe);
+    pc.args = WidenA(cfg.localArgs);
+    pc.cwd = WidenA(cfg.localCwd);
+    pc.cols = static_cast<short>(cfg.cols > 0 ? cfg.cols : 80);
+    pc.rows = static_cast<short>(cfg.rows > 0 ? cfg.rows : 24);
+    for (size_t pos = 0; pos < cfg.localEnv.size();)
+    {
+        size_t end = cfg.localEnv.find_first_of("\r\n", pos);
+        std::string one = cfg.localEnv.substr(pos, end == std::string::npos ? std::string::npos
+                                                                            : end - pos);
+        pos = (end == std::string::npos) ? cfg.localEnv.size() : end + 1;
+        size_t a = one.find_first_not_of(" \t");
+        if (a == std::string::npos || one[a] == '#' || one.find('=') == std::string::npos)
+            continue;
+        pc.env.push_back(WidenA(one.substr(a)));
+    }
+    // The shell-integration bootstrap replaces the profile's arguments only
+    // when the profile has none of its own — an explicit argument list is the
+    // user's and is never second-guessed.
+    if (cfg.localShellIntegration && cfg.localArgs.empty())
+    {
+        std::wstring boot = amber::ShellIntegrationArgs(cfg.localShellKey);
+        if (!boot.empty())
+            pc.args = boot;
+    }
+
+    // A profile that names a discovered shell resolves it now, so it keeps
+    // working across a shell upgrade or a distro installed after the save.
+    std::string shellName = cfg.localShellKey;
+    if (!cfg.localShellKey.empty())
+    {
+        amber::LocalShell sh;
+        if (amber::ResolveShellByKey(cfg.localShellKey, sh))
+        {
+            shellName = sh.name;
+            if (cfg.localExe.empty())
+                pc.exe = sh.exe;
+            if (cfg.localArgs.empty() && pc.args.empty())
+                pc.args = sh.args;
+            else if (cfg.localArgs.empty() && sh.wsl)
+                pc.args = sh.args + L" " + pc.args;   // --distribution first
+        }
+        else if (cfg.localExe.empty())
+        {
+            PostEvent(SshEventType::Error,
+                      cfg.localShellKey + " is not installed on this machine");
+            m_running.store(false);
+            return;
+        }
+    }
+    const std::string what = shellName.empty() ? cfg.localExe : shellName;
+    PostEvent(SshEventType::Status, "starting " + what + "...");
+
+    amber::ConPty pty;
+    std::string err;
+    if (!pty.Start(pc, err))
+    {
+        PostEvent(SshEventType::Error, err);
+        m_running.store(false);
+        return;
+    }
+    m_localRead.store(reinterpret_cast<uintptr_t>(pty.ReadHandle()));
+    PostEvent(SshEventType::Connected);
+
+    // Reader thread: blocks on the pipe, pushes into the ring, and signals
+    // EOF by clearing `reading`. It touches nothing the main loop owns.
+    std::atomic<bool> reading{ true };
+    std::thread reader([this, &pty, &reading]() {
+        std::vector<uint8_t> buf(32768);
+        for (;;)
+        {
+            size_t n = pty.Read(buf.data(), buf.size());
+            if (n == 0)
+                break;                       // EOF or broken pipe
+            size_t off = 0;
+            while (off < n && !m_stop.load())
+            {
+                size_t pushed = m_output.Push(buf.data() + off, n - off);
+                off += pushed;
+                if (off < n)
+                    Sleep(1);                // ring full: let the UI drain it
+            }
+            if (m_stop.load())
+                break;
+        }
+        reading.store(false);
+    });
+
+    std::vector<uint8_t> writeBuf;
+    std::string closeReason;
+    while (!m_stop.load())
+    {
+        if (m_resizePending.exchange(false))
+            pty.Resize(static_cast<short>(m_pendingCols.load()),
+                       static_cast<short>(m_pendingRows.load()));
+
+        {
+            std::lock_guard<std::mutex> lk(m_outMutex);
+            if (!m_outQueue.empty())
+            {
+                writeBuf.swap(m_outQueue);
+                m_outQueue.clear();
+            }
+            m_cmdQueue.clear();
+        }
+        if (!writeBuf.empty())
+        {
+            if (!pty.Write(writeBuf.data(), writeBuf.size()))
+            {
+                closeReason = "the shell closed its input";
+                break;
+            }
+            writeBuf.clear();
+        }
+
+        if (!reading.load())
+        {
+            // The child's output ended: it has exited, or is about to.
+            // The pipe breaks a moment before the process object signals, so
+            // give the exit code a beat to settle rather than reporting the
+            // sentinel as a clean exit.
+            DWORD code = pty.ExitCode();
+            for (int i = 0; i < 20 && code == STILL_ACTIVE; ++i)
+            {
+                Sleep(5);
+                code = pty.ExitCode();
+            }
+            m_cleanClose.store(code == 0 || code == STILL_ACTIVE);
+            closeReason = (code == 0 || code == STILL_ACTIVE)
+                              ? "the shell exited"
+                              : "the shell exited with code " + std::to_string(code);
+            break;
+        }
+        Sleep(6);
+    }
+    if (closeReason.empty())
+    {
+        closeReason = "disconnected";
+        m_cleanClose.store(true);
+    }
+
+    // Ask the shell to leave, give it a moment, then take the tree down. The
+    // reader thread ends when the pipe breaks either way, so it is always
+    // joinable and no handle outlives this frame.
+    m_localRead.store(0);
+    pty.RequestExit();
+    for (int i = 0; i < 100 && reading.load(); ++i)
+        Sleep(10);                       // up to a second for a clean exit
+    if (reading.load())
+        pty.Terminate();                 // hung: end the job object
+    if (reader.joinable())
+        reader.join();
+    pty.Close();
+
     PostEvent(SshEventType::Closed, closeReason);
     m_running.store(false);
 }

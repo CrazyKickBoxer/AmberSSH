@@ -197,6 +197,12 @@ json ToJson(const ConnectionProfile& p)
         {"forwards", p.forwards},
         {"jumpHost", p.jumpHost},
         // Serial
+        {"localShellKey", p.localShellKey},
+        {"localExe", p.localExe},
+        {"localArgs", p.localArgs},
+        {"localCwd", p.localCwd},
+        {"localEnv", p.localEnv},
+        {"localShellIntegration", p.localShellIntegration},
         {"serialPort", p.serialPort},
         {"serialBaud", p.serialBaud},
         {"serialDataBits", p.serialDataBits},
@@ -333,6 +339,12 @@ bool FromJson(const json& j, ConnectionProfile& out)
     out.forwards = Get<std::string>(j, "forwards", std::string());
     out.jumpHost = Get<std::string>(j, "jumpHost", std::string());
     // Serial
+    out.localShellKey = Get<std::string>(j, "localShellKey", d.localShellKey);
+    out.localExe = Get<std::string>(j, "localExe", d.localExe);
+    out.localArgs = Get<std::string>(j, "localArgs", d.localArgs);
+    out.localCwd = Get<std::string>(j, "localCwd", d.localCwd);
+    out.localEnv = Get<std::string>(j, "localEnv", d.localEnv);
+    out.localShellIntegration = Get<bool>(j, "localShellIntegration", d.localShellIntegration);
     out.serialPort = Get<std::string>(j, "serialPort", d.serialPort);
     out.serialBaud = Get<int>(j, "serialBaud", d.serialBaud);
     out.serialDataBits = Get<int>(j, "serialDataBits", d.serialDataBits);
@@ -354,7 +366,8 @@ bool FromJson(const json& j, ConnectionProfile& out)
         out.id = MakeUuid();
     if (out.port < 0 || out.port > 65535)
         out.port = ProtocolDefaultPort(out.protocol);
-    if (out.port == 0 && out.protocol != Protocol::Serial && out.protocol != Protocol::Raw)
+    if (out.port == 0 && out.protocol != Protocol::Serial && out.protocol != Protocol::Raw &&
+        out.protocol != Protocol::Local)
         out.port = ProtocolDefaultPort(out.protocol);
     if (out.cols < 20 || out.cols > 1000)
         out.cols = 80;
@@ -384,6 +397,8 @@ bool FromJson(const json& j, ConnectionProfile& out)
         out.densityPpc = 0;
 
     // A destination is the one field we cannot invent.
+    if (out.protocol == Protocol::Local)
+        return !out.localExe.empty() || !out.localShellKey.empty();
     return out.protocol == Protocol::Serial ? !out.serialPort.empty()
                                             : !out.host.empty();
 }

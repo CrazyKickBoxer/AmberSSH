@@ -15,6 +15,7 @@
 #include "../platform/CredentialStore.h"
 #include "SkinDraw.h"
 #include "SkinFinish.h"
+#include "../platform/ConPty.h"
 #include "Theme.h"
 
 #pragma comment(lib, "comctl32.lib")
@@ -191,7 +192,7 @@ enum : int
     // Fields that need special handling keep fixed ids; the rest are
     // assigned from IdFieldFirst upwards by DefineFields.
     IdHost = 200, IdPort, IdUser,
-    IdProtocol = 210,           // 5 radios: 210..214
+    IdProtocol = 210,           // 6 radios: 210..215
     IdCloseOnExit = 220,        // 3 radios: 220..222
     IdAuth = 300,               // 4 radios: 300..303
     IdPassword = 310, IdRememberPassword, IdKeyPath, IdPassphrase,
@@ -199,6 +200,7 @@ enum : int
     IdProxyType = 320,          // 4 radios: 320..323
     IdProxyPassword = 330, IdRememberProxyPassword,
     IdSerialPort = 340,
+    IdLocalShell = 350, IdLocalExe,
 
     IdFieldFirst = 1000,
 };
@@ -783,7 +785,7 @@ LRESULT ConnectionDialog::Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             InvalidateRect(hb, nullptr, TRUE);
         }
 
-        if (id >= IdProtocol && id < IdProtocol + 5)
+        if (id >= IdProtocol && id < IdProtocol + 6)
         {
             SyncProtocol();
             return 0;
@@ -946,7 +948,7 @@ void ConnectionDialog::DefineFields()
     str(Page::Session, &P::host, L"Host name or IP address", -1, IdHost);
     num(Page::Session, &P::port, L"Port", 90, IdPort);
     choice(Page::Session, Kind::RadioRow, &P::protocol, L"Connection type",
-           { L"SSH", L"Telnet", L"Rlogin", L"Raw", L"Serial" }, IdProtocol);
+           { L"SSH", L"Telnet", L"Rlogin", L"Raw", L"Serial", L"Local" }, IdProtocol);
     str(Page::Session, &P::username, L"Username (auto-login)", -1, IdUser);
     choice(Page::Session, Kind::RadioRow, &P::closeOnExit, L"Close window on exit",
            { L"Always", L"Never", L"Only on clean exit" }, IdCloseOnExit);
@@ -1187,6 +1189,57 @@ void ConnectionDialog::DefineFields()
            { L"None", L"Odd", L"Even", L"Mark", L"Space" }, 0, 120);
     choice(Page::Serial, Kind::Combo, &P::serialFlow, L"Flow control",
            { L"None", L"XON/XOFF", L"RTS/CTS", L"DSR/DTR" }, 0, 120);
+
+    // ---- Local (ConPTY) ---------------------------------------------------
+    // The shell list is discovered on this machine, so the choices name what
+    // is actually installed. "Custom" hands control to the executable field.
+    {
+        Field f;
+        f.page = Page::Local; f.kind = Kind::Combo; f.id = IdLocalShell;
+        f.label = L"Shell";
+        f.options.push_back(L"Custom (use the executable below)");
+        for (const amber::LocalShell& s : amber::DiscoverLocalShells())
+            f.options.push_back(WideFromUtf8(s.name));
+        f.get = [](const P& p) {
+            if (p.localShellKey.empty())
+                return std::wstring(L"0");
+            const std::vector<amber::LocalShell> shells = amber::DiscoverLocalShells();
+            for (size_t i = 0; i < shells.size(); ++i)
+                if (shells[i].key == p.localShellKey)
+                    return std::to_wstring(i + 1);
+            return std::wstring(L"0");
+        };
+        f.set = [](P& p, const std::wstring& v) {
+            int idx = _wtoi(v.c_str());
+            const std::vector<amber::LocalShell> shells = amber::DiscoverLocalShells();
+            if (idx <= 0 || static_cast<size_t>(idx) > shells.size())
+            {
+                p.localShellKey.clear();
+                return;
+            }
+            const amber::LocalShell& s = shells[static_cast<size_t>(idx - 1)];
+            p.localShellKey = s.key;
+            // Leave the executable and arguments blank so the shell is
+            // resolved afresh at every launch; a user who types into those
+            // fields is choosing to pin them.
+            p.localExe.clear();
+            p.localArgs.clear();
+            if (p.name.empty())
+                p.name = s.name;
+        };
+        push(std::move(f));
+    }
+    str(Page::Local, &P::localExe, L"Executable (blank = the shell above)", -1, IdLocalExe);
+    str(Page::Local, &P::localArgs, L"Arguments");
+    str(Page::Local, &P::localCwd, L"Starting directory (blank = your profile folder)");
+    multi(Page::Local, &P::localEnv, L"Environment overrides (NAME=value, one per line)");
+    chk(Page::Local, &P::localShellIntegration,
+        L"Enable shell integration for this session (OSC 7 and OSC 133)");
+    note(Page::Local, L"Shell integration is passed to the shell at launch and lasts only for\r\n"
+                      L"this session. No dotfile is read or written. It gives the command\r\n"
+                      L"journal, output folding and command jumping something to attach to.");
+    note(Page::Local, L"Local sessions never run elevated. Start AmberSSH itself as\r\n"
+                      L"administrator if you need an elevated shell.");
 
     // ---- Telnet ----------------------------------------------------------
     chk(Page::Telnet, &P::telnetPassive, L"Passive telnet negotiation (respond only, never initiate)");
@@ -1455,6 +1508,7 @@ void ConnectionDialog::BuildTree(HWND parent)
     insert(ssh, L"Tunnels", Page::SshTunnels);
     insert(ssh, L"Host keys", Page::SshHostKeys);
     insert(conn, L"Serial", Page::Serial);
+    insert(conn, L"Local", Page::Local);
     insert(conn, L"Telnet", Page::Telnet);
     insert(conn, L"Rlogin", Page::Rlogin);
     insert(TVI_ROOT, L"Effects", Page::Effects);
@@ -1649,6 +1703,15 @@ void ConnectionDialog::ShowPage(Page page)
     ShowWindow(GetDlgItem(m_dlg, IdBrowseKey), page == Page::SshAuth ? SW_SHOW : SW_HIDE);
     ShowWindow(GetDlgItem(m_dlg, IdClearCreds), page == Page::SshAuth ? SW_SHOW : SW_HIDE);
     ShowWindow(GetDlgItem(m_dlg, IdSerialRefresh), page == Page::Serial ? SW_SHOW : SW_HIDE);
+    // Host and port mean nothing to a local shell; a serial line has neither.
+    {
+        Field* pf = FindField(IdProtocol);
+        const int proto = pf ? _wtoi(FieldValue(*pf).c_str()) : 0;
+        const BOOL netw = (proto != static_cast<int>(Protocol::Serial) &&
+                           proto != static_cast<int>(Protocol::Local));
+        EnableWindow(GetDlgItem(m_dlg, IdHost), netw);
+        EnableWindow(GetDlgItem(m_dlg, IdPort), netw);
+    }
 
     m_page = page;
     Layout();
@@ -1973,8 +2036,9 @@ void ConnectionDialog::SyncProtocol()
         L"Rlogin: plain text, port 513 (Connection > Rlogin for the local user).",
         L"Raw: bare TCP stream, no protocol (set the port).",
         L"Serial: local COM port (Connection > Serial for line settings).",
+        L"Local: a shell on this machine — PowerShell, cmd, WSL (Connection > Local).",
     };
-    SetStatus(hints[std::clamp(now, 0, 4)]);
+    SetStatus(hints[std::clamp(now, 0, 5)]);
 }
 
 void ConnectionDialog::BrowseForKey()

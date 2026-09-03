@@ -15,6 +15,7 @@ add_executable(AmberTests
     CommandJournalTests.cpp
     WorkspaceTests.cpp
     PasteGuardTests.cpp
+    LocalSessionTests.cpp
 
     ${CMAKE_SOURCE_DIR}/src/term/vtparser.cpp
     ${CMAKE_SOURCE_DIR}/src/term/grid.cpp
@@ -25,6 +26,7 @@ add_executable(AmberTests
     ${CMAKE_SOURCE_DIR}/src/utility/SecureString.cpp
     ${CMAKE_SOURCE_DIR}/src/platform/Paths.cpp
     ${CMAKE_SOURCE_DIR}/src/platform/CredentialStore.cpp
+    ${CMAKE_SOURCE_DIR}/src/platform/ConPty.cpp
     ${CMAKE_SOURCE_DIR}/src/profiles/ProfileStore.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/Chrome.cpp
     ${CMAKE_SOURCE_DIR}/src/sessions/CommandJournal.cpp

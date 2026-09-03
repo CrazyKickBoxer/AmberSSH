@@ -542,7 +542,9 @@ bool SshSession::Start(const SshConfig& cfg)
     m_running.store(true);
     m_remoteEcho.store(true);
     m_cleanClose.store(false);
-    if (cfg.protocol == 4)
+    if (cfg.protocol == 5)
+        m_thread = std::thread(&SshSession::ThreadMainLocal, this, cfg);
+    else if (cfg.protocol == 4)
         m_thread = std::thread(&SshSession::ThreadMainSerial, this, cfg);
     else if (cfg.protocol != 0)
         m_thread = std::thread(&SshSession::ThreadMainStream, this, cfg);
@@ -599,6 +601,12 @@ void SshSession::Disconnect()
     uintptr_t s = m_socket.exchange(~0ull);
     if (s != ~0ull)
         closesocket(static_cast<SOCKET>(s));
+    // Local: wake the reader thread out of a blocking pipe read. The handle
+    // belongs to the ConPty, which closes it on its own thread — cancelling
+    // here and closing there is what keeps the two from racing.
+    uintptr_t lr = m_localRead.exchange(0);
+    if (lr)
+        CancelIoEx(reinterpret_cast<HANDLE>(lr), nullptr);
     // Serial: cancel a blocking read and close the port so the thread exits.
     uintptr_t hs = m_serial.exchange(0);
     if (hs)

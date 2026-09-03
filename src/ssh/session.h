@@ -17,7 +17,7 @@
 
 struct SshConfig
 {
-    // 0 SSH, 1 Telnet, 2 Rlogin, 3 Raw, 4 Serial (amber::Protocol).
+    // 0 SSH, 1 Telnet, 2 Rlogin, 3 Raw, 4 Serial, 5 Local (amber::Protocol).
     int protocol = 0;
 
     std::string host;
@@ -85,6 +85,14 @@ struct SshConfig
     int serialStopBits = 1;        // 1, 2, 15 (= 1.5)
     int serialParity = 0;          // 0 none, 1 odd, 2 even, 3 mark, 4 space
     int serialFlow = 0;            // 0 none, 1 XON/XOFF, 2 RTS/CTS, 3 DSR/DTR
+
+    // ---- Local (ConPTY) ----------------------------------------------------
+    std::string localShellKey;     // "pwsh", "cmd", "wsl:Ubuntu", "" = custom
+    std::string localExe;          // console executable (may be a bare name)
+    std::string localArgs;
+    std::string localCwd;          // empty = the user's profile directory
+    std::string localEnv;          // NAME=value per line, overrides ours
+    bool localShellIntegration = true;   // per-session OSC 7 / OSC 133 bootstrap
 };
 
 enum class SshEventType
@@ -137,6 +145,7 @@ private:
     void ThreadMain(SshConfig cfg);          // SSH
     void ThreadMainStream(SshConfig cfg);    // Telnet / Rlogin / Raw
     void ThreadMainSerial(SshConfig cfg);    // COM port
+    void ThreadMainLocal(SshConfig cfg);     // local console via ConPTY
     void PostEvent(SshEventType type, std::string text = {});
     // Forward listener / tunnel bookkeeping lives in the .cpp anonymous
     // namespace (FwdListener / FwdTunnel).
@@ -169,4 +178,7 @@ private:
 
     std::atomic<uintptr_t> m_socket{ ~0ull };   // for abortive close on cancel
     std::atomic<uintptr_t> m_serial{ 0 };       // COM handle for abort
+    // Local: the pseudoconsole read end. Disconnect only CANCELS a pending
+    // read on it to wake the reader thread — the ConPty owns and closes it.
+    std::atomic<uintptr_t> m_localRead{ 0 };
 };
