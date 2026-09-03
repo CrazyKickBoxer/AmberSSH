@@ -13,6 +13,7 @@ These are handled locally and are never forwarded to the remote shell.
 | `Ctrl+Shift+C` | Copy selection |
 | `Ctrl+Shift+V`, `Shift+Insert` | Paste |
 | `Ctrl+Shift+D` | Disconnect the current session |
+| `Ctrl+Shift+M` | Privacy Cloak — mask likely secrets on screen |
 | `Ctrl` + mouse wheel | Font size up / down |
 | `Shift+PgUp` / `Shift+PgDn` | Scroll back / forward one page |
 | `F2` | Toggle VSync |

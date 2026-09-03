@@ -37,6 +37,62 @@ The intended behaviour is:
   fingerprints; explain that this may be a rebuilt server *or* an interception
   attempt; require a separate explicit action to replace the stored key.
 
+### Host sigils
+
+A fingerprint is 43 characters of base64 and nobody compares one properly. The
+host-key box therefore draws a **sigil** derived from the key
+(`src/security/HostSigil.h`): a small figure whose node count, filled/hollow
+nodes, chords, corner cuts and border rhythm all come from the fingerprint.
+
+- It is a **recognition aid, never the evidence.** The fingerprint text is shown
+  next to it and remains the thing being verified.
+- The same key always produces the same figure, on every machine and every
+  build (FNV-1a plus splitmix64, chosen for being identical everywhere).
+- Colour is never the only difference: any two hosts that share a hue differ in
+  geometry, so the figure works in monochrome and for a colour-vision
+  difference. `SigilDescribe` states the shape in words for a screen reader.
+- The four-character mnemonic is a shorthand for saying aloud on a call.
+  Mnemonics **do** collide — a test asserts it — so one must never be presented
+  as proof of identity.
+
+## Blast radius
+
+Before anything leaves `App::SendToShell` the command is analysed by a
+hand-written parser (`src/security/BlastRadius.h`) and, above the configured
+policy threshold, confirmed.
+
+- **No language model is consulted.** The answer must be the same every time
+  and it must be explainable, so every rule is code.
+- The parser never rewrites the command; the confirmation shows the exact bytes
+  that will be sent.
+- What it cannot read, it says: a pipeline is truncated at the first separator
+  and reported as partly examined; substitution and unterminated quotes make the
+  report explicitly incomplete; a finding resting on a variable or a glob is
+  marked "unable to determine".
+- Typed-hostname friction is reserved for Critical. Requiring typing for every
+  warning is how people learn to type without reading.
+- Without shell integration (OSC 133) the command is recovered from the screen
+  and the prompt boundary is a guess. Several readings are produced and the
+  worst is taken; the dialog says the text came from the screen.
+
+## Privacy cloak
+
+Ctrl+Shift+M masks likely secrets at draw time (`src/security/PrivacyCloak.h`).
+The grid is never modified — search, selection and copy still see the real
+characters — and the cover is applied where compose reads a cell.
+
+The wording is fixed in one function, `CloakStatusText()`, and a test enforces
+it:
+
+> AmberSSH says "potential secrets are being masked".
+> AmberSSH must **never** say "this session is safe to share".
+
+Detection is pattern matching and will miss things. On a fixed grid the covered
+run is as long as the secret; the copy path (`MaskLine`) uses a fixed-width
+`[redacted]` marker, which does hide length. IP addresses and home-directory
+names are opt-in, because masking them by default makes the terminal useless
+for the work it is usually doing.
+
 ## Logging
 
 The logger must never receive secret material. Permitted: profile UUID, host,

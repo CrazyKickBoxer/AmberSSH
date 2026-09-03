@@ -21,6 +21,9 @@ add_executable(AmberTests
     CompatFixtureTests.cpp
     PaneLayoutTests.cpp
     SyncPlanTests.cpp
+    HostSigilTests.cpp
+    BlastRadiusTests.cpp
+    PrivacyCloakTests.cpp
 
     ${CMAKE_SOURCE_DIR}/src/term/vtparser.cpp
     ${CMAKE_SOURCE_DIR}/src/term/grid.cpp
@@ -42,6 +45,9 @@ add_executable(AmberTests
     ${CMAKE_SOURCE_DIR}/src/sessions/CommandBlocks.cpp
     ${CMAKE_SOURCE_DIR}/src/sessions/PaneLayout.cpp
     ${CMAKE_SOURCE_DIR}/src/sessions/Workspaces.cpp
+    ${CMAKE_SOURCE_DIR}/src/security/HostSigil.cpp
+    ${CMAKE_SOURCE_DIR}/src/security/BlastRadius.cpp
+    ${CMAKE_SOURCE_DIR}/src/security/PrivacyCloak.cpp
 )
 
 target_include_directories(AmberTests PRIVATE ${CMAKE_SOURCE_DIR}/src)

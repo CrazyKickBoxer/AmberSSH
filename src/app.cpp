@@ -12,6 +12,8 @@
 #include "platform/Taskbar.h"
 #include "utility/PasteGuard.h"
 #include "ui/AboutDialog.h"
+#include "ui/SafetyDialog.h"
+#include "security/PrivacyCloak.h"
 #include "ui/SkinDraw.h"
 #include "ui/SkinFinish.h"
 #include "platform/ConPty.h"
@@ -144,6 +146,13 @@ enum MenuId : int
     IdmNightFirst = 40160,         // +0..2 off / after dark / always
     IdmNightLast = IdmNightFirst + 2,
     IdmTimeDialReset = 40165,      // put the time dial back to 1x
+    // Safety. The cloak masks likely secrets at draw time; the risk policy
+    // decides which commands are worth interrupting for.
+    IdmCloak = 40170,              // Privacy Cloak on/off
+    IdmCloakAddrs = 40171,         // also mask IP addresses
+    IdmCloakHome = 40172,          // also mask home-directory names
+    IdmRiskFirst = 40173,          // +0..4 → RiskPolicy Off..Everything
+    IdmRiskLast = IdmRiskFirst + 4,
     IdmWorkspaceSave = 40132,      // save the open sessions as a workspace
     IdmWorkspaceDelete = 40133,
     IdmWorkspaceFirst = 40800,     // +0..23 → m_workspaceNames
@@ -347,10 +356,12 @@ constexpr float kBloomLevels[3] = { 0.25f, 0.50f, 0.90f };
 
 // ---------------------------------------------------------------------- init
 bool App::Init(HWND hwnd, bool diagMode, const std::string& connectId,
-               const std::wstring& playPath, const std::string& localShell)
+               const std::wstring& playPath, const std::string& localShell,
+               int previewSafety)
 {
     m_hwnd = hwnd;
-    m_diagMode = diagMode;
+    m_diagMode = diagMode || previewSafety != 0;
+    m_previewSafety = previewSafety;
     QueryPerformanceFrequency(&m_qpcFreq);
     QueryPerformanceCounter(&m_qpcStart);
 
@@ -753,6 +764,25 @@ void App::HandleColorSpaceChange()
 // ---------------------------------------------------------------------- tick
 void App::Tick()
 {
+    // --preview-safety: open both safety boxes once, on the frame after the
+    // window is up, with sample content and nothing connected. It exists so
+    // the two modals can be reviewed on every interface skin without a server
+    // — the same reason --diag exists.
+    if (m_previewSafety)
+    {
+        const int want = m_previewSafety;
+        m_previewSafety = 0;
+        amber::ShowHostKeyDialog(
+            m_hwnd, "sample.example.com",
+            "ssh-ed25519 SHA256:uYtM0LrpZ8kX3vQ9dGfJhKlNpRsTwZaBcDeFgHiJkLm",
+            want == 2);
+        const amber::RiskReport r = amber::AnalyseCommand("sudo rm -rf /var/lib");
+        amber::ShowRiskDialog(m_hwnd, r,
+                              amber::ConfirmFor(r.level, amber::RiskPolicy::Standard),
+                              "sample.example.com");
+        PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
+        return;
+    }
     if (m_minimized)
     {
         // Minimized: zero GPU dispatches; keep draining the network so the
@@ -948,16 +978,24 @@ void App::PumpSshEvents()
         if (s.hostKeyPending)
         {
             s.hostKeyPending = false;
-            std::wstring body =
-                L"The server presented this host key:\r\n\r\n" +
-                WideFromUtf8(s.hostKeyText) +
-                L"\r\n\r\nAccept this key and continue connecting to " +
-                WideFromUtf8(s.label) + L"?";
-            int answer = MessageBoxW(m_hwnd, body.c_str(),
-                                     L"AmberSSH — verify host key",
-                                     MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
-            s.ssh.AnswerHostKey(answer == IDYES);
-            if (answer != IDYES)
+            // A fingerprint is 43 characters of base64 that nobody compares
+            // properly. The sigil turns it into a figure the eye can reject at
+            // a glance — and the text is still there, because the figure is a
+            // recognition aid, never the evidence.
+            //
+            // "changed" is the case the whole feature exists for: the wording
+            // the transport uses for a mismatch decides the alarm treatment.
+            std::string low = s.hostKeyText;
+            for (char& c : low)
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            const bool changed = low.find("changed") != std::string::npos ||
+                                 low.find("mismatch") != std::string::npos ||
+                                 low.find("does not match") != std::string::npos;
+            const amber::HostKeyChoice choice = amber::ShowHostKeyDialog(
+                m_hwnd, s.label, s.hostKeyText, changed);
+            const bool answer = choice == amber::HostKeyChoice::Accept;
+            s.ssh.AnswerHostKey(answer);
+            if (!answer)
             {
                 s.state = amber::SessionState::Disconnected;
                 s.status = "host key rejected";
@@ -2178,6 +2216,11 @@ void App::BuildVisualsFromGrid()
         }
     }
 
+    // Which cells the cloak covers this frame. Computed once for the pane,
+    // before anything is emitted, so a masked cell is never drawn first and
+    // covered afterwards.
+    RebuildCloak(S, paneRows, paneCols);
+
     for (int r = 0; r < paneRows; ++r)
     {
         if (r + rowOff >= static_cast<int>(m_gm.rows))
@@ -2190,8 +2233,18 @@ void App::BuildVisualsFromGrid()
                 break;
             // Folding lives here, in the ONE place compose reads a cell: a
             // collapsed block's rows are replaced by its summary line.
-            const Cell live = FoldedCell(S, r, c);
+            Cell live = FoldedCell(S, r, c);
             const size_t di = static_cast<size_t>(r) * paneCols + static_cast<size_t>(c);
+            // Privacy cloak: cover the cell rather than change the grid. On a
+            // fixed grid the covered run is still as long as the secret — the
+            // status bar says so, and the copy path uses a fixed-width marker
+            // instead. Both are honest about what they do.
+            if (!S.cloakMask.empty() && di < S.cloakMask.size() && S.cloakMask[di])
+            {
+                live.cp = U'█';
+                live.link = 0;
+                live.attr &= static_cast<uint16_t>(~(AttrUnderline | AttrDblUnder));
+            }
             if (!sameCell(live, S.dbLast[di]))
             {
                 S.dbLast[di] = live;
@@ -3845,7 +3898,16 @@ void App::DrawStatusBar()
     if (bcTargets)
         snprintf(m_bcastChip, sizeof(m_bcastChip), "bcast %zu", bcTargets);
     const bool folded = HasSession() && Cur().AnyCollapsed();
+    // The cloak chip carries the count of covered runs on screen, because
+    // "cloak" lit tells you the feature is on and nothing about whether it
+    // actually found anything — which is the question you have when you are
+    // about to share the window.
+    if (m_cloak.enabled && HasSession() && Foc().cloakCount > 0)
+        snprintf(m_cloakChip, sizeof(m_cloakChip), "cloak %d", Foc().cloakCount);
     const ChipDef defs[] = {
+        { m_cloak.enabled && HasSession() && Foc().cloakCount > 0 ? m_cloakChip
+                                                                  : "cloak",
+          IdmCloak, m_cloak.enabled },
         { "quake",   IdmQuakeMode, m_quake },
         { "fold",    folded ? IdmFoldNone : IdmFoldAll, folded },
         // The chip carries the target COUNT, not just an on/off state, and
@@ -4130,6 +4192,14 @@ void App::SendToShell(const std::string& bytes)
     }
     if (F.state != amber::SessionState::Connected)
         return;
+    // Blast radius: the last gate before anything leaves. Placed here so every
+    // route into the shell — typing, paste, snippets, block rerun, broadcast —
+    // passes the same check, and a refusal sends nothing at all.
+    if (!RiskCheck(bytes))
+    {
+        SetStatus("Not sent.", 3.0);
+        return;
+    }
     if (F.diagnostic)
     {
         // The diagnostic session has no remote end: echo locally so typing
@@ -4279,6 +4349,14 @@ bool App::OnKeyDown(WPARAM vk)
     if (mods.ctrl && mods.shift && vk == 'O')
     {
         ToggleFoldAtCursor();
+        m_swallowChar = true;
+        return true;
+    }
+    // The cloak needs to be one keystroke away: it is reached in the second
+    // before a screen share starts, not from a settings page.
+    if (mods.ctrl && mods.shift && vk == 'M')
+    {
+        HandleMenuCommand(IdmCloak);
         m_swallowChar = true;
         return true;
     }
@@ -5743,6 +5821,25 @@ void App::BuildMenus()
         AppendMenuW(bc, MF_STRING, IdmBroadcastStop, L"&Stop Broadcasting");
         AppendMenuW(file, MF_POPUP, reinterpret_cast<UINT_PTR>(bc), L"&Broadcast");
     }
+    {
+        // Safety. Two independent features, one place to find them: the cloak
+        // is about who can SEE the session, the blast radius about what the
+        // session can DO.
+        HMENU safety = CreatePopupMenu();
+        AppendMenuW(safety, MF_STRING, IdmCloak, L"&Privacy Cloak\tCtrl+Shift+M");
+        AppendMenuW(safety, MF_STRING, IdmCloakAddrs, L"Cloak: also mask &IP addresses");
+        AppendMenuW(safety, MF_STRING, IdmCloakHome, L"Cloak: also mask &home directory names");
+        AppendMenuW(safety, MF_SEPARATOR, 0, nullptr);
+        HMENU risk = CreatePopupMenu();
+        AppendMenuW(risk, MF_STRING, IdmRiskFirst + 0, L"&Off");
+        AppendMenuW(risk, MF_STRING, IdmRiskFirst + 1, L"&Critical only");
+        AppendMenuW(risk, MF_STRING, IdmRiskFirst + 2, L"&High and critical");
+        AppendMenuW(risk, MF_STRING, IdmRiskFirst + 3, L"&Standard (medium and above)");
+        AppendMenuW(risk, MF_STRING, IdmRiskFirst + 4, L"&Everything");
+        AppendMenuW(safety, MF_POPUP, reinterpret_cast<UINT_PTR>(risk),
+                    L"Confirm &Risky Commands");
+        AppendMenuW(file, MF_POPUP, reinterpret_cast<UINT_PTR>(safety), L"&Safety");
+    }
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IdmCommandPalette,
                 L"Command &Palette...\tCtrl+Shift+P");
@@ -6162,6 +6259,16 @@ void App::UpdateMenuChecks()
     check(IdmFxLive, m_fxLive);
     check(IdmFxPersist, m_fxPersist);
     check(IdmFxCube, m_fxCube);
+    check(IdmCloak, m_cloak.enabled);
+    check(IdmCloakAddrs, m_cloak.ipAddresses);
+    check(IdmCloakHome, m_cloak.homeDirectories);
+    EnableMenuItem(m_menu, IdmCloakAddrs,
+                   MF_BYCOMMAND | (m_cloak.enabled ? MF_ENABLED : MF_GRAYED));
+    EnableMenuItem(m_menu, IdmCloakHome,
+                   MF_BYCOMMAND | (m_cloak.enabled ? MF_ENABLED : MF_GRAYED));
+    CheckMenuRadioItem(m_menu, IdmRiskFirst, IdmRiskLast,
+                       IdmRiskFirst + std::clamp(static_cast<int>(m_riskPolicy), 0, 4),
+                       MF_BYCOMMAND);
     CheckMenuRadioItem(m_menu, IdmSharpFirst, IdmSharpLast,
                        IdmSharpFirst + std::clamp(m_sharpness, 0, 2), MF_BYCOMMAND);
     {
@@ -6213,6 +6320,17 @@ void App::UpdateMenuChecks()
 
 bool App::HandleMenuCommand(int id)
 {
+    if (id >= IdmRiskFirst && id <= IdmRiskLast)
+    {
+        m_riskPolicy = static_cast<amber::RiskPolicy>(id - IdmRiskFirst);
+        SaveSettings();
+        UpdateMenuChecks();
+        SetStatus(m_riskPolicy == amber::RiskPolicy::Off
+                      ? std::string("Risky commands are no longer confirmed.")
+                      : std::string("Confirm risky commands: ") +
+                            amber::RiskPolicyName(m_riskPolicy));
+        return true;
+    }
     if (id >= IdmThemeFirst && id <= IdmThemeLast)
     {
         m_themeId = id - IdmThemeFirst;
@@ -6235,6 +6353,34 @@ bool App::HandleMenuCommand(int id)
             UpdateMenuChecks();
             SetStatus("Theme: Custom (edited)");
         }
+        return true;
+    case IdmCloak:
+        m_cloak.enabled = !m_cloak.enabled;
+        InvalidateCloak();
+        SaveSettings();
+        UpdateMenuChecks();
+        // The one wording the feature is allowed to use. It never claims the
+        // session is safe to share, because pattern matching cannot know that.
+        SetStatus(m_cloak.enabled ? amber::CloakStatusText()
+                                  : "Privacy Cloak off.",
+                  m_cloak.enabled ? 8.0 : 3.0);
+        return true;
+    case IdmCloakAddrs:
+        m_cloak.ipAddresses = !m_cloak.ipAddresses;
+        InvalidateCloak();
+        SaveSettings();
+        UpdateMenuChecks();
+        SetStatus(m_cloak.ipAddresses ? "Cloak: IP addresses are masked too."
+                                      : "Cloak: IP addresses are shown.");
+        return true;
+    case IdmCloakHome:
+        m_cloak.homeDirectories = !m_cloak.homeDirectories;
+        InvalidateCloak();
+        SaveSettings();
+        UpdateMenuChecks();
+        SetStatus(m_cloak.homeDirectories
+                      ? "Cloak: home directory names are masked too."
+                      : "Cloak: home directory names are shown.");
         return true;
     case IdmLogSession:       ToggleLogging();          return true;
     case IdmSearchScrollback: SearchScrollbackPrompt(); return true;
@@ -7299,6 +7445,14 @@ void App::LoadSettings()
     m_notifyCommands = std::clamp(readInt("\"notifyCommands\"", 0), 0, 3);
     m_notifyAfterSecs = std::clamp(readInt("\"notifyAfterSecs\"", 30), 0, 86400);
     m_pasteGuard = readInt("\"pasteGuard\"", 1) != 0;
+    m_cloak.enabled = readInt("\"cloak\"", 0) != 0;
+    m_cloak.ipAddresses = readInt("\"cloakAddrs\"", 0) != 0;
+    m_cloak.homeDirectories = readInt("\"cloakHome\"", 0) != 0;
+    // Off by default is deliberate: the risk policy is not, because a
+    // confirmation the user never asked for is far cheaper than the command it
+    // stops. High and critical only, so the box stays rare enough to read.
+    m_riskPolicy = static_cast<amber::RiskPolicy>(
+        std::clamp(readInt("\"riskPolicy\"", 2), 0, 4));
     m_departStyle = std::clamp(readInt("\"departStyle\"", 0), 0, 4);
     m_fxParallax = readInt("\"fxParallax\"", 0) != 0;
     m_fxSlosh = readInt("\"fxSlosh\"", 0) != 0;
@@ -7370,6 +7524,10 @@ void App::SaveSettings()
             "  \"journal\": %d,\n"
             "  \"statusBar\": %d,\n"
             "  \"pasteGuard\": %d,\n"
+            "  \"cloak\": %d,\n"
+            "  \"cloakAddrs\": %d,\n"
+            "  \"cloakHome\": %d,\n"
+            "  \"riskPolicy\": %d,\n"
             "  \"departStyle\": %d,\n"
             "  \"fxParallax\": %d,\n"
             "  \"fxSlosh\": %d,\n"
@@ -7422,6 +7580,8 @@ void App::SaveSettings()
             m_journalOn ? 1 : 0,
             m_statusBar ? 1 : 0,
             m_pasteGuard ? 1 : 0,
+            m_cloak.enabled ? 1 : 0, m_cloak.ipAddresses ? 1 : 0,
+            m_cloak.homeDirectories ? 1 : 0, static_cast<int>(m_riskPolicy),
             m_departStyle,
             m_fxParallax ? 1 : 0, m_fxSlosh ? 1 : 0, m_fxWarmup ? 1 : 0,
             m_fxSpotlight ? 1 : 0, m_nightShift,
@@ -7601,6 +7761,17 @@ void App::BuildPaletteItems()
     add(std::string("Stats Overlay") + onoff(m_showOverlay), IdmViewOverlay);
     add(std::string("Status Bar") + onoff(m_statusBar), IdmStatusBar);
     add(std::string("Confirm Multi-line Paste") + onoff(m_pasteGuard), IdmPasteGuard);
+    add(std::string("Privacy Cloak") + onoff(m_cloak.enabled), IdmCloak);
+    add(std::string("Privacy Cloak: Mask IP Addresses") + onoff(m_cloak.ipAddresses),
+        IdmCloakAddrs);
+    add(std::string("Privacy Cloak: Mask Home Directory Names") +
+            onoff(m_cloak.homeDirectories),
+        IdmCloakHome);
+    for (int i = 0; i <= 4; ++i)
+        add(std::string("Confirm Risky Commands: ") +
+                amber::RiskPolicyName(static_cast<amber::RiskPolicy>(i)) +
+                (static_cast<int>(m_riskPolicy) == i ? "  (current)" : ""),
+            IdmRiskFirst + i);
     add("Previous Command Mark", IdmPrevCommand);
     add("Next Command Mark", IdmNextCommand);
     add("Paste", IdmPaste);
@@ -11629,6 +11800,272 @@ Cell App::FoldedCell(const amber::Session& s, int viewRow, int col) const
     out.fg = amber::ColRgb((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
     out.attr = AttrDim;
     return out;
+}
+
+// ------------------------------------------------------------ privacy cloak
+// Rebuilds the per-cell mask for one pane. Runs the detector over the text as
+// it will be DRAWN (folding applied), so what the user sees and what was
+// scanned are the same thing.
+//
+// The mask is a display overlay and nothing else: the grid still holds the
+// real characters, so search, selection and copy are unaffected, and turning
+// the cloak off restores the screen with nothing lost.
+void App::RebuildCloak(amber::Session& s, int rows, int cols)
+{
+    const size_t n = static_cast<size_t>(rows) * static_cast<size_t>(cols);
+    if (!m_cloak.enabled)
+    {
+        if (!s.cloakMask.empty())
+        {
+            s.cloakMask.clear();
+            s.cloakStamp = 0;
+            s.cloakCount = 0;
+        }
+        return;
+    }
+
+    // A cheap content stamp. Running the detector over every row every frame
+    // would cost more than the whole compose pass; running it when the text
+    // changes costs nothing anyone can measure.
+    uint64_t stamp = 1469598103934665603ull;
+    for (int r = 0; r < rows; ++r)
+        for (int c = 0; c < cols; ++c)
+        {
+            stamp ^= static_cast<uint64_t>(FoldedCell(s, r, c).cp);
+            stamp *= 1099511628211ull;
+        }
+    if (stamp == s.cloakStamp && s.cloakMask.size() == n)
+        return;
+    s.cloakStamp = stamp;
+    s.cloakMask.assign(n, 0);
+    s.cloakCount = 0;
+
+    // A PEM key spans many lines, so the block state is carried down the pane
+    // in order — the same reason the module exposes PemState at all.
+    amber::PemState pem;
+    std::string line;
+    std::vector<int> colOf;       // byte offset -> column
+    for (int r = 0; r < rows; ++r)
+    {
+        line.clear();
+        colOf.clear();
+        for (int c = 0; c < cols; ++c)
+        {
+            const Cell cell = FoldedCell(s, r, c);
+            if (cell.flags & CellWideTail)
+                continue;
+            const size_t before = line.size();
+            amber::AppendClusterUtf8(line, (cell.cp == 0) ? U' ' : cell.cp);
+            for (size_t k = before; k < line.size(); ++k)
+                colOf.push_back(c);
+        }
+        auto cover = [&](int c0, int c1)
+        {
+            for (int c = c0; c <= c1 && c < cols; ++c)
+                if (c >= 0)
+                    s.cloakMask[static_cast<size_t>(r) * cols + c] = 1;
+        };
+        // A key body line carries no pattern of its own; the block state is
+        // what says it must be covered.
+        if (amber::UpdatePem(line, pem))
+        {
+            cover(0, cols - 1);
+            ++s.cloakCount;
+            continue;
+        }
+        const std::vector<amber::SecretSpan> spans = amber::FindSecrets(line, m_cloak);
+        for (const amber::SecretSpan& sp : spans)
+        {
+            if (sp.begin >= colOf.size())
+                continue;
+            const size_t last = (std::min)(sp.end, colOf.size()) - 1;
+            cover(colOf[sp.begin], colOf[last]);
+            ++s.cloakCount;
+        }
+    }
+}
+
+void App::InvalidateCloak()
+{
+    ForEachSession([](amber::Session& s)
+    {
+        s.cloakMask.clear();
+        s.cloakStamp = 0;
+        s.cloakCount = 0;
+    });
+}
+
+// The masking used for text that LEAVES the terminal — the journal, the status
+// bar, a notification. Unlike the on-screen cover this replaces a span with a
+// fixed marker, so the length of the secret does not travel with it either.
+std::string App::CloakText(const std::string& line) const
+{
+    if (!m_cloak.enabled)
+        return line;
+    return amber::MaskLine(line, m_cloak);
+}
+
+// ------------------------------------------------------------- blast radius
+// The text of the command that is about to be submitted.
+//
+// With shell integration (OSC 133) this is exact: the 'B' mark says where the
+// prompt ended, so what comes back is precisely what the user typed. Without
+// it the line is recovered from the screen and the prompt is guessed at, which
+// is why the caller is told which of the two it got — a warning built on a
+// guess has to say so.
+std::vector<std::string> App::CommandAboutToRun(const amber::Session& s,
+                                                bool& exact) const
+{
+    exact = s.promptCol >= 0;
+    if (exact)
+    {
+        const std::string cmd = LiftCommandText(s);
+        if (!cmd.empty())
+            return { cmd };
+        exact = false;
+    }
+    // Fallback: the cursor's row, up to the cursor. Where the prompt ends is
+    // now a guess, and a wrong guess in either direction is a safety failure:
+    // cut too little and the analyser sees "C:\Users\me>rm" as the program;
+    // cut too much and a redirect swallows the command.
+    //
+    // So do not guess once. Produce every plausible reading and let the caller
+    // take the WORST — over-reporting on this path is the safe direction, and
+    // whichever reading raised the alarm is the text the dialog shows.
+    const Grid& g = s.grid;
+    const int row = std::max(0, g.CurY());
+    std::string line;
+    for (int c = 0; c < std::min(g.CurX(), g.Cols()); ++c)
+    {
+        const Cell& cell = g.ViewCell(row, c);
+        if (cell.flags & CellWideTail)
+            continue;
+        amber::AppendClusterUtf8(line, (cell.cp == 0) ? U' ' : cell.cp);
+    }
+    std::vector<std::string> out;
+    if (line.find_first_not_of(" \t") == std::string::npos)
+        return out;
+    out.push_back(line);
+    // "user@host:~$ " and the like — an unambiguous prompt ending.
+    static const char* kEnds[] = { "$ ", "# ", "% ", "> " };
+    size_t cut = 0;
+    for (const char* e : kEnds)
+    {
+        const size_t at = line.rfind(e);
+        if (at != std::string::npos && at + 2 > cut)
+            cut = at + 2;
+    }
+    if (cut > 0 && cut < line.size())
+        out.push_back(line.substr(cut));
+    // "C:\Users\me>" — no trailing space, which is what cmd.exe and a good
+    // many custom prompts do.
+    const size_t bare = line.find_last_of("$#%>");
+    if (bare != std::string::npos && bare + 1 < line.size())
+    {
+        size_t at = bare + 1;
+        while (at < line.size() && line[at] == ' ')
+            ++at;
+        if (at < line.size())
+            out.push_back(line.substr(at));
+    }
+    return out;
+}
+
+// Analyses what is about to be sent and asks for confirmation when the policy
+// says so. Returns false when the user declined; the caller then sends
+// nothing, leaving the typed line exactly where it was.
+bool App::RiskCheck(const std::string& bytes)
+{
+    if (m_riskPolicy == amber::RiskPolicy::Off || !HasSession())
+        return true;
+    const amber::Session& F = Foc();
+    if (F.diagnostic)
+        return true;
+    // Only a submission is analysed. A keystroke that does not end a line
+    // cannot run anything.
+    if (bytes.find('\r') == std::string::npos &&
+        bytes.find('\n') == std::string::npos)
+        return true;
+
+    // Two sources. A paste, a snippet or a block rerun carries its own text,
+    // so each submitted line in it is analysed. A bare Enter submits what is
+    // already on the screen.
+    std::vector<std::string> cmds;
+    bool exact = true;
+    bool typed = false;
+    for (char c : bytes)
+        if (static_cast<unsigned char>(c) >= 0x20)
+            typed = true;
+    if (typed)
+    {
+        std::string cur;
+        for (char c : bytes)
+        {
+            if (c == '\r' || c == '\n')
+            {
+                if (!cur.empty())
+                    cmds.push_back(cur);
+                cur.clear();
+            }
+            else
+                cur.push_back(c);
+        }
+        // A trailing fragment with no newline is not submitted yet.
+    }
+    else
+    {
+        bool ex = false;
+        cmds = CommandAboutToRun(F, ex);
+        exact = ex;
+    }
+    if (cmds.empty())
+        return true;
+
+    // The worst line in the batch is what the decision is about.
+    amber::RiskReport worst;
+    for (const std::string& c : cmds)
+    {
+        amber::RiskReport r = amber::AnalyseCommand(c);
+        if (!r.Flagged(m_riskPolicy))
+            continue;
+        if (static_cast<int>(r.level) > static_cast<int>(worst.level))
+            worst = std::move(r);
+    }
+    if (worst.level == amber::RiskLevel::None)
+        return true;
+    if (!exact)
+    {
+        // Say where the text came from rather than presenting a guess as the
+        // command. The parser is exact; the recovery of the line is not.
+        worst.incomplete = true;
+        worst.incompleteWhy =
+            "the command was read back from the screen because this shell does "
+            "not report prompt marks (OSC 133), so the prompt may not have been "
+            "trimmed correctly";
+    }
+
+    const amber::ConfirmStyle style = amber::ConfirmFor(worst.level, m_riskPolicy);
+    if (style == amber::ConfirmStyle::None)
+        return true;
+    if (style == amber::ConfirmStyle::Notice)
+    {
+        SetStatus(worst.Headline(), 6.0);
+        return true;
+    }
+    // What has to be typed back is the machine, because the question the
+    // friction is really asking is "do you know where you are". A local
+    // session has no remote host, so it is this computer.
+    std::string host = F.profile.host;
+    if (host.empty())
+    {
+        wchar_t name[MAX_COMPUTERNAME_LENGTH + 1] = L"";
+        DWORD n = MAX_COMPUTERNAME_LENGTH + 1;
+        if (GetComputerNameW(name, &n) && n)
+            host = Utf8FromWide(name);
+    }
+    if (host.empty())
+        host = "confirm";
+    return amber::ShowRiskDialog(m_hwnd, worst, style, host);
 }
 
 int App::FoldSummaryAtPx(int px, int py) const

@@ -146,6 +146,18 @@ struct Session
     std::vector<Cell> dbLast, dbCommitted;
     std::vector<double> dbSince;
 
+    // --- privacy cloak ---------------------------------------------------------
+    // One byte per visible cell: 1 = covered at draw time. Rebuilt only when
+    // the visible text changes (cloakStamp), because running the detector over
+    // every row every frame would cost more than the rest of compose.
+    //
+    // This is a DISPLAY overlay. The grid keeps the real characters, so
+    // selection, search and copy still see the truth and turning the cloak off
+    // loses nothing.
+    std::vector<uint8_t> cloakMask;
+    uint64_t cloakStamp = 0;
+    int cloakCount = 0;          // covered runs on screen, for the status bar
+
     // --- selection (view coordinates) --------------------------------------
     bool selecting = false;
     bool selActive = false;

@@ -75,6 +75,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int nCmdSho
         while (*l && *l != L' ')
             localShell.push_back(static_cast<char>(*l++));
     }
+    // --preview-safety: open the host-key and blast-radius boxes once with
+    // sample content, then exit. Nothing connects and nothing is sent — it is
+    // there so both modals can be reviewed on every interface skin without a
+    // server, the same way --diag exists for the terminal itself.
+    // 1 = an unrecognised key, 2 = the changed-key alarm.
+    int previewSafety = 0;
+    if (lpCmdLine && wcsstr(lpCmdLine, L"--preview-safety"))
+        previewSafety = wcsstr(lpCmdLine, L"--changed") ? 2 : 1;
     amber::InitAppUserModelId();
 
     WNDCLASSEXW wc = {};
@@ -122,7 +130,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int nCmdSho
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&app));
     try
     {
-        if (!app.Init(hwnd, diagMode, connectId, playPath, localShell))
+        if (!app.Init(hwnd, diagMode, connectId, playPath, localShell, previewSafety))
         {
             MessageBoxW(hwnd, L"Failed to initialize DirectX 12 renderer.",
                         L"AmberSSH", MB_ICONERROR);

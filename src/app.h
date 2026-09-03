@@ -22,6 +22,8 @@
 #include "render/prims.h"
 #include "platform/AudioLevel.h"
 #include "platform/Notify.h"
+#include "security/BlastRadius.h"
+#include "security/PrivacyCloak.h"
 #include "sessions/CommandJournal.h"
 #include "sessions/Session.h"
 #include "sessions/Workspaces.h"
@@ -41,8 +43,12 @@ public:
     // color/attribute test screen — used for visual and performance checks.
     // playPath: open this asciinema .cast in a local playback tab instead of
     // the connection manager (--play <file>).
+    // previewSafety: open the host-key and blast-radius boxes once with sample
+    // content and nothing connected, so both can be reviewed on every interface
+    // skin without needing a server. Same spirit as diagMode.
     bool Init(HWND hwnd, bool diagMode = false, const std::string& connectId = {},
-              const std::wstring& playPath = {}, const std::string& localShell = {});
+              const std::wstring& playPath = {}, const std::string& localShell = {},
+              int previewSafety = 0);
     // Open an asciinema .cast in a local playback tab (File menu, --play).
     void PlayRecordingFile(const std::wstring& path);
     void Shutdown();
@@ -333,6 +339,7 @@ private:
     std::string m_hoverLink;
     // "bcast 4" — the status-bar chip label, rebuilt each frame.
     mutable char m_bcastChip[24] = "bcast";
+    mutable char m_cloakChip[24] = "cloak";
     void OnWheel(int delta, bool ctrl);
     // Terminal mouse reporting (?1000/?1002/?1003, SGR ?1006): translates a
     // mouse event into an escape report for the remote app. Returns true
@@ -638,6 +645,9 @@ private:
     bool m_fxDrift = true;             // curl-noise gas drift
     bool m_fxPointerForce = true;      // Alt/middle-drag force field
     bool m_diagMode = false;
+    // --preview-safety: show the safety modals once at startup, then exit.
+    int m_previewSafety = 0;   // 1 = unknown key, 2 = changed key
+
 
     // perf logging (AMBERSSH_PERFLOG=<path> appends one CSV row per second)
     std::string m_perfLogPath;
@@ -683,6 +693,37 @@ private:
     void SendPasteText(const std::string& norm);
     void DrawPasteGuard();
     bool PasteGuardKey(WPARAM vk);
+
+    // ---- blast radius ------------------------------------------------------
+    // A command is analysed by a hand-written parser (src/security/
+    // BlastRadius.h) before it is sent, and the policy decides whether that is
+    // worth interrupting for. No model is consulted: the answer has to be the
+    // same every time, and it has to be explainable.
+    //
+    // Returns false when the user declined — the caller then sends nothing and
+    // leaves what they typed on the line.
+    amber::RiskPolicy m_riskPolicy = amber::RiskPolicy::HighAndCritical;
+    bool RiskCheck(const std::string& bytes);
+    // The command about to be submitted. With shell integration (OSC 133) this
+    // is exact and there is one candidate. Without it the line is recovered
+    // from the screen, where the end of the prompt is a guess — so several
+    // readings come back and the caller takes the worst, which is the only
+    // direction it is safe to be wrong in.
+    std::vector<std::string> CommandAboutToRun(const amber::Session& s,
+                                               bool& exact) const;
+
+    // ---- privacy cloak -----------------------------------------------------
+    // Masks likely secrets at DRAW time. The grid itself is never modified, so
+    // turning the cloak off shows the text again with nothing lost, and a
+    // scrollback search still finds what is really there.
+    amber::CloakOptions m_cloak;
+    void RebuildCloak(amber::Session& s, int rows, int cols);
+    // Drops every pane's cached mask, so a settings change is visible on the
+    // next frame rather than when the text next happens to move.
+    void InvalidateCloak();
+    // Masks a line for anything that leaves the terminal — the journal, the
+    // status bar, a notification. Returns the line unchanged when off.
+    std::string CloakText(const std::string& line) const;
 
     // ---- jump between commands in the scrollback ---------------------------
     // Steps the view to the previous/next prompt mark, naming the command it

@@ -53,9 +53,13 @@ set(AMBER_SOURCES
     src/ui/ForwardsDialog.h   src/ui/ForwardsDialog.cpp
     src/ui/Chrome.h           src/ui/Chrome.cpp
     src/ui/AboutDialog.h      src/ui/AboutDialog.cpp
+    src/ui/SafetyDialog.h     src/ui/SafetyDialog.cpp
     src/ssh/Vitals.h          src/ssh/Vitals.cpp
     src/ssh/SyncPlan.h        src/ssh/SyncPlan.cpp
     src/utility/Hash.h        src/utility/Hash.cpp
+    src/security/HostSigil.h     src/security/HostSigil.cpp
+    src/security/BlastRadius.h   src/security/BlastRadius.cpp
+    src/security/PrivacyCloak.h  src/security/PrivacyCloak.cpp
     src/term/palette.h
     src/term/input.h       src/term/input.cpp
     src/ssh/ring.h
