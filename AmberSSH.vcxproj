@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{7A3B9C41-52E8-4D06-9B1F-0C64A2E8D315}</ProjectGuid>
+    <RootNamespace>AmberSSH</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <!-- vcpkg manifest mode: requires `vcpkg integrate install` once. -->
+    <VcpkgEnabled>true</VcpkgEnabled>
+    <VcpkgEnableManifest>true</VcpkgEnableManifest>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>UNICODE;_UNICODE;NOMINMAX;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <AdditionalDependencies>d3d12.lib;dxgi.lib;dxguid.lib;dwrite.lib;dwmapi.lib;ws2_32.lib;crypt32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\app.cpp" />
+    <ClCompile Include="src\dx\device.cpp" />
+    <ClCompile Include="src\dx\frame.cpp" />
+    <ClCompile Include="src\dx\shaders.cpp" />
+    <ClCompile Include="src\render\particles.cpp" />
+    <ClCompile Include="src\render\bloom.cpp" />
+    <ClCompile Include="src\render\composite.cpp" />
+    <ClCompile Include="src\render\prims.cpp" />
+    <ClCompile Include="src\term\vtparser.cpp" />
+    <ClCompile Include="src\term\grid.cpp" />
+    <ClCompile Include="src\term\input.cpp" />
+    <ClCompile Include="src\ssh\session.cpp" />
+    <ClCompile Include="src\glyphs\sampler.cpp" />
+    <ClCompile Include="src\utility\SecureString.cpp" />
+    <ClCompile Include="src\platform\Paths.cpp" />
+    <ClCompile Include="src\platform\CredentialStore.cpp" />
+    <ClCompile Include="src\profiles\ProfileStore.cpp" />
+    <ClCompile Include="src\term\SyntaxTint.cpp" />
+    <ClCompile Include="src\ui\ConnectionDialog.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\app.h" />
+    <ClInclude Include="src\common.h" />
+    <ClInclude Include="src\dx\device.h" />
+    <ClInclude Include="src\dx\frame.h" />
+    <ClInclude Include="src\dx\shaders.h" />
+    <ClInclude Include="src\render\particles.h" />
+    <ClInclude Include="src\render\bloom.h" />
+    <ClInclude Include="src\render\composite.h" />
+    <ClInclude Include="src\render\prims.h" />
+    <ClInclude Include="src\term\vtparser.h" />
+    <ClInclude Include="src\term\grid.h" />
+    <ClInclude Include="src\term\palette.h" />
+    <ClInclude Include="src\term\input.h" />
+    <ClInclude Include="src\ssh\ring.h" />
+    <ClInclude Include="src\ssh\session.h" />
+    <ClInclude Include="src\glyphs\sampler.h" />
+    <ClInclude Include="src\utility\SecureString.h" />
+    <ClInclude Include="src\platform\Paths.h" />
+    <ClInclude Include="src\platform\CredentialStore.h" />
+    <ClInclude Include="src\profiles\ConnectionProfile.h" />
+    <ClInclude Include="src\profiles\ProfileStore.h" />
+    <ClInclude Include="src\term\SyntaxTint.h" />
+    <ClInclude Include="src\sessions\Session.h" />
+    <ClInclude Include="src\ui\ConnectionDialog.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Manifest Include="app.manifest" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="shaders\amber_common.hlsli" />
+    <None Include="shaders\particle_sim.hlsl" />
+    <None Include="shaders\particle_draw.hlsl" />
+    <None Include="shaders\bloom_down.hlsl" />
+    <None Include="shaders\bloom_up.hlsl" />
+    <None Include="shaders\composite.hlsl" />
+    <None Include="shaders\rects.hlsl" />
+    <None Include="shaders\text_draw.hlsl" />
+    <None Include="vcpkg.json" />
+  </ItemGroup>
+  <PropertyGroup>
+    <!-- Shaders ship as HLSL and are DXC-compiled at runtime through
+         dxcompiler.dll in the VS build; the CMake build precompiles them. -->
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <PostBuildEvent>
+      <Command>xcopy /Y /I /E "$(ProjectDir)shaders" "$(OutDir)shaders\"</Command>
+      <Message>Deploying shaders</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

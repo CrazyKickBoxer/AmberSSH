@@ -1,0 +1,12 @@
+build/
+out/
+x64/
+.vs/
+*.user
+vcpkg_installed/
+
+# Build outputs and logs that were never meant to be tracked
+AmberSSH/x64/
+dist/
+*.log
+AmberSSH.live-*.exe

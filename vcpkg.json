@@ -1,0 +1,12 @@
+{
+  "name": "amberssh-native",
+  "version": "1.0.0",
+  "description": "GPU particle SSH terminal for Windows 11 (DirectX 12, nixie-amber aesthetic)",
+  "dependencies": [
+    "libssh2",
+    "openssl",
+    "nlohmann-json",
+    "catch2",
+    "directx-dxc"
+  ]
+}
