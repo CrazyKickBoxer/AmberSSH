@@ -146,6 +146,12 @@ struct Session
     std::vector<Cell> dbLast, dbCommitted;
     std::vector<double> dbSince;
 
+    // Partial line held back by masked session logging. Redaction has to be
+    // line-at-a-time — the detectors reason about a whole line — so a line
+    // split across two socket reads waits here for its newline rather than
+    // being written in halves that each look innocent.
+    std::string logMaskBuf;
+
     // --- privacy cloak ---------------------------------------------------------
     // One byte per visible cell: 1 = covered at draw time. Rebuilt only when
     // the visible text changes (cloakStamp), because running the detector over

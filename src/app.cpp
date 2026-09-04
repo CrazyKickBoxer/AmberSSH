@@ -1113,7 +1113,30 @@ static std::string DecodeBase64(const std::string& in)
     return out;
 }
 
-static void LogFiltered(FILE* f, const uint8_t* d, size_t n, int& st)
+// Masking for anything PERSISTED. Deliberately independent of the screen
+// cloak: that toggle is about who can see the window right now, this is about
+// what ends up on disk and stays there. A password typed on a command line is
+// a durable secret at rest whether or not anyone was screen sharing when it
+// was typed, and the roadmap's rule is that raw detected secrets are never
+// stored.
+//
+// Address and home-directory masking stay OFF here — they are not secrets, and
+// masking a working directory would gut the journal's usefulness.
+static std::string MaskForStorage(const std::string& s)
+{
+    amber::CloakOptions o;
+    o.enabled = true;
+    return amber::MaskLine(s, o);
+}
+
+// `mask` non-null turns on line-buffered redaction: complete lines are masked
+// before they are written and a partial tail is held in `buf` until its
+// newline arrives. Masking has to be line-at-a-time because the detectors
+// reason about a whole line, and a secret split across two socket reads would
+// otherwise slip through in halves.
+static void LogFiltered(FILE* f, const uint8_t* d, size_t n, int& st,
+                        const amber::CloakOptions* mask = nullptr,
+                        std::string* buf = nullptr)
 {
     std::string out;
     out.reserve(n);
@@ -1145,8 +1168,35 @@ static void LogFiltered(FILE* f, const uint8_t* d, size_t n, int& st)
             break;
         }
     }
-    if (!out.empty())
+    if (out.empty())
+        return;
+    if (!mask || !buf)
+    {
         fwrite(out.data(), 1, out.size(), f);
+        return;
+    }
+    // Line-buffered: mask and emit whole lines, hold the remainder.
+    buf->append(out);
+    size_t at = 0;
+    for (;;)
+    {
+        const size_t nl = buf->find('\n', at);
+        if (nl == std::string::npos)
+            break;
+        const std::string line = amber::MaskLine(buf->substr(at, nl - at), *mask);
+        fwrite(line.data(), 1, line.size(), f);
+        fputc('\n', f);
+        at = nl + 1;
+    }
+    buf->erase(0, at);
+    // A line that never ends must not grow without bound, and must not be
+    // written unmasked to make room. Emit it masked and start again.
+    if (buf->size() > 64 * 1024)
+    {
+        const std::string line = amber::MaskLine(*buf, *mask);
+        fwrite(line.data(), 1, line.size(), f);
+        buf->clear();
+    }
 }
 
 void App::DrainSessionOutput(amber::Session& s, int budget)
@@ -1196,7 +1246,12 @@ void App::DrainSessionOutput(amber::Session& s, int budget)
             if (s.logRaw)
                 fwrite(d, 1, n, s.logFile);          // Logging: all session output
             else
-                LogFiltered(s.logFile, d, n, s.logEscState);
+                // Raw logging is byte-exact by definition and cannot be
+                // masked without corrupting the escape sequences it exists to
+                // preserve; ToggleLogging says so when both are on.
+                LogFiltered(s.logFile, d, n, s.logEscState,
+                            m_cloak.enabled ? &m_cloak : nullptr,
+                            m_cloak.enabled ? &s.logMaskBuf : nullptr);
             if (s.logFlush)
                 fflush(s.logFile);
         }
@@ -9187,7 +9242,11 @@ void App::OnShellMark(amber::Session& s, char kind, int code, bool hasCode)
             amber::JournalEntry e;
             e.host = s.Caption();
             e.cwd = s.pendingCwd;
-            e.command = s.pendingCmd;
+            // Masked for storage: the journal is persisted, so a secret on a
+            // command line must not survive on disk regardless of whether the
+            // screen cloak happened to be on when it was typed.
+            e.command = MaskForStorage(s.pendingCmd);
+            e.cwd = MaskForStorage(e.cwd);
             // An absent status is recorded as unknown, not as success.
             e.exitCode = hasCode ? code : -1;
             e.interrupted = !hasCode;
@@ -10334,8 +10393,22 @@ void App::ToggleLogging()
         return;
     F.logFile = _wfopen(path, L"ab");
     F.logEscState = 0;
-    SetStatus(F.logFile ? "Logging session output (plain text)."
-                        : "Could not open the log file.");
+    F.logMaskBuf.clear();
+    if (!F.logFile)
+        SetStatus("Could not open the log file.");
+    else if (F.logRaw && m_cloak.enabled)
+        // Raw logging is byte-exact by definition — masking it would corrupt
+        // the escape sequences it exists to preserve. Saying so is better than
+        // letting the cloak's presence imply a protection the file does not
+        // have.
+        SetStatus("Logging RAW session output — the Privacy Cloak does not "
+                  "mask a raw log. Switch to plain text to have it masked.",
+                  10.0);
+    else if (m_cloak.enabled)
+        SetStatus("Logging session output (plain text, masked by the "
+                  "Privacy Cloak).", 6.0);
+    else
+        SetStatus("Logging session output (plain text).");
     UpdateMenuChecks();
 }
 
@@ -10736,7 +10809,8 @@ void App::NoteInterruptedCommand(amber::Session& s, const std::string& why)
         amber::JournalEntry e;
         e.host = s.Caption();
         e.cwd = s.pendingCwd;
-        e.command = s.pendingCmd;
+        e.command = MaskForStorage(s.pendingCmd);
+        e.cwd = MaskForStorage(e.cwd);
         e.exitCode = -1;          // unknown, and stays unknown
         e.interrupted = true;
         e.durationSec = s.interrupted.ranForSec;

@@ -144,3 +144,82 @@ decision, so that decision can be made unhurried.
 4. **Then, and only then, the upstream decision** — because by that point the
    only unknown left is the one that actually matters: whether X.Org's
    DIX/MI/fb will build on Windows with an approved toolchain (Finding P0-3).
+
+---
+
+# Addendum — pass 02: P0-2
+
+## Files changed
+
+```
+src/app.cpp             MaskForStorage(); line-buffered masking in LogFiltered;
+                        journal writes masked at both call sites; raw-log warning
+src/sessions/Session.h  logMaskBuf — the partial line held between reads
+```
+
+## The decision that shaped it
+
+**The journal masks regardless of the screen cloak.** Those are different
+concerns: the cloak toggle is about who can see the window right now; the
+journal is about what lands on disk and stays there. A password typed on a
+command line is a durable secret at rest whether or not anyone was screen
+sharing when it was typed, so journal writes always pass through
+`MaskForStorage()`.
+
+Address and home-directory masking stay off in that path — they are not
+secrets, and masking a working directory would gut the journal's usefulness.
+
+**Session logs mask only when the cloak is on**, because logging is an explicit
+user request for a recording and the cloak is the recording-safety feature.
+
+**Raw logging is not masked and now says so.** A raw log is byte-exact by
+definition; masking would corrupt the escape sequences it exists to preserve.
+Enabling raw logging with the cloak on produces a status line saying the file
+is unmasked, rather than letting the cloak's presence imply a protection the
+file does not have.
+
+**Masking is line-buffered.** The detectors reason about a whole line, so a
+secret split across two socket reads would otherwise be written in halves that
+each look innocent. A line that never ends is masked and flushed at 64 KiB
+rather than growing without bound or being written in the clear to make room.
+
+## Tests and results
+
+`All tests passed (67908 assertions in 363 test cases)` — unchanged. The
+masking function itself is covered by the existing 20 `[cloak]` cases; the two
+journal call sites are two-line changes onto it.
+
+## What could NOT be verified, and a new finding
+
+The end-to-end check failed to exercise the path at all, and the reason is a
+pre-existing bug rather than anything in this change.
+
+A local Windows PowerShell session was driven with
+`echo DB_PASSWORD=hunter2correct AKIAIOSFODNN7EXAMPLE`. The command ran, OSC 7
+and the block gutter confirmed shell integration was live — and **no journal
+entry was written**, masked or otherwise. The journal file's mtime never moved.
+
+> **Finding P0-4.** `ConPty.cpp:290` emits OSC 133 `D`, `A` and `B` for
+> `pwsh`/`powershell`, but **never `C`**. `pendingCmd` is lifted at the `C`
+> mark, so it stays empty, so the journal guard `!s.pendingCmd.empty()` is
+> never true. Local PowerShell sessions therefore produce **no journal
+> entries, no captured command text, and no command blocks with output** —
+> today, independently of AmberX.
+>
+> The bash/zsh integration two lines below does emit `C` via `PS0` and is
+> unaffected. A correct PowerShell fix needs the mark emitted when Enter is
+> pressed — a `PSReadLine` key handler — not from the prompt function, which
+> runs before anything is typed.
+
+So the journal masking is **implemented and unexercised**. It is a two-line
+change calling a well-tested function, which is the best that can be said for
+it until P0-4 is fixed or the Fedora VM is used with the bash integration.
+
+## Phase gate
+
+Not applicable; no phase gate attempted.
+
+## Not done this pass
+
+**The AmberXHost skeleton.** No process, no named pipe, no DACL, no handshake,
+no Job Object supervision. `AmberXControl` still has nothing on the other end.
