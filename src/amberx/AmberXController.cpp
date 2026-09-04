@@ -171,7 +171,7 @@ bool AmberXController::Start(std::string& err)
                        L" --secret-handle " + std::to_wstring(reinterpret_cast<uintptr_t>(rd)) +
                        L" --parent " + std::to_wstring(GetCurrentProcessId()) +
                        L" --identity " + quoted(m_launch.identity) +
-                       L" --mode " + (m_launch.trusted ? L"trusted" : L"restricted") +
+                       L" --mode " + quoted(m_launch.modeLabel) +
                        L" --skin " + std::to_wstring(m_launch.skin);
     if (!m_launch.sigil.empty())
         cmd += L" --sigil " + quoted(m_launch.sigil);
@@ -350,8 +350,7 @@ int RunPreview()
     AmberXController c;
     AmberXController::Launch launch;
     launch.identity = "julie-prod.example · josh";
-    launch.trusted = false;
-    launch.sigil = "ember-fox-lantern";
+    launch.sigil = "TAKO";
     launch.skin = 0;
     c.Configure(launch);
     std::string err;
@@ -408,6 +407,18 @@ int RunPreview()
 
         c.Stop();
         line("host exited after shutdown", !c.Alive());
+
+        // Reconnect: a second host from the same controller, torn down the
+        // same way. Anything leaked by the first would show here.
+        std::string err2;
+        const bool again = c.Start(err2);
+        line("restart after stop", again, err2);
+        if (again)
+        {
+            line("second host alive", c.Alive());
+            c.Stop();
+            line("second host exited", !c.Alive());
+        }
     }
     fprintf(out, "\n%s\n", failures ? "PREVIEW FAILED" : "PREVIEW PASSED");
     fclose(out);

@@ -11,6 +11,7 @@
 #include "transport.h"
 #include "../remote/XAuth.h"
 #include "../amberx/AmberXController.h"
+#include "../security/HostSigil.h"
 
 #include <cstdio>
 #include <cstring>
@@ -1318,6 +1319,21 @@ void SshSession::ThreadMain(SshConfig cfg)
                 // arrives is refused — never silently redirected to an
                 // external display the user did not choose.
                 m_amberx = std::make_unique<amber::amberx::AmberXController>();
+                {
+                    // The identity strip: AmberSSH's name for the session, the
+                    // verified host key's sigil, and the user's skin. Nothing
+                    // in it came from the remote side.
+                    amber::amberx::AmberXController::Launch launch;
+                    launch.identity = cfg.amberxIdentity.empty()
+                                          ? cfg.host + " \xc2\xb7 " + cfg.user
+                                          : cfg.amberxIdentity;
+                    launch.modeLabel = "X11 FORWARDED";   // RESTRICTED/TRUSTED arrive with Phase 5
+                    launch.sigil = fingerprint.empty()
+                                       ? std::string()
+                                       : amber::SigilMnemonic(amber::MakeSigil(fingerprint));
+                    launch.skin = cfg.amberxSkin;
+                    m_amberx->Configure(launch);
+                }
                 std::string aerr;
                 if (!m_amberx->Start(aerr))
                 {

@@ -415,7 +415,8 @@ void PaintStrip(HWND hwnd)
         CharUpperW(identity.data());
         CharUpperW(mode.data());
     }
-    const bool restricted = (g.mode == "RESTRICTED");
+    // the mode word is coloured only when it is an enforced one
+    const COLORREF modeColour = (g.mode == "RESTRICTED") ? accent : (g.mode == "TRUSTED") ? warn : text;
     const std::wstring dot = L"  ·  ";
     RECT tr = r;
     tr.left += MulDiv(10, dpi, 96);
@@ -429,7 +430,7 @@ void PaintStrip(HWND hwnd)
     };
     draw(identity, text);
     draw(dot, dim);
-    draw(L"X11 " + mode, restricted ? accent : warn);
+    draw(mode, modeColour);
     if (!sigil.empty())
     {
         draw(dot, dim);

@@ -41,7 +41,7 @@ struct Args
     std::string keymap;     // an .xkm path, or empty for the built-in map
     bool rootless = true;
     std::string identity, sigil;
-    std::string mode = "RESTRICTED";
+    std::string mode = "X11 FORWARDED";
     int skin = 0;
 };
 
@@ -85,7 +85,7 @@ bool ParseArgs(int argc, wchar_t** argv, Args& a)
         else if (k == L"--identity")
             a.identity = Narrow(v);
         else if (k == L"--mode")
-            a.mode = (v == L"trusted") ? "TRUSTED" : "RESTRICTED";
+            a.mode = Narrow(v);
         else if (k == L"--sigil")
             a.sigil = Narrow(v);
         else if (k == L"--skin")

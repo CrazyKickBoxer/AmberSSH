@@ -20,7 +20,7 @@ struct HostOptions
     uint32_t display = 0;
     std::string keymap;         // an .xkm path, or empty for the built-in map
     std::string identity;       // "host · user"
-    std::string mode = "RESTRICTED";
+    std::string mode = "X11 FORWARDED";   // "RESTRICTED"/"TRUSTED" once Phase 5 enforces them
     std::string sigil;          // the host-key sigil mnemonic
     int skin = 0;               // AmberSSH chrome style index
 };

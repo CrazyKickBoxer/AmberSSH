@@ -43,7 +43,10 @@ public:
     struct Launch
     {
         std::string identity;       // "host · user"
-        bool trusted = false;
+        // The mode word on the strip. "RESTRICTED" and "TRUSTED" are
+        // reserved for Phase 5, when the server enforces them; until then
+        // AmberSSH says what is true, which is that X11 is being forwarded.
+        std::string modeLabel = "X11 FORWARDED";
         std::string sigil;          // host-key sigil mnemonic
         int skin = 0;               // chrome style index
         std::string keymap;         // .xkm path, or empty

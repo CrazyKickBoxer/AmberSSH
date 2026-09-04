@@ -1,17 +1,18 @@
-// PreviewClient.cpp — the X client inside --preview-amberx.
+// PreviewClient.cpp — the X clients inside --preview-amberx.
 //
 // Everything here is the X11 wire protocol, little-endian, written out by
 // hand so the gate depends on no X library. It drives a running AmberXHost
-// through one control channel exactly as a forwarded client would, and
-// checks the Phase 2 and Phase 3 gates: setup with the cookie, drawing and
-// reading pixels back, input in both directions, and — rootless — that each
-// top-level window became a native frame with the right title, owner,
-// close and focus behaviour, and that the identity strip sits outside the
-// X pixels.
+// through control channels exactly as forwarded clients would, and checks
+// the Phase 2, 3 and 4 gates: setup with the cookie, drawing and reading
+// pixels back, input in both directions, rootless frames with the right
+// title, owner, close and focus behaviour, the identity strip outside the
+// X pixels, and a second concurrent client whose bytes arrive one at a
+// time.
 #include "PreviewClient.h"
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -26,17 +27,22 @@ namespace amber::amberx
 namespace
 {
 
+using Line = std::function<void(const char*, bool, const std::string&)>;
+
 struct XClient
 {
     AmberXController& c;
-    std::function<void(const char*, bool, const std::string&)> line;
+    Line line;
+    uint32_t ch;                // the control channel this client lives on
+    bool fragmented = false;    // deliver every request one byte per frame
     std::vector<uint8_t> inbuf;
     std::string hostErrors;
     uint32_t seq = 0;           // of the last request sent
     std::vector<std::vector<uint8_t>> events;   // 32-byte events set aside
+    std::vector<std::vector<uint8_t>>* others = nullptr;   // frames for other channels
+    uint32_t root = 0, ridBase = 0, rootW = 0, rootH = 0, rootDepth = 0;
 
-    XClient(AmberXController& ctl, std::function<void(const char*, bool, const std::string&)> l)
-        : c(ctl), line(std::move(l)) {}
+    XClient(AmberXController& ctl, Line l, uint32_t channel) : c(ctl), line(std::move(l)), ch(channel) {}
 
     static uint32_t u16(const uint8_t* p) { return static_cast<uint32_t>(p[0] | (p[1] << 8)); }
     static uint32_t u32(const uint8_t* p) { return static_cast<uint32_t>(p[0] | (p[1] << 8) | (p[2] << 16) | (static_cast<uint32_t>(p[3]) << 24)); }
@@ -44,8 +50,20 @@ struct XClient
     static void put32(std::vector<uint8_t>& v, uint32_t x) { for (int i = 0; i < 4; ++i) v.push_back((x >> (8 * i)) & 0xff); }
     static void pad4(std::vector<uint8_t>& v) { while (v.size() % 4) v.push_back(0); }
 
+    // Raw bytes to the channel, whole or one byte per frame.
+    bool sendRaw(const std::vector<uint8_t>& bytes)
+    {
+        if (!fragmented)
+            return c.SendData(ch, bytes.data(), bytes.size());
+        for (uint8_t b : bytes)
+            if (!c.SendData(ch, &b, 1))
+                return false;
+        return true;
+    }
+
     // Reads channel bytes until `want` are buffered, setting aside the
-    // host's own status frames and remembering any HostError.
+    // host's own status frames and remembering any HostError. Frames for
+    // another client's channel are handed to that client through `others`.
     bool recv(size_t want, DWORD ms)
     {
         const ULONGLONG until = GetTickCount64() + ms;
@@ -58,15 +76,17 @@ struct XClient
             const PipeRead pr = c.Poll(r, static_cast<DWORD>(until - now));
             if (pr != PipeRead::Ok)
                 return false;
-            if (r.type == MsgType::ChannelData && r.channel == 1)
+            if (r.type == MsgType::ChannelData && r.channel == ch)
                 inbuf.insert(inbuf.end(), r.payload.begin(), r.payload.end());
+            else if (r.type == MsgType::ChannelData && others)
+                others->push_back(r.payload);
             else if (r.type == MsgType::HostError)
             {
                 std::string t;
                 ParseHostError(r.payload, t);
                 hostErrors += t + "; ";
             }
-            else if (r.type == MsgType::ChannelClose && r.channel == 1)
+            else if (r.type == MsgType::ChannelClose && r.channel == ch)
                 return false;
         }
         return true;
@@ -79,7 +99,7 @@ struct XClient
         req[2] = static_cast<uint8_t>((req.size() / 4) & 0xff);
         req[3] = static_cast<uint8_t>(((req.size() / 4) >> 8) & 0xff);
         ++seq;
-        return c.SendData(1, req.data(), req.size());
+        return sendRaw(req);
     }
 
     // Pulls one message off the stream. Returns 1 reply, 2 event, 0 error, -1 nothing.
@@ -166,6 +186,55 @@ struct XClient
         return false;
     }
 
+    // The connection setup: 'l', pad, 11.0, the auth name and the cookie.
+    bool setup(const char* step)
+    {
+        std::vector<uint8_t> s;
+        s.push_back('l'); s.push_back(0);
+        put16(s, 11); put16(s, 0);
+        put16(s, 18); put16(s, 16); put16(s, 0);
+        const char* name = "MIT-MAGIC-COOKIE-1";
+        s.insert(s.end(), name, name + 18); s.push_back(0); s.push_back(0);
+        s.insert(s.end(), 16, 0x42);
+        if (!sendRaw(s))
+        {
+            line(step, false, "send failed");
+            return false;
+        }
+        bool ok = recv(8, 5000);
+        if (!ok)
+        {
+            line(step, false, "no reply  " + hostErrors);
+            return false;
+        }
+        const uint8_t status = inbuf[0];
+        const uint32_t extra = u16(&inbuf[6]) * 4;
+        ok = recv(8 + extra, 5000);
+        if (ok && status == 1)
+        {
+            const uint8_t* p = inbuf.data() + 8;
+            ridBase = u32(p + 4);
+            const uint32_t nVendor = u16(p + 16);
+            const uint8_t numFormats = p[21];
+            const uint8_t* q = p + 32 + ((nVendor + 3) & ~3u) + numFormats * 8;
+            root = u32(q);
+            rootW = u16(q + 20);
+            rootH = u16(q + 22);
+            rootDepth = q[38];
+            line(step, true, "root=0x" + std::to_string(root) + " depth=" + std::to_string(rootDepth) +
+                             " " + std::to_string(rootW) + "x" + std::to_string(rootH));
+        }
+        else if (ok)
+        {
+            std::string reason(reinterpret_cast<const char*>(inbuf.data()) + 8, inbuf[1]);
+            line(step, false, "status=" + std::to_string(status) + " " + reason);
+        }
+        else
+            line(step, false, "short reply");
+        take(8 + extra);
+        return ok && status == 1 && root != 0;
+    }
+
     uint32_t internAtom(const char* name)
     {
         std::vector<uint8_t> r = { 16, 0, 0, 0 };
@@ -207,11 +276,41 @@ struct XClient
             out.push_back(u32(&rep[32 + i * 4]));
         return out;
     }
+
+    // CreateWindow + _NET_WM_NAME + MapWindow, the common shape of a toplevel
+    void createToplevel(uint32_t wid, int x, int y, int w, int h, uint32_t bg, uint32_t eventMask,
+                        uint32_t aNetWmName, uint32_t aUtf8, const char* title)
+    {
+        std::vector<uint8_t> r = { 1, 0, 0, 0 }; put32(r, wid); put32(r, root);
+        put16(r, x); put16(r, y); put16(r, w); put16(r, h); put16(r, 0);
+        put16(r, 1); put32(r, 0); put32(r, 0x2 | 0x800);
+        put32(r, bg); put32(r, eventMask);
+        send(r);
+        changeProperty(wid, aNetWmName, aUtf8, 8, title, strlen(title));
+    }
+
+    void mapWindow(uint32_t wid)
+    {
+        std::vector<uint8_t> r = { 8, 0, 0, 0 }; put32(r, wid);
+        send(r);
+    }
 };
 
 HWND FindFrameByTitle(const wchar_t* title)
 {
     return FindWindowW(L"AmberXFrame", title);
+}
+
+HWND WaitFrame(const wchar_t* title, int tries = 30)
+{
+    for (int i = 0; i < tries; ++i)
+    {
+        HWND h = FindFrameByTitle(title);
+        if (h)
+            return h;
+        Sleep(100);
+    }
+    return nullptr;
 }
 
 HWND ChildOfClass(HWND parent, const wchar_t* cls)
@@ -221,8 +320,7 @@ HWND ChildOfClass(HWND parent, const wchar_t* cls)
 
 } // namespace
 
-int RunPreviewClient(AmberXController& c,
-                     const std::function<void(const char*, bool, const std::string&)>& line)
+int RunPreviewClient(AmberXController& c, const Line& line)
 {
     int failures = 0;
     auto check = [&](const char* step, bool ok, const std::string& detail = {}) {
@@ -230,50 +328,11 @@ int RunPreviewClient(AmberXController& c,
         if (!ok)
             ++failures;
     };
-    XClient x(c, line);
+    XClient x(c, line, 1);
+    std::vector<std::vector<uint8_t>> spill;   // frames for the second client seen by the first
+    x.others = &spill;
 
-    // ---- setup: 'l', pad, 11.0, auth name + cookie -------------------------
-    {
-        std::vector<uint8_t> s;
-        s.push_back('l'); s.push_back(0);
-        XClient::put16(s, 11); XClient::put16(s, 0);
-        XClient::put16(s, 18); XClient::put16(s, 16); XClient::put16(s, 0);
-        const char* name = "MIT-MAGIC-COOKIE-1";
-        s.insert(s.end(), name, name + 18); s.push_back(0); s.push_back(0);
-        s.insert(s.end(), 16, 0x42);
-        check("send X11 setup", c.SendData(1, s.data(), s.size()));
-    }
-    uint32_t root = 0, ridBase = 0, rootW = 0, rootH = 0, rootDepth = 0;
-    bool setupOk = x.recv(8, 5000);
-    if (setupOk)
-    {
-        const uint8_t status = x.inbuf[0];
-        const uint32_t extra = XClient::u16(&x.inbuf[6]) * 4;
-        setupOk = x.recv(8 + extra, 5000);
-        if (setupOk && status == 1)
-        {
-            const uint8_t* p = x.inbuf.data() + 8;
-            ridBase = XClient::u32(p + 4);
-            const uint32_t nVendor = XClient::u16(p + 16);
-            const uint8_t numFormats = p[21];
-            const uint8_t* q = p + 32 + ((nVendor + 3) & ~3u) + numFormats * 8;
-            root = XClient::u32(q);
-            rootW = XClient::u16(q + 20);
-            rootH = XClient::u16(q + 22);
-            rootDepth = q[38];
-            check("setup accepted", true, "root=0x" + std::to_string(root) + " depth=" + std::to_string(rootDepth) +
-                                          " " + std::to_string(rootW) + "x" + std::to_string(rootH));
-        }
-        else if (setupOk)
-        {
-            std::string reason(reinterpret_cast<const char*>(x.inbuf.data()) + 8, x.inbuf[1]);
-            check("setup accepted", false, "status=" + std::to_string(status) + " " + reason);
-        }
-        x.take(8 + extra);
-    }
-    if (!setupOk)
-        check("setup accepted", false, "no reply  " + x.hostErrors);
-    if (!root || rootDepth != 24)
+    if (!x.setup("setup accepted") || x.rootDepth != 24)
         return failures + 1;
 
     // ---- atoms ----------------------------------------------------------------
@@ -287,21 +346,15 @@ int RunPreviewClient(AmberXController& c,
     check("InternAtom", aNetWmName && aUtf8 && aWmProtocols && aWmDelete && aWmTransientFor && aNetClientList && aNetWmCheck);
 
     // ---- window A: amber, 200x120 at (10,10), titled, closable -------------
-    const uint32_t wid = ridBase + 1, gc = ridBase + 2, dlg = ridBase + 3;
+    const uint32_t wid = x.ridBase + 1, gc = x.ridBase + 2, dlg = x.ridBase + 3;
     const uint32_t eventMask = 0x8000 /*Exposure*/ | 0x4 /*ButtonPress*/ | 0x1 /*KeyPress*/ |
                                0x200000 /*FocusChange*/ | 0x20000 /*StructureNotify*/;
-    std::vector<uint8_t> r;
-    r = { 1, 0, 0, 0 }; XClient::put32(r, wid); XClient::put32(r, root);
-    XClient::put16(r, 10); XClient::put16(r, 10); XClient::put16(r, 200); XClient::put16(r, 120); XClient::put16(r, 0);
-    XClient::put16(r, 1); XClient::put32(r, 0); XClient::put32(r, 0x2 | 0x800);
-    XClient::put32(r, 0x00ff8800); XClient::put32(r, eventMask);
-    check("CreateWindow", x.send(r));
-    const char* title = "AmberX preview";
-    x.changeProperty(wid, aNetWmName, aUtf8, 8, title, strlen(title));
+    x.createToplevel(wid, 10, 10, 200, 120, 0x00ff8800, eventMask, aNetWmName, aUtf8, "AmberX preview");
     const uint32_t protocols[1] = { aWmDelete };
     x.changeProperty(wid, aWmProtocols, 4 /*ATOM*/, 32, protocols, 1);
-    r = { 8, 0, 0, 0 }; XClient::put32(r, wid);
-    check("MapWindow", x.send(r));
+    x.mapWindow(wid);
+    check("CreateWindow + MapWindow", true);
+    std::vector<uint8_t> r;
     r = { 55, 0, 0, 0 }; XClient::put32(r, gc); XClient::put32(r, wid); XClient::put32(r, 0x4); XClient::put32(r, 0x00203040);
     check("CreateGC", x.send(r));
     r = { 70, 0, 0, 0 }; XClient::put32(r, wid); XClient::put32(r, gc);
@@ -312,6 +365,8 @@ int RunPreviewClient(AmberXController& c,
     r = { 14, 0, 0, 0 }; XClient::put32(r, wid);
     x.send(r);
     bool ok = x.reply(x.seq, rep);
+    // the size is the client's; the position is the manager's — a frame
+    // asked to sit at (10,10) is placed inside the work area, so it may move
     check("GetGeometry reply", ok && XClient::u16(&rep[16]) == 200 && XClient::u16(&rep[18]) == 120,
           ok ? std::to_string(XClient::u16(&rep[16])) + "x" + std::to_string(XClient::u16(&rep[18])) +
                " at " + std::to_string(XClient::u16(&rep[12])) + "," + std::to_string(XClient::u16(&rep[14]))
@@ -328,13 +383,7 @@ int RunPreviewClient(AmberXController& c,
     check("Expose event", x.event(12, wid, ev));
 
     // ---- the native frame -------------------------------------------------------
-    HWND frame = nullptr;
-    for (int i = 0; i < 20 && !frame; ++i)
-    {
-        frame = FindFrameByTitle(L"AmberX preview");
-        if (!frame)
-            Sleep(100);
-    }
+    HWND frame = WaitFrame(L"AmberX preview");
     check("native frame titled from _NET_WM_NAME", frame != nullptr);
     HWND view = frame ? ChildOfClass(frame, L"AmberXView") : nullptr;
     HWND strip = frame ? ChildOfClass(frame, L"AmberXStrip") : nullptr;
@@ -369,33 +418,20 @@ int RunPreviewClient(AmberXController& c,
     }
 
     // ---- window B: a transient dialog owned by A ----------------------------------
-    r = { 1, 0, 0, 0 }; XClient::put32(r, dlg); XClient::put32(r, root);
-    XClient::put16(r, 300); XClient::put16(r, 300); XClient::put16(r, 120); XClient::put16(r, 80); XClient::put16(r, 0);
-    XClient::put16(r, 1); XClient::put32(r, 0); XClient::put32(r, 0x2 | 0x800);
-    XClient::put32(r, 0x00e0e0e0); XClient::put32(r, eventMask);
-    x.send(r);
-    const char* dtitle = "AmberX dialog";
-    x.changeProperty(dlg, aNetWmName, aUtf8, 8, dtitle, strlen(dtitle));
+    x.createToplevel(dlg, 300, 300, 120, 80, 0x00e0e0e0, eventMask, aNetWmName, aUtf8, "AmberX dialog");
     x.changeProperty(dlg, aWmTransientFor, 33 /*WINDOW*/, 32, &wid, 1);
-    r = { 8, 0, 0, 0 }; XClient::put32(r, dlg);
-    x.send(r);
-    HWND dframe = nullptr;
-    for (int i = 0; i < 20 && !dframe; ++i)
-    {
-        dframe = FindFrameByTitle(L"AmberX dialog");
-        if (!dframe)
-            Sleep(100);
-    }
+    x.mapWindow(dlg);
+    HWND dframe = WaitFrame(L"AmberX dialog");
     check("transient dialog has its own frame", dframe != nullptr);
     check("dialog frame is owned by A's frame", dframe && frame && GetWindow(dframe, GW_OWNER) == frame);
 
     // ---- the WM's root properties -------------------------------------------------
     {
-        std::vector<uint32_t> list = x.getProperty32(root, aNetClientList);
+        std::vector<uint32_t> list = x.getProperty32(x.root, aNetClientList);
         const bool hasA = std::find(list.begin(), list.end(), wid) != list.end();
         const bool hasB = std::find(list.begin(), list.end(), dlg) != list.end();
         check("_NET_CLIENT_LIST lists both windows", hasA && hasB, std::to_string(list.size()) + " entries");
-        std::vector<uint32_t> chk = x.getProperty32(root, aNetWmCheck);
+        std::vector<uint32_t> chk = x.getProperty32(x.root, aNetWmCheck);
         check("_NET_SUPPORTING_WM_CHECK set", !chk.empty() && chk[0] != 0);
     }
 
@@ -433,6 +469,44 @@ int RunPreviewClient(AmberXController& c,
                    std::to_string(by + 30) + ")" : "none");
     }
 
+    // ---- a second client on its own channel, one byte per frame ----------------------
+    // Phase 4: multiple simultaneous X11 channels, arbitrary fragmentation.
+    // Everything this client sends — the setup packet included — arrives at
+    // the host as one-byte frames; the server's request framer must
+    // reassemble it exactly.
+    check("open channel 2", c.OpenChannel(2));
+    XClient y(c, line, 2);
+    y.fragmented = true;
+    y.others = &spill;
+    if (y.setup("second client setup, fragmented") && y.rootDepth == 24)
+    {
+        const uint32_t wid2 = y.ridBase + 1;
+        y.createToplevel(wid2, 500, 200, 160, 100, 0x0040c0ff, eventMask, aNetWmName, aUtf8, "AmberX second client");
+        y.mapWindow(wid2);
+        HWND f2 = WaitFrame(L"AmberX second client");
+        check("second client's window has its own frame", f2 != nullptr);
+        r = { 14, 0, 0, 0 }; XClient::put32(r, wid2);
+        y.send(r);
+        ok = y.reply(y.seq, rep);
+        check("second client GetGeometry over fragmented frames", ok && XClient::u16(&rep[16]) == 160 && XClient::u16(&rep[18]) == 100);
+        // the first client is unaffected and sees three managed windows
+        std::vector<uint32_t> list = x.getProperty32(x.root, aNetClientList);
+        check("_NET_CLIENT_LIST now lists three windows", list.size() == 3, std::to_string(list.size()) + " entries");
+        check("first client still answers", x.internAtom("WM_CLASS") != 0);
+        // closing the second channel takes its window with it
+        c.CloseChannel(2);
+        bool gone = false;
+        for (int i = 0; i < 30 && !gone; ++i)
+        {
+            gone = FindFrameByTitle(L"AmberX second client") == nullptr;
+            if (!gone)
+                Sleep(100);
+        }
+        check("closing channel 2 removes its frame", gone);
+    }
+    else
+        failures += 4;
+
     // ---- close: the native close button becomes WM_DELETE_WINDOW --------------------
     if (frame)
     {
@@ -443,7 +517,7 @@ int RunPreviewClient(AmberXController& c,
         check("frame still open until the client acts", IsWindow(frame) != 0);
     }
 
-    check("no X errors and no host errors", x.hostErrors.empty(), x.hostErrors);
+    check("no X errors and no host errors", x.hostErrors.empty() && y.hostErrors.empty(), x.hostErrors + y.hostErrors);
     if (const char* hold = getenv("AMBERX_PREVIEW_HOLD_MS"))
         Sleep(static_cast<DWORD>(atoi(hold)));
     return failures;

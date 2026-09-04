@@ -90,6 +90,12 @@ struct SshConfig
     // is the fake one and the substitution is an identity — the check still
     // runs.
     int x11Backend = 0;
+    // What AmberX paints on every frame's identity strip: the session as
+    // AmberSSH names it (never anything the remote sent) and the chrome
+    // style to paint it in. The host-key sigil is added by the session
+    // itself once the key has been verified.
+    std::string amberxIdentity;
+    int amberxSkin = 0;
 
     // ---- Telnet / Rlogin ---------------------------------------------------
     bool telnetPassive = false;

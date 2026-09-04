@@ -10993,6 +10993,9 @@ void App::BuildSshConfig(const amber::ConnectionProfile& p, SshConfig& cfg) cons
             // fake one. The setup-packet check still runs; the substitution
             // it performs is an identity.
             cfg.x11RealCookieHex = cfg.x11FakeCookieHex;
+            // the identity strip on every AmberX frame: this session, this skin
+            cfg.amberxIdentity = cfg.host + " \xc2\xb7 " + cfg.user;
+            cfg.amberxSkin = amber::ChromeId();
         }
         else
         {
