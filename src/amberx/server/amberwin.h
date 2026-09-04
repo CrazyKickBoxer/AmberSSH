@@ -167,6 +167,9 @@ void  amberwin_frame_unmap(amberwin_frame *f);
 /* nboxes 0 = unshaped; boxes are frame-local x1,y1,x2,y2 quads */
 void  amberwin_frame_set_shape(amberwin_frame *f, int nboxes, const int16_t *boxes);
 void *amberwin_frame_bits(amberwin_frame *f, int *stride_bytes);
+/* diagnostics only: the frame and its buffer as the Windows side has them */
+void  amberwin_frame_geometry(amberwin_frame *f, int *x, int *y, int *w, int *h,
+                              int *buf_w, int *buf_h);
 /* frame-local rectangle; w < 0 means the whole frame */
 void  amberwin_frame_present(amberwin_frame *f, int x, int y, int w, int h);
 /* the remote-supplied title, already sanitised and bounded by the X side */

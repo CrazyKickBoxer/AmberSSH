@@ -298,6 +298,10 @@ amberScreenInit(ScreenPtr pScreen, int argc, char **argv)
      * earlier one denied. */
     if (!amber_policy_init())
         return FALSE;
+    /* Diagnostics last: the PutImage probe sees the request after every
+     * limit and policy wrapper has already had its say. */
+    if (!amber_probe_init())
+        return FALSE;
     return TRUE;
 }
 

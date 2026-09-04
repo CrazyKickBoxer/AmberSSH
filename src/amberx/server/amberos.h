@@ -74,6 +74,9 @@ void amber_clipboard_close(void);
 /* ---- ddx_policy.c: which extensions a restricted client may use ------ */
 Bool amber_policy_init(void);
 
+/* ---- ddx_probe.c: what the server believes it is drawing into --------- */
+Bool amber_probe_init(void);
+
 /* ---- ddx_randr.c: the Windows monitors as RANDR outputs ---------------- */
 Bool amber_randr_screen_init(ScreenPtr pScreen);
 void amber_randr_monitors_changed(void);

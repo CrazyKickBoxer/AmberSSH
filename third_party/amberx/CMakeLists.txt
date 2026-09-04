@@ -224,6 +224,7 @@ add_library(AmberXServer STATIC
     ${AMBERX_SERVER_DIR}/ddx_policy.c
     ${AMBERX_SERVER_DIR}/ddx_clipboard.c
     ${AMBERX_SERVER_DIR}/ddx_limits.c
+    ${AMBERX_SERVER_DIR}/ddx_probe.c
     ${AMBERX_SERVER_DIR}/server_main.c
     ${AMBERX_OS_RETAINED})
 target_include_directories(AmberXServer PRIVATE

@@ -1603,29 +1603,28 @@ int DescribeAddress(const void* addr, char* out, int cap)
 {
     if (!addr || !out || cap < 2)
         return 0;
-    const uintptr_t a = reinterpret_cast<uintptr_t>(addr);
-    // A megabyte past the end is still recognisably "this buffer, overrun":
-    // beyond that the address belongs to something else and a guess would be
-    // worse than silence.
-    constexpr uintptr_t kSlack = 1u << 20;
+    const long long a = static_cast<long long>(reinterpret_cast<uintptr_t>(addr));
+    // Sixty-four megabytes either side is still recognisably "this buffer,
+    // addressed from the wrong place": a rootless pixmap is based to screen
+    // coordinates, so a stale origin walks off in either direction. Beyond
+    // that the address belongs to something else and a guess would be worse
+    // than silence.
+    constexpr long long kSlack = 64ll << 20;
     for (amberwin_frame* f : g.live)
     {
         if (!f || !f->bits)
             continue;
-        const uintptr_t base = reinterpret_cast<uintptr_t>(f->bits);
-        const uintptr_t size = static_cast<uintptr_t>(f->allocW) * 4u * static_cast<uintptr_t>(f->allocH);
-        if (a < base || a >= base + size + kSlack)
+        const long long base = static_cast<long long>(reinterpret_cast<uintptr_t>(f->bits));
+        const long long size = static_cast<long long>(f->allocW) * 4ll * static_cast<long long>(f->allocH);
+        const long long off = a - base;
+        if (off < -kSlack || off >= size + kSlack)
             continue;
-        const long long delta = static_cast<long long>(a - base) - static_cast<long long>(size);
+        const char* where = off < 0 ? "BEFORE the start of" : off < size ? "inside" : "PAST the end of";
         const int n = _snprintf_s(out, static_cast<size_t>(cap), _TRUNCATE,
-                                  "%s frame 0x%lx: window %dx%d, buffer %dx%d stride %d, "
-                                  "offset %llu of %llu%s",
-                                  delta < 0 ? "inside" : "past the end of",
-                                  static_cast<unsigned long>(f->xid), f->w, f->h,
-                                  f->allocW, f->allocH, f->stride,
-                                  static_cast<unsigned long long>(a - base),
-                                  static_cast<unsigned long long>(size),
-                                  delta < 0 ? "" : " — overrun");
+                                  "%s frame 0x%lx (window %dx%d at (%d,%d), buffer %dx%d stride %d): "
+                                  "offset %lld of %lld",
+                                  where, static_cast<unsigned long>(f->xid), f->w, f->h, f->x, f->y,
+                                  f->allocW, f->allocH, f->stride, off, size);
         return n < 0 ? 0 : n;
     }
     return 0;
@@ -1765,6 +1764,16 @@ void* amberwin_frame_bits(amberwin_frame* f, int* stride_bytes)
     if (!f) return nullptr;
     *stride_bytes = f->stride;
     return f->bits;
+}
+
+void amberwin_frame_geometry(amberwin_frame* f, int* x, int* y, int* w, int* h,
+                             int* buf_w, int* buf_h)
+{
+    // Read from the server thread without the UI thread's cooperation: these
+    // are plain ints, and a value one op stale is still the right diagnostic.
+    *x = f ? f->x : 0; *y = f ? f->y : 0;
+    *w = f ? f->w : 0; *h = f ? f->h : 0;
+    *buf_w = f ? f->allocW : 0; *buf_h = f ? f->allocH : 0;
 }
 
 void amberwin_frame_present(amberwin_frame* f, int x, int y, int w, int h)
