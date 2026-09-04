@@ -507,3 +507,113 @@ TEST_CASE("overwriting an existing file succeeds", "[profiles][atomic]")
     REQUIRE(reload.Count() == 1);
     REQUIRE(reload.All()[0].name == "second");
 }
+
+// ------------------------------------------------- Remote GUI (AmberX) migration
+// The Remote GUI setting arrived after profiles were already being written.
+// A profile saved before it has no such key, and the loader has to work the
+// answer out from the three fields that used to carry the same meaning —
+// defaulting it to "off" would turn a working remote GUI off on upgrade,
+// which is the failure the Phase 7 gate calls "profile settings migrate
+// safely".
+
+// Writes a profiles file with one profile whose JSON body is `body`, so a
+// test can describe exactly what an older version would have written.
+static std::filesystem::path WriteLegacyProfile(const char* stem, const std::string& body)
+{
+    auto file = TempFile(stem);
+    std::filesystem::remove(file);
+    std::ofstream out(file, std::ios::binary);
+    out << R"({"version":1,"profiles":[{"id":"11111111-1111-4111-8111-111111111111",)"
+        << R"("name":"legacy","host":"h","port":22,"username":"u",)"
+        << body << "}]}";
+    return file;
+}
+
+TEST_CASE("a profile written before Remote GUI existed keeps its remote GUI", "[profiles][amberx]")
+{
+    // AmberX forwarding, restricted: the pre-Phase-7 way of saying
+    // "Remote GUI: X11 Restricted".
+    auto file = WriteLegacyProfile("legacy-restricted",
+                                   R"("x11Forward":true,"x11Backend":1,"x11Trust":0)");
+    ProfileStore in;
+    REQUIRE(in.LoadFrom(file, nullptr));
+    REQUIRE(in.Count() == 1);
+    CHECK(in.All()[0].remoteGui == 1);
+
+    // The same, trusted.
+    auto trusted = WriteLegacyProfile("legacy-trusted",
+                                      R"("x11Forward":true,"x11Backend":1,"x11Trust":1)");
+    ProfileStore t;
+    REQUIRE(t.LoadFrom(trusted, nullptr));
+    CHECK(t.All()[0].remoteGui == 2);
+
+    // X11 to an external server is not a remote GUI in the new sense: it is
+    // the old path, and the new control must stay off for it.
+    auto external = WriteLegacyProfile("legacy-external",
+                                       R"("x11Forward":true,"x11Backend":0,"x11Trust":0)");
+    ProfileStore e;
+    REQUIRE(e.LoadFrom(external, nullptr));
+    CHECK(e.All()[0].remoteGui == 0);
+
+    // No X11 at all.
+    auto none = WriteLegacyProfile("legacy-none", R"("x11Forward":false)");
+    ProfileStore n;
+    REQUIRE(n.LoadFrom(none, nullptr));
+    CHECK(n.All()[0].remoteGui == 0);
+}
+
+TEST_CASE("an explicit Remote GUI setting is not second-guessed", "[profiles][amberx]")
+{
+    // Present-but-zero means the user turned it off, and the old fields must
+    // not be allowed to turn it back on.
+    auto file = WriteLegacyProfile("explicit-off",
+                                   R"("remoteGui":0,"x11Forward":true,"x11Backend":1,"x11Trust":1)");
+    ProfileStore in;
+    REQUIRE(in.LoadFrom(file, nullptr));
+    CHECK(in.All()[0].remoteGui == 0);
+}
+
+TEST_CASE("the Remote GUI page round-trips and clamps", "[profiles][amberx]")
+{
+    auto file = TempFile("remotegui-roundtrip");
+    std::filesystem::remove(file);
+
+    ConnectionProfile p = Sample();
+    p.remoteGui = 1;
+    p.windowMode = 2;
+    p.x11Clipboard = 4;
+    p.displayMode = 2;
+    p.displayW = 1600;
+    p.displayH = 900;
+    p.perfMode = 3;
+    ProfileStore out;
+    out.Upsert(p);
+    REQUIRE(out.SaveTo(file, nullptr));
+
+    ProfileStore in;
+    REQUIRE(in.LoadFrom(file, nullptr));
+    const ConnectionProfile* got = in.Find(p.id);
+    REQUIRE(got != nullptr);
+    CHECK(got->remoteGui == 1);
+    CHECK(got->windowMode == 2);
+    CHECK(got->x11Clipboard == 4);
+    CHECK(got->displayMode == 2);
+    CHECK(got->displayW == 1600);
+    CHECK(got->displayH == 900);
+    CHECK(got->perfMode == 3);
+
+    // A file edited by hand, or written by a newer version, cannot push a
+    // value past what the code knows how to mean.
+    auto wild = WriteLegacyProfile("remotegui-wild",
+                                   R"("remoteGui":99,"windowMode":-4,"displayMode":7,)"
+                                   R"("displayW":1,"displayH":999999,"perfMode":42)");
+    ProfileStore w;
+    REQUIRE(w.LoadFrom(wild, nullptr));
+    const ConnectionProfile& c = w.All()[0];
+    CHECK(c.remoteGui == 2);
+    CHECK(c.windowMode == 0);
+    CHECK(c.displayMode == 2);
+    CHECK(c.displayW == 320);
+    CHECK(c.displayH == 16384);
+    CHECK(c.perfMode == 3);
+}

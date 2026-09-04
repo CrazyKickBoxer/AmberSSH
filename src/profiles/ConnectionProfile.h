@@ -269,6 +269,31 @@ struct ConnectionProfile
     // 0 disabled, 1 ask each transfer, 2 remote to local, 3 local to remote,
     // 4 both. Disabled by default, and text only in every mode.
     int         x11Clipboard = 0;
+
+    // ---- Remote GUI (AmberX, Phase 7) -------------------------------------
+    // The one control that decides whether this profile has a remote GUI and
+    // what it is allowed to do: 0 off, 1 X11 restricted, 2 X11 trusted. It is
+    // the authority; x11Forward, x11Backend and x11Trust above are kept in
+    // step with it, and still stand alone for the external-X-server path.
+    //
+    // A profile written before this field existed has none, and the loader
+    // derives it from those three rather than defaulting it to off — which
+    // would silently turn a working remote GUI off on upgrade.
+    int         remoteGui = 0;
+    // Where remote windows appear: 0 native Windows windows, 1 AmberSSH tabs,
+    // 2 AmberSSH panes, 3 ask per application. Only 0 is implemented; the
+    // others are accepted, reported, and fall back to native (see PHASE-7-GATE).
+    int         windowMode = 0;
+    // The X screen the session gets: 0 all monitors (the virtual desktop),
+    // 1 the monitor AmberSSH is on, 2 a fixed size.
+    int         displayMode = 0;
+    int         displayW = 1920;     // displayMode 2 only
+    int         displayH = 1080;
+    // How hard AmberX works to keep windows current: 0 auto, 1 quality,
+    // 2 balanced, 3 low bandwidth. This caps how often forwarded windows
+    // repaint locally; it does not compress the X11 stream, and the page
+    // says so.
+    int         perfMode = 0;
     std::string manualHostKeys;      // accepted fingerprints, one per line
     // Tunnels: semicolon-separated forward specs —
     //   L<listenPort>:<host>:<port>   local forward

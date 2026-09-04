@@ -563,7 +563,7 @@ void PumpTunnels(std::vector<FwdTunnel>& tunnels, LIBSSH2_SESSION* session,
 void PumpAmberX(std::vector<FwdTunnel>& tunnels, amber::amberx::AmberXController& host,
                 bool& activity, const std::vector<uint8_t>& x11Fake,
                 const std::vector<uint8_t>& x11Real, std::string* x11Error,
-                std::string* clipboardIn)
+                std::string* clipboardIn, amber::amberx::HostReport* report)
 {
     using namespace amber::amberx;
     uint8_t buf[32768];
@@ -687,6 +687,13 @@ void PumpAmberX(std::vector<FwdTunnel>& tunnels, amber::amberx::AmberXController
             }
             break;
         }
+        case MsgType::HostReport:
+            // Counts and window titles for the shelf and the diagnostics
+            // overlay. A report that does not parse is dropped: it is the
+            // only message whose loss costs nothing.
+            if (report)
+                ParseHostReport(f.payload, *report);
+            break;
         case MsgType::ClipboardText:
             // An X client's selection text. The server has already bounded
             // it and checked the session's policy; the caller checks it
@@ -847,6 +854,21 @@ void SshSession::AddForward(const std::string& spec)
         return;
     std::lock_guard<std::mutex> lock(m_fwdMutex);
     m_pendingForwards.push_back(spec);
+}
+
+RemoteAppReport SshSession::AmberXReport() const
+{
+    std::lock_guard<std::mutex> lock(m_amberxMutex);
+    return m_amberxReport;
+}
+
+void SshSession::RemoteAppAction(uint32_t xid, int action)
+{
+    if (xid == 0 || action < 0 || action > 2)
+        return;
+    std::lock_guard<std::mutex> lock(m_amberxMutex);
+    if (m_pendingWindowActions.size() < 64)
+        m_pendingWindowActions.emplace_back(xid, action);
 }
 
 void SshSession::OfferClipboard(std::string utf8)
@@ -1354,6 +1376,15 @@ void SshSession::ThreadMain(SshConfig cfg)
                                        : amber::SigilMnemonic(amber::MakeSigil(fingerprint));
                     launch.skin = cfg.amberxSkin;
                     launch.clipboardMode = cfg.x11Clipboard;
+                    launch.desktopX = cfg.x11DesktopX;
+                    launch.desktopY = cfg.x11DesktopY;
+                    launch.desktopW = cfg.x11DesktopW;
+                    launch.desktopH = cfg.x11DesktopH;
+                    launch.presentCapHz = cfg.x11PresentCapHz;
+                    if (cfg.x11WindowMode != 0)
+                        PostEvent(SshEventType::Status,
+                                  "Remote GUI: only native windows are implemented  14 "
+                                  "this session uses native windows");
                     m_amberx->Configure(launch);
                 }
                 std::string aerr;
@@ -1473,9 +1504,50 @@ void SshSession::ThreadMain(SshConfig cfg)
             PumpTunnels(tunnels, session, activity, x11FakeCookie, x11RealCookie,
                         &x11Err);
             std::string clipIn;
+            amber::amberx::HostReport report;
+            bool haveReport = false;
             if (m_amberx)
+            {
+                const uint32_t before = report.presents;
                 PumpAmberX(tunnels, *m_amberx, activity, x11FakeCookie, x11RealCookie,
-                           &x11Err, &clipIn);
+                           &x11Err, &clipIn, &report);
+                haveReport = report.clients || report.windows || report.presents != before ||
+                             !report.windowList.empty() || report.x11In;
+                // Window actions the shelf asked for go down on the same pass.
+                std::vector<std::pair<uint32_t, int>> acts;
+                {
+                    std::lock_guard<std::mutex> lock(m_amberxMutex);
+                    acts.swap(m_pendingWindowActions);
+                }
+                for (const auto& a : acts)
+                    m_amberx->SendWindowAction(a.first,
+                                               static_cast<amber::amberx::WindowAct>(a.second));
+            }
+            if (haveReport)
+            {
+                RemoteAppReport out;
+                out.valid = true;
+                out.clients = report.clients;
+                out.windows = report.windows;
+                out.pixmapBytes = report.pixmapBytes;
+                out.x11In = report.x11In;
+                out.x11Out = report.x11Out;
+                out.presents = report.presents;
+                out.dirtyRects = report.dirtyRects;
+                out.ipcHighWater = report.ipcHighWater;
+                out.rejected = report.rejected;
+                out.list.reserve(report.windowList.size());
+                for (const auto& w : report.windowList)
+                    out.list.push_back({ w.xid, w.flags, w.title });
+                std::lock_guard<std::mutex> lock(m_amberxMutex);
+                out.lastError = m_amberxReport.lastError;   // errors are sticky
+                m_amberxReport = std::move(out);
+            }
+            if (!x11Err.empty())
+            {
+                std::lock_guard<std::mutex> lock(m_amberxMutex);
+                m_amberxReport.lastError = x11Err;
+            }
             if (!x11Err.empty())
                 PostEvent(SshEventType::Status, x11Err);
             // Clipboard, both directions. The policy is checked here as well

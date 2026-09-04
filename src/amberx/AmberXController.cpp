@@ -349,6 +349,13 @@ bool AmberXController::Start(std::string& err)
         cmd += L" --trusted";
     cmd += L" --auth-timeout " + std::to_wstring(m_launch.authTimeoutSeconds);
     cmd += L" --clipboard " + std::to_wstring(m_launch.clipboardMode);
+    if (m_launch.desktopW > 0 && m_launch.desktopH > 0)
+        cmd += L" --desktop " + std::to_wstring(m_launch.desktopX) + L"," +
+               std::to_wstring(m_launch.desktopY) + L"," +
+               std::to_wstring(m_launch.desktopW) + L"," +
+               std::to_wstring(m_launch.desktopH);
+    if (m_launch.presentCapHz > 0)
+        cmd += L" --present-cap " + std::to_wstring(m_launch.presentCapHz);
 
     STARTUPINFOEXW si = {};
     si.StartupInfo.cb = sizeof(si);
@@ -481,6 +488,17 @@ bool AmberXController::SendData(uint32_t id, const uint8_t* data, size_t len)
     f.type = MsgType::ChannelData;
     f.channel = id;
     f.payload.assign(data, data + len);
+    return m_pipe.WriteFrame(f);
+}
+
+bool AmberXController::SendWindowAction(uint32_t xid, WindowAct act)
+{
+    if (!m_ready || xid == 0)
+        return false;
+    Frame f;
+    f.type = MsgType::WindowAction;
+    f.channel = kControlChannel;
+    f.payload = MakeWindowAction(xid, act);
     return m_pipe.WriteFrame(f);
 }
 

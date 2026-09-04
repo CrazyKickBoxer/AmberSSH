@@ -212,6 +212,12 @@ json ToJson(const ConnectionProfile& p)
         {"x11Backend", p.x11Backend},
         {"x11Trust", p.x11Trust == 1 ? 1 : 0},   // session-only trust is not saved
         {"x11Clipboard", p.x11Clipboard},
+        {"remoteGui", p.remoteGui},
+        {"windowMode", p.windowMode},
+        {"displayMode", p.displayMode},
+        {"displayW", p.displayW},
+        {"displayH", p.displayH},
+        {"perfMode", p.perfMode},
         {"manualHostKeys", p.manualHostKeys},
         {"forwards", p.forwards},
         {"jumpHost", p.jumpHost},
@@ -376,6 +382,21 @@ bool FromJson(const json& j, ConnectionProfile& out)
     out.x11Backend = std::clamp(Get<int>(j, "x11Backend", 0), 0, 1);
     out.x11Trust = std::clamp(Get<int>(j, "x11Trust", 0), 0, 1);
     out.x11Clipboard = std::clamp(Get<int>(j, "x11Clipboard", 0), 0, 4);
+    // Remote GUI. A profile saved before this field existed does not have the
+    // key, and defaulting it to "off" would turn a working remote GUI off on
+    // upgrade — so its absence is answered from the three fields that used to
+    // carry the same meaning. Present-but-zero still means off.
+    if (j.contains("remoteGui"))
+        out.remoteGui = std::clamp(Get<int>(j, "remoteGui", 0), 0, 2);
+    else
+        out.remoteGui = (out.x11Forward && out.x11Backend == 1)
+                            ? (out.x11Trust != 0 ? 2 : 1)
+                            : 0;
+    out.windowMode = std::clamp(Get<int>(j, "windowMode", 0), 0, 3);
+    out.displayMode = std::clamp(Get<int>(j, "displayMode", 0), 0, 2);
+    out.displayW = std::clamp(Get<int>(j, "displayW", 1920), 320, 16384);
+    out.displayH = std::clamp(Get<int>(j, "displayH", 1080), 240, 16384);
+    out.perfMode = std::clamp(Get<int>(j, "perfMode", 0), 0, 3);
     out.manualHostKeys = Get<std::string>(j, "manualHostKeys", std::string());
     out.forwards = Get<std::string>(j, "forwards", std::string());
     out.jumpHost = Get<std::string>(j, "jumpHost", std::string());

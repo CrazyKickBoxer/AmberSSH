@@ -38,5 +38,7 @@ struct _Screen;
 int amber_limits_screen_init(struct _Screen *pScreen);
 /* called from OsInit: the request-size limit is a dix global */
 void amber_limits_os_init(void);
+/* live counts for the diagnostics report */
+void amber_limits_counts(int *windows, long long *pixmapBytes);
 
 #endif

@@ -26,6 +26,10 @@ struct HostOptions
     bool trusted = false;       // the SECURITY trust level of the session cookie
     int authTimeout = 1200;     // seconds an unused untrusted cookie lives
     int clipboard = 0;          // AMBERWIN_CLIP_*; 0 (off) is the default
+    // The X screen rectangle in Windows desktop coordinates; w == 0 means
+    // the whole virtual desktop, which is what rootless mode used to assume.
+    int deskX = 0, deskY = 0, deskW = 0, deskH = 0;
+    int presentCapHz = 0;       // 0 = repaint as often as damage arrives
 };
 
 // Registers the window classes and, rootful, the display window. The pipe

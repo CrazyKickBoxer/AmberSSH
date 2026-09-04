@@ -46,6 +46,8 @@ struct Args
     bool trusted = false;
     int authTimeout = 1200;
     int clipboard = 0;
+    int deskX = 0, deskY = 0, deskW = 0, deskH = 0;
+    int presentCapHz = 0;
 };
 
 std::string Narrow(const std::wstring& w)
@@ -102,6 +104,19 @@ bool ParseArgs(int argc, wchar_t** argv, Args& a)
             a.authTimeout = static_cast<int>(wcstol(v.c_str(), nullptr, 10));
         else if (k == L"--clipboard")
             a.clipboard = static_cast<int>(wcstol(v.c_str(), nullptr, 10));
+        else if (k == L"--present-cap")
+            a.presentCapHz = static_cast<int>(wcstol(v.c_str(), nullptr, 10));
+        else if (k == L"--desktop")
+        {
+            // x,y,w,h — one argument so a partial rectangle cannot be built
+            wchar_t* end = nullptr;
+            a.deskX = static_cast<int>(wcstol(v.c_str(), &end, 10));
+            a.deskY = end && *end == L',' ? static_cast<int>(wcstol(end + 1, &end, 10)) : 0;
+            a.deskW = end && *end == L',' ? static_cast<int>(wcstol(end + 1, &end, 10)) : 0;
+            a.deskH = end && *end == L',' ? static_cast<int>(wcstol(end + 1, &end, 10)) : 0;
+            if (a.deskW < 64 || a.deskH < 64)
+                a.deskW = a.deskH = 0;   // nonsense: fall back to the desktop
+        }
         else
             return false;
     }
@@ -255,6 +270,9 @@ int wmain(int argc, wchar_t** argv)
     opt.trusted = a.trusted;
     opt.authTimeout = a.authTimeout;
     opt.clipboard = a.clipboard;
+    opt.deskX = a.deskX; opt.deskY = a.deskY;
+    opt.deskW = a.deskW; opt.deskH = a.deskH;
+    opt.presentCapHz = a.presentCapHz;
     if (!BackendInit(pipe, opt, err))
     {
         fprintf(stderr, "AmberXHost: %s\n", err.c_str());

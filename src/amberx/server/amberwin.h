@@ -235,6 +235,14 @@ void amberwin_channel_close(uint32_t ch);
 /* Host → controller status. Counts only, by construction. */
 void amberwin_report(uint32_t open_clients, uint64_t bytes_in, int cookie_set);
 
+/* The numbers behind the Remote Apps shelf and the diagnostics overlay
+ * (Phase 7). Pushed by the X side because only it can count X things; the
+ * Windows side adds what only it can count (frames, presents, queues) and
+ * sends the two together. Counts only: no titles, no contents, no bytes. */
+void amberwin_report_counts(uint32_t clients, uint32_t windows,
+                            uint64_t pixmap_bytes, uint64_t x11_in,
+                            uint64_t x11_out);
+
 /* ---- clipboard: UTF-8 text, both directions ---------------------------
  * Neither side keeps a copy longer than the transfer needs, and neither
  * logs one. The X side pulls after AMBERWIN_EV_CLIPBOARD rather than being

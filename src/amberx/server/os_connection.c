@@ -35,6 +35,7 @@
 #include "scrnintstr.h"
 #include "amberos.h"
 #include "amberwin.h"
+#include "amberlimits.h"
 
 #define BUFSIZE 16384
 #define BUFWATERMARK 32768
@@ -115,6 +116,7 @@ open_channel_count(void)
 }
 
 static uint64_t bytes_in_total;
+static uint64_t bytes_out_total;
 static Bool cookie_seen;
 
 static void
@@ -797,6 +799,7 @@ FlushClient(ClientPtr who, OsCommPtr oc_, const void *__extraBuf, int extraCount
         oc->ocnt = 0;
         return -1;
     }
+    bytes_out_total += (uint64_t) notWritten;
     oc->ocnt = 0;
     return extraCount;
 }
@@ -976,6 +979,23 @@ drain_backend(void)
     n = amberwin_readable_channels(ids, MAX_CHANNELS);
     for (i = 0; i < n; i++)
         amber_os_channel_readable(ids[i]);
+
+    /* The numbers the shelf and the diagnostics overlay are drawn from, twice
+     * a second. Cheap enough to do unconditionally and slow enough that it
+     * cannot become the reason the server is busy. */
+    {
+        static CARD32 lastCounts;
+        const CARD32 now = GetTimeInMillis();
+        if (now - lastCounts >= 500) {
+            int windows = 0;
+            long long pixmapBytes = 0;
+            lastCounts = now;
+            amber_limits_counts(&windows, &pixmapBytes);
+            amberwin_report_counts(open_channel_count(), (uint32_t) windows,
+                                   (uint64_t) pixmapBytes, bytes_in_total,
+                                   bytes_out_total);
+        }
+    }
 }
 
 Bool

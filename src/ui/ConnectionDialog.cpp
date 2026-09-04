@@ -1205,6 +1205,36 @@ void ConnectionDialog::DefineFields()
     note(Page::SshX11, L"Remote X clients are connected to the X server at that display\r\n"
                        L"(VcXsrv, Xming, WSLg). Start it before connecting.");
 
+    // ---- SSH > Remote GUI (AmberX) ---------------------------------------
+    // One page for the whole feature, in the order a person decides it: on or
+    // off and how trusted, then where the windows go, then what may cross,
+    // then how much screen, then how hard to work.
+    choice(Page::RemoteGui, Kind::RadioRow, &P::remoteGui, L"Remote GUI",
+           {L"Off", L"X11 Restricted", L"X11 Trusted"});
+    choice(Page::RemoteGui, Kind::Combo, &P::windowMode, L"Window mode",
+           {L"Native Windows windows", L"AmberSSH tabs (not yet)",
+            L"AmberSSH panes (not yet)", L"Ask per application (not yet)"});
+    choice(Page::RemoteGui, Kind::Combo, &P::x11Clipboard, L"Clipboard",
+           {L"Disabled", L"Ask each transfer", L"Remote \x2192 local text",
+            L"Local \x2192 remote text", L"Bidirectional text"});
+    choice(Page::RemoteGui, Kind::Combo, &P::displayMode, L"Display",
+           {L"All monitors", L"Active monitor only", L"Fixed virtual size"});
+    num(Page::RemoteGui, &P::displayW, L"Fixed width", 90);
+    num(Page::RemoteGui, &P::displayH, L"Fixed height", 90);
+    choice(Page::RemoteGui, Kind::Combo, &P::perfMode, L"Performance",
+           {L"Auto", L"Quality", L"Balanced", L"Low bandwidth"});
+    note(Page::RemoteGui,
+         L"Remote GUI runs AmberSSH's own X server (AmberX) in an isolated,\r\n"
+         L"low-integrity process, one per session. Restricted is the default and\r\n"
+         L"is enforced by the X SECURITY extension; Trusted asks for confirmation.\r\n"
+         L"\r\n"
+         L"Only native windows are implemented. Tabs and panes need a shared-surface\r\n"
+         L"path that is not built yet; choosing one falls back to native windows and\r\n"
+         L"says so in the session log.\r\n"
+         L"\r\n"
+         L"Performance caps how often forwarded windows repaint on this machine.\r\n"
+         L"It does not compress the X11 stream: AmberX forwards the protocol as it is.");
+
     // ---- SSH > Tunnels ---------------------------------------------------
     multi(Page::SshTunnels, &P::forwards, L"Port forwards, one per line or ';'-separated:\r\n"
                                           L"L<port>:<host>:<port>   R<port>:<host>:<port>   D<port>");
@@ -1572,6 +1602,7 @@ void ConnectionDialog::BuildTree(HWND parent)
     HTREEITEM ssh = insert(conn, L"SSH", Page::Ssh);
     insert(ssh, L"Auth", Page::SshAuth);
     insert(ssh, L"X11", Page::SshX11);
+    insert(ssh, L"Remote GUI", Page::RemoteGui);
     insert(ssh, L"Tunnels", Page::SshTunnels);
     insert(ssh, L"Host keys", Page::SshHostKeys);
     insert(conn, L"Serial", Page::Serial);
@@ -1967,6 +1998,28 @@ void ConnectionDialog::SaveCurrentProfile()
     secret(p.rememberPassphrase, IdPassphrase, SecretKind::KeyPassphrase);
     secret(p.rememberProxyPassword, IdProxyPassword, SecretKind::ProxyPassword);
 
+    // Remote GUI is the authority for AmberX, so the three older fields are
+    // brought into step with it before anything else looks at them. They keep
+    // their own meaning when Remote GUI is off, which is what leaves the
+    // external-X-server path on the X11 page working exactly as before.
+    if (p.remoteGui != 0)
+    {
+        p.x11Forward = true;
+        p.x11Backend = 1;
+        if (p.remoteGui == 2 && p.x11Trust == 0)
+            p.x11Trust = 1;
+        else if (p.remoteGui == 1)
+            p.x11Trust = 0;
+    }
+    else if (p.x11Backend == 1)
+    {
+        // Remote GUI turned off on a profile that used AmberX: turn the
+        // backend off with it rather than leaving a host that nothing asked
+        // for.
+        p.x11Backend = 0;
+        p.x11Trust = 0;
+    }
+
     // Trusted X11 is an opt-in behind a typed confirmation, asked whenever
     // trust is being turned on or changed to the other kind — never when a
     // profile that already has it is merely edited. Declining leaves the
@@ -1977,7 +2030,11 @@ void ConnectionDialog::SaveCurrentProfile()
         if (!prev || prev->x11Trust != p.x11Trust)
         {
             if (!ShowTrustedX11Dialog(m_dlg, p.host, p.x11Trust == 2))
+            {
                 p.x11Trust = 0;
+                if (p.remoteGui == 2)
+                    p.remoteGui = 1;    // declining leaves it restricted, not off
+            }
         }
     }
 

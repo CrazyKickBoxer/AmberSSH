@@ -28,6 +28,7 @@
 #include <windowsx.h>
 #include <shellscalingapi.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -72,6 +73,12 @@ struct amberwin_frame
     int settingPos = 0;         // >0 while we move it ourselves: no echo
     HICON icon = nullptr;
     int stripH = 0;
+    // present coalescing (Phase 7): the rectangle waiting for the next
+    // allowed repaint, and whether there is one
+    RECT pendingDirty{};
+    bool hasPending = false;
+    std::string title;          // sanitised by the X side; shown in the shelf
+    bool active = false;
 };
 
 namespace
@@ -117,12 +124,29 @@ struct Backend
     DWORD uiThread = 0;
     HFONT stripFont = nullptr;
     int stripFontDpi = 0;
+    // every live frame, in creation order. UI thread only: created,
+    // destroyed and read for the report all on that thread.
+    std::vector<amberwin_frame*> live;
+
+    // what the periodic report is built from. The X side pushes its counts
+    // (amberwin_report_counts); the Windows side counts what only it can see.
+    std::atomic<uint32_t> rClients{0}, rWindows{0};
+    std::atomic<uint64_t> rPixmapBytes{0}, rX11In{0}, rX11Out{0};
+    std::atomic<uint32_t> presents{0}, dirtyRects{0}, rejected{0}, ipcHighWater{0};
+
+    // present coalescing: 0 = repaint as damage arrives
+    int presentCapMs = 0;
+    std::mutex dirtyMu;
 
     std::atomic<bool> serverExited{false};
 };
 
 Backend g;
 constexpr UINT WM_AMBER_OP = WM_APP + 7;
+constexpr UINT WM_AMBER_WINDOW_ACTION = WM_APP + 8;
+constexpr UINT_PTR kReportTimer = 1;
+constexpr UINT_PTR kPresentTimer = 2;
+constexpr UINT kReportIntervalMs = 500;
 constexpr int kStripLogical = 22;
 
 void Wake()
@@ -881,10 +905,13 @@ void DoCreate(FrameOp& o)
     }
     o.f = f;
     o.ok = f->view && f->bits;
+    if (o.ok)
+        g.live.push_back(f);
 }
 
 void DoDestroy(amberwin_frame* f)
 {
+    g.live.erase(std::remove(g.live.begin(), g.live.end(), f), g.live.end());
     if (f->owner && f->modal)
         EnableWindow(f->owner->hwnd, TRUE);
     f->settingPos++;
@@ -1011,7 +1038,8 @@ void RunOp(FrameOp& o)
         }
         break;
     case Op::Title:
-        SetWindowTextW(f->hwnd, Widen(o.text ? o.text : "").c_str());
+        f->title = o.text ? o.text : "";
+        SetWindowTextW(f->hwnd, Widen(f->title).c_str());
         break;
     case Op::Icon:
     {
@@ -1087,11 +1115,109 @@ void RunOp(FrameOp& o)
     o.ok = true;
 }
 
+// ---- the periodic report ------------------------------------------------------
+// Built on the UI thread, because that is the thread that owns the frames,
+// and sent every half second. Counts and titles only: no window contents, no
+// X11 bytes, nothing a log would not already be allowed to hold.
+void SendReport()
+{
+    HostReport r;
+    r.clients = g.rClients.load(std::memory_order_relaxed);
+    r.windows = g.rWindows.load(std::memory_order_relaxed);
+    r.pixmapBytes = g.rPixmapBytes.load(std::memory_order_relaxed);
+    r.x11In = g.rX11In.load(std::memory_order_relaxed);
+    r.x11Out = g.rX11Out.load(std::memory_order_relaxed);
+    r.presents = g.presents.load(std::memory_order_relaxed);
+    r.dirtyRects = g.dirtyRects.load(std::memory_order_relaxed);
+    r.rejected = g.rejected.load(std::memory_order_relaxed);
+    {
+        // the largest channel backlog since the last report, which is the
+        // number that says whether the pipe is keeping up
+        std::lock_guard<std::mutex> lk(g.qmu);
+        size_t high = 0;
+        for (auto& kv : g.channels)
+            high = (std::max)(high, kv.second.data.size() - kv.second.rd);
+        if (high > g.ipcHighWater.load(std::memory_order_relaxed))
+            g.ipcHighWater.store(static_cast<uint32_t>(high), std::memory_order_relaxed);
+    }
+    r.ipcHighWater = g.ipcHighWater.load(std::memory_order_relaxed);
+
+    const HWND fore = GetForegroundWindow();
+    for (const amberwin_frame* f : g.live)
+    {
+        if (r.windowList.size() >= kMaxReportWindows)
+            break;
+        ReportWindow w;
+        w.xid = f->xid;
+        w.flags = (f->minimized ? 1u : 0u) | (f->maximized ? 2u : 0u) |
+                  (f->hwnd == fore ? 4u : 0u) | (f->overrideRedirect ? 8u : 0u);
+        w.title = f->title.size() > kMaxWindowTitle ? f->title.substr(0, kMaxWindowTitle)
+                                                    : f->title;
+        r.windowList.push_back(std::move(w));
+    }
+    SendFrame(MsgType::HostReport, kControlChannel, MakeHostReport(r));
+}
+
+// One action from the shelf. Show and minimise are Windows operations; close
+// is not — it goes back through the X side as the same event the window's own
+// close button raises, so the application is asked to close rather than shot.
+void RunWindowAction(uint32_t xid, WindowAct act)
+{
+    for (amberwin_frame* f : g.live)
+    {
+        if (f->xid != xid || !f->hwnd)
+            continue;
+        if (act == WindowAct::Show)
+        {
+            // IsIconic, not the cached flag: the flag is set from WM_SIZE, and
+            // a show that follows a minimise closely can arrive before that
+            // message has been processed.
+            ShowWindow(f->hwnd, IsIconic(f->hwnd) ? SW_RESTORE : SW_SHOW);
+            SetForegroundWindow(f->hwnd);
+        }
+        else if (act == WindowAct::Minimize)
+            ShowWindow(f->hwnd, SW_MINIMIZE);
+        else
+        {
+            amberwin_event ev{};
+            ev.type = AMBERWIN_EV_FRAME_CLOSE;
+            ev.xid = xid;
+            Push(ev);
+        }
+        return;
+    }
+}
+
 LRESULT CALLBACK OpsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     if (msg == WM_AMBER_OP)
     {
         RunOp(*reinterpret_cast<FrameOp*>(lp));
+        return 0;
+    }
+    if (msg == WM_AMBER_WINDOW_ACTION)
+    {
+        RunWindowAction(static_cast<uint32_t>(wp), static_cast<WindowAct>(lp));
+        return 0;
+    }
+    if (msg == WM_TIMER && wp == kReportTimer)
+    {
+        SendReport();
+        return 0;
+    }
+    if (msg == WM_TIMER && wp == kPresentTimer)
+    {
+        // One repaint per frame per interval, carrying everything that
+        // accumulated since the last one.
+        std::lock_guard<std::mutex> lk(g.dirtyMu);
+        for (amberwin_frame* f : g.live)
+        {
+            if (!f->hasPending || !f->view)
+                continue;
+            g.presents.fetch_add(1, std::memory_order_relaxed);
+            InvalidateRect(f->view, &f->pendingDirty, FALSE);
+            f->hasPending = false;
+        }
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -1167,6 +1293,16 @@ DWORD WINAPI PipeThread(LPVOID)
             ev.type = AMBERWIN_EV_CHANNEL_OPEN;
             ev.channel = f.channel;
             Push(ev);
+            break;
+        }
+        case MsgType::WindowAction:
+        {
+            uint32_t xid = 0;
+            WindowAct act = WindowAct::Show;
+            if (ParseWindowAction(f.payload, xid, act))
+                PostMessageW(g.ops, WM_AMBER_WINDOW_ACTION, xid, static_cast<LPARAM>(act));
+            else
+                g.rejected.fetch_add(1, std::memory_order_relaxed);
             break;
         }
         case MsgType::ClipboardText:
@@ -1276,6 +1412,8 @@ bool BackendInit(FramedPipe& pipe, const HostOptions& opt, std::string& err)
     g.cfg.trusted = opt.trusted ? 1 : 0;
     g.cfg.auth_timeout_seconds = opt.authTimeout;
     g.cfg.clipboard_mode = opt.clipboard;
+    // 0 hz means uncapped; anything else becomes the interval between repaints
+    g.presentCapMs = opt.presentCapHz > 0 ? (1000 / opt.presentCapHz) : 0;
     // read the layout before the server thread starts: XKB asks for the
     // keymap while initialising the keyboard device, which is early
     ReadCurrentLayout();
@@ -1309,11 +1447,25 @@ bool BackendInit(FramedPipe& pipe, const HostOptions& opt, std::string& err)
 
     if (opt.rootless)
     {
-        // the X screen is the virtual desktop; its origin may be negative
-        g.cfg.desktop_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        g.cfg.desktop_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        g.cfg.width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        g.cfg.height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        // The X screen: the whole virtual desktop by default, or the exact
+        // rectangle AmberSSH asked for (one monitor, or a fixed size). The
+        // origin may be negative either way — a monitor left of the primary
+        // one has a negative Windows x, and X's (0,0) is this rectangle's
+        // top-left.
+        if (opt.deskW > 0 && opt.deskH > 0)
+        {
+            g.cfg.desktop_x = opt.deskX;
+            g.cfg.desktop_y = opt.deskY;
+            g.cfg.width = opt.deskW;
+            g.cfg.height = opt.deskH;
+        }
+        else
+        {
+            g.cfg.desktop_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            g.cfg.desktop_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            g.cfg.width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            g.cfg.height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        }
         if (g.cfg.width < 64 || g.cfg.height < 64)
         {
             g.cfg.width = 1280;
@@ -1325,6 +1477,10 @@ bool BackendInit(FramedPipe& pipe, const HostOptions& opt, std::string& err)
             err = "could not create the ops window";
             return false;
         }
+        // the shelf and the diagnostics overlay are drawn from this
+        SetTimer(g.ops, kReportTimer, kReportIntervalMs, nullptr);
+        if (g.presentCapMs > 0)
+            SetTimer(g.ops, kPresentTimer, static_cast<UINT>(g.presentCapMs), nullptr);
         return true;
     }
 
@@ -1524,13 +1680,34 @@ void* amberwin_frame_bits(amberwin_frame* f, int* stride_bytes)
 void amberwin_frame_present(amberwin_frame* f, int x, int y, int w, int h)
 {
     if (!f || !f->view) return;
-    if (w < 0 || h < 0)
-        InvalidateRect(f->view, nullptr, FALSE);
-    else
+    g.dirtyRects.fetch_add(1, std::memory_order_relaxed);
+
+    // Uncapped: hand it to Windows, which coalesces overlapping invalid
+    // regions into one WM_PAINT by itself.
+    if (g.presentCapMs <= 0)
     {
-        RECT r{ x, y, x + w, y + h };
-        InvalidateRect(f->view, &r, FALSE);
+        g.presents.fetch_add(1, std::memory_order_relaxed);
+        if (w < 0 || h < 0)
+            InvalidateRect(f->view, nullptr, FALSE);
+        else
+        {
+            RECT r{ x, y, x + w, y + h };
+            InvalidateRect(f->view, &r, FALSE);
+        }
+        return;
     }
+
+    // Capped: accumulate into the frame's pending rectangle and let the
+    // timer on the UI thread do the invalidating, at most once per interval.
+    // This is called from the server thread, hence the lock; the rectangle is
+    // the union, so nothing is lost, only delayed.
+    std::lock_guard<std::mutex> lk(g.dirtyMu);
+    RECT r = (w < 0 || h < 0) ? RECT{ 0, 0, f->w, f->h } : RECT{ x, y, x + w, y + h };
+    if (!f->hasPending)
+        f->pendingDirty = r;
+    else
+        UnionRect(&f->pendingDirty, &f->pendingDirty, &r);
+    f->hasPending = true;
 }
 
 void amberwin_frame_set_title(amberwin_frame* f, const char* utf8)
@@ -1696,6 +1873,7 @@ int amberwin_monitors(amberwin_monitor* out, int cap)
     return c.n;
 }
 
+
 // ---- clipboard ----------------------------------------------------------------
 // The host never touches the Windows clipboard: at low integrity it could
 // not read it if it wanted to, and it should not want to. It is a relay
@@ -1714,6 +1892,16 @@ uint32_t amberwin_clipboard_pull(char* buf, uint32_t cap)
     buf[n] = '\0';
     g.clipPending.clear();
     return n;
+}
+
+void amberwin_report_counts(uint32_t clients, uint32_t windows, uint64_t pixmapBytes,
+                            uint64_t x11In, uint64_t x11Out)
+{
+    g.rClients.store(clients, std::memory_order_relaxed);
+    g.rWindows.store(windows, std::memory_order_relaxed);
+    g.rPixmapBytes.store(pixmapBytes, std::memory_order_relaxed);
+    g.rX11In.store(x11In, std::memory_order_relaxed);
+    g.rX11Out.store(x11Out, std::memory_order_relaxed);
 }
 
 void amberwin_clipboard_push(const char* utf8, uint32_t len)

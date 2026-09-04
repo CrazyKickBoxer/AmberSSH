@@ -30,6 +30,12 @@
 namespace amber::amberx
 {
 
+// What the diagnostics overlay reports as the versions in play: AmberX's
+// own, and the upstream X.Org release its core comes from (pinned by
+// third_party/amberx/fetch-upstream.sh).
+inline constexpr const char* kAmberXVersion = "0.6";
+inline constexpr const char* kUpstreamVersion = "21.1.24";
+
 inline constexpr uint32_t kMagic = 0x58626D41u;   // 'A','m','b','X'
 inline constexpr uint16_t kVersion = 1;
 inline constexpr size_t kHeaderBytes = 16;
@@ -54,6 +60,7 @@ enum class MsgType : uint16_t
     SetCookie = 4,      // controller → host: the MIT-MAGIC-COOKIE-1 to accept
     Shutdown = 5,       // controller → host: close cleanly
     ClipboardText = 6,  // either way: UTF-8 clipboard text, already policy-checked
+    WindowAction = 7,   // controller → host: show / minimise / close one window
     // --- per-channel ------------------------------------------------------
     ChannelOpen = 16,   // a forwarded X11 connection began
     ChannelData = 17,   // X11 bytes in either direction
@@ -61,6 +68,7 @@ enum class MsgType : uint16_t
     // --- host → controller ------------------------------------------------
     HostStatus = 32,    // counts and health, for the diagnostics overlay
     HostError = 33,     // a bounded, non-sensitive error string
+    HostReport = 34,    // counts, rates and the window list (Phase 7)
 };
 
 // True for a type this build knows. An unrecognised type is refused rather
@@ -152,6 +160,49 @@ bool ParseHostStatus(const std::vector<uint8_t>& p, uint32_t& openChannels,
                      uint64_t& bytesIn, bool& cookieSet);
 std::vector<uint8_t> MakeHostError(const std::string& text);   // truncates
 bool ParseHostError(const std::vector<uint8_t>& p, std::string& text);
+
+// ------------------------------------------------------- the periodic report
+// What the Remote Apps shelf and the diagnostics overlay are drawn from
+// (Phase 7). Counts, rates and window titles — nothing else. Titles have
+// already been sanitised and bounded by the X side before they get here; the
+// parser bounds them again, because a parser that trusts its peer is not a
+// parser.
+//
+// HostStatus is left exactly as it was. This is a second, richer message
+// rather than a wider first one, so the message the handshake depends on
+// keeps its fixed length and its fixed meaning.
+inline constexpr size_t kMaxReportWindows = 256;
+inline constexpr size_t kMaxWindowTitle = 256;
+
+struct ReportWindow
+{
+    uint32_t xid = 0;
+    // 1 minimised, 2 maximised, 4 active, 8 override-redirect (a menu or
+    // tooltip, which the shelf does not list as an application window)
+    uint32_t flags = 0;
+    std::string title;
+};
+
+struct HostReport
+{
+    uint32_t clients = 0;
+    uint32_t windows = 0;            // X windows, all clients
+    uint64_t pixmapBytes = 0;
+    uint64_t x11In = 0, x11Out = 0;  // X protocol bytes, both directions
+    uint32_t presents = 0;           // frame presentations since the host began
+    uint32_t dirtyRects = 0;         // rectangles in those presentations
+    uint32_t ipcHighWater = 0;       // largest channel backlog seen, bytes
+    uint32_t rejected = 0;           // frames refused as malformed or unknown
+    std::vector<ReportWindow> windowList;
+};
+
+std::vector<uint8_t> MakeHostReport(const HostReport& r);
+bool ParseHostReport(const std::vector<uint8_t>& p, HostReport& r);
+
+// Controller → host: one thing to do to one window, from the shelf.
+enum class WindowAct : uint32_t { Show = 0, Minimize = 1, Close = 2 };
+std::vector<uint8_t> MakeWindowAction(uint32_t xid, WindowAct act);
+bool ParseWindowAction(const std::vector<uint8_t>& p, uint32_t& xid, WindowAct& act);
 
 // ------------------------------------------------------------ channel state
 // Tracks which channel ids this side has opened, so a frame naming a channel

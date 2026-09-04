@@ -14,6 +14,7 @@
 #include "ui/AboutDialog.h"
 #include "ui/SafetyDialog.h"
 #include "security/PrivacyCloak.h"
+#include "amberx/control/Protocol.h"
 #include "remote/XAuth.h"
 #include "remote/RemoteDisplay.h"
 #include "ui/SkinDraw.h"
@@ -1814,6 +1815,7 @@ void App::RenderFrame()
     DrawPaneBadges();   // read-only and broadcast markers, per pane
     DrawPalette();
     DrawJournal();
+    DrawRemoteApps();
     DrawPasteGuard();
     UpdateTaskbarProgress();
 
@@ -4263,6 +4265,35 @@ void App::DrawStatusLine()
                      static_cast<unsigned long long>(S.parser.ImageDecodeFails()));
             m_prims.AddText(m_gm.originX, m_titleBarH + 2.0f + m_gm.cellH * 2.0f,
                             line, 0.6f, m_sampler);
+
+            // AmberX, when this session has a host. Two lines: what the
+            // server is holding, and what the transport is doing. Only
+            // counts appear here — no titles, no window contents, and the
+            // last error is the host's own bounded text.
+            const RemoteAppReport ax = S.ssh.AmberXReport();
+            if (ax.valid)
+            {
+                snprintf(line, sizeof(line),
+                         "AmberX %s (X.Org %s)  %u client%s  %u window%s  "
+                         "pixmaps %.1f MiB  %s",
+                         amber::amberx::kAmberXVersion, amber::amberx::kUpstreamVersion,
+                         ax.clients, ax.clients == 1 ? "" : "s",
+                         ax.windows, ax.windows == 1 ? "" : "s",
+                         static_cast<double>(ax.pixmapBytes) / (1024.0 * 1024.0),
+                         S.profile.x11Trust != 0 ? "trusted" : "restricted");
+                m_prims.AddText(m_gm.originX, m_titleBarH + 2.0f + m_gm.cellH * 3.0f,
+                                line, 0.6f, m_sampler);
+                snprintf(line, sizeof(line),
+                         "AmberX x11 in %.2f MiB  out %.2f MiB  presents %u  "
+                         "dirty %u  ipc high water %u B  refused %u  gpu n/a%s%s",
+                         static_cast<double>(ax.x11In) / (1024.0 * 1024.0),
+                         static_cast<double>(ax.x11Out) / (1024.0 * 1024.0),
+                         ax.presents, ax.dirtyRects, ax.ipcHighWater, ax.rejected,
+                         ax.lastError.empty() ? "" : "  last error: ",
+                         ax.lastError.c_str());
+                m_prims.AddText(m_gm.originX, m_titleBarH + 2.0f + m_gm.cellH * 4.0f,
+                                line, 0.6f, m_sampler);
+            }
         }
     }
 }
@@ -4438,6 +4469,14 @@ bool App::OnKeyDown(WPARAM vk)
         m_swallowChar = true;
         return true;
     }
+    if (mods.ctrl && mods.shift && vk == 'G')
+    {
+        ToggleRemoteApps();
+        m_swallowChar = true;
+        return true;
+    }
+    if (m_appsOpen)
+        return RemoteAppsKey(vk);
     if (mods.ctrl && mods.shift && vk == 'O')
     {
         ToggleFoldAtCursor();
@@ -8788,6 +8827,189 @@ void App::DrawPaneBadges()
     }
 }
 
+// ---- the Remote Apps shelf (AmberX, Phase 7) --------------------------------
+// Every window the session's AmberX host is showing, with what it is doing and
+// what can be done to it. Drawn in the terminal's own surface rather than as a
+// separate window, so it takes the interface skin the way the palette and the
+// journal do, and so it cannot be covered by a remote window: nothing a
+// forwarded application draws reaches this layer.
+void App::ToggleRemoteApps()
+{
+    m_appsOpen = !m_appsOpen;
+    if (!m_appsOpen)
+        return;
+    m_palOpen = false;              // one overlay at a time
+    m_jrnOpen = false;
+    m_appsSel = 0;
+}
+
+// The windows worth listing: override-redirect ones are menus and tooltips,
+// which come and go by the dozen and are not applications.
+static std::vector<RemoteAppWindow> ShelfWindows(const RemoteAppReport& r)
+{
+    std::vector<RemoteAppWindow> out;
+    for (const RemoteAppWindow& w : r.list)
+        if (!(w.flags & 8u))
+            out.push_back(w);
+    return out;
+}
+
+bool App::RemoteAppsKey(WPARAM vk)
+{
+    if (!m_appsOpen)
+        return false;
+    const RemoteAppReport r = HasSession() ? Cur().ssh.AmberXReport() : RemoteAppReport{};
+    const std::vector<RemoteAppWindow> wins = ShelfWindows(r);
+    const int n = static_cast<int>(wins.size());
+    auto act = [&](int action, const char* said) {
+        if (n <= 0 || m_appsSel < 0 || m_appsSel >= n || !HasSession())
+            return;
+        Cur().ssh.RemoteAppAction(wins[static_cast<size_t>(m_appsSel)].xid, action);
+        SetStatus(said);
+    };
+    switch (vk)
+    {
+    case VK_ESCAPE:
+        m_appsOpen = false;
+        m_swallowChar = true;
+        return true;
+    case VK_UP:
+        if (m_appsSel > 0)
+            --m_appsSel;
+        return true;
+    case VK_DOWN:
+        if (m_appsSel + 1 < n)
+            ++m_appsSel;
+        return true;
+    case VK_RETURN:
+        act(0, "Remote app: shown");
+        m_appsOpen = false;
+        m_swallowChar = true;
+        return true;
+    case 'M':
+        act(1, "Remote app: minimized");
+        m_swallowChar = true;
+        return true;
+    case VK_DELETE:
+    case 'C':
+        // Asks the application to close, the same request its own close
+        // button makes. It is never a kill: an editor with unsaved work gets
+        // to say no, exactly as it would on the remote desktop.
+        act(2, "Remote app: asked to close");
+        m_swallowChar = true;
+        return true;
+    default:
+        return true;                // the shelf owns the keyboard while open
+    }
+}
+
+void App::DrawRemoteApps()
+{
+    if (!m_appsOpen)
+        return;
+    const float dpi = static_cast<float>(m_dpi) / 96.0f;
+    const float lineH = (m_gm.cellH > 0.0f) ? m_gm.cellH * 1.25f : 24.0f * dpi;
+    const float pad = 12.0f * dpi;
+    const float W = static_cast<float>(m_device.Width());
+    const float boxW = std::min(W - 2.0f * pad, 900.0f * dpi);
+
+    const RemoteAppReport r = HasSession() ? Cur().ssh.AmberXReport() : RemoteAppReport{};
+    const std::vector<RemoteAppWindow> wins = ShelfWindows(r);
+    const int n = static_cast<int>(wins.size());
+    const int rows = std::max(1, std::min(12, n));
+    const float boxH = pad * 2.0f + lineH * static_cast<float>(rows + 3) + 8.0f * dpi;
+    const float x0 = (W - boxW) * 0.5f;
+    const float y0 = m_titleBarH + 24.0f * dpi;
+    const float bw = std::max(1.0f, 1.5f * dpi);
+
+    float bg[4] = { 0.02f, 0.015f, 0.005f, 1.0f };
+    m_prims.AddRectRgba(x0, y0, boxW, boxH, bg, 0.0f, PrimLayer::OverBlend);
+    SetPanelRect(x0, y0, boxW, boxH);
+    float lin[3];
+    AmberRampCpu(0.55f, lin);
+    float border[4] = { lin[0], lin[1], lin[2], 0.9f };
+    m_prims.AddRectRgba(x0, y0, boxW, bw, border, 0.0f, PrimLayer::Over);
+    m_prims.AddRectRgba(x0, y0 + boxH - bw, boxW, bw, border, 0.0f, PrimLayer::Over);
+    m_prims.AddRectRgba(x0, y0, bw, boxH, border, 0.0f, PrimLayer::Over);
+    m_prims.AddRectRgba(x0 + boxW - bw, y0, bw, boxH, border, 0.0f, PrimLayer::Over);
+
+    const float tx = x0 + pad, ty = y0 + pad;
+    std::string head = "remote apps";
+    if (HasSession())
+    {
+        const amber::Session& s = Cur();
+        head += "  " + s.profile.host;
+        if (s.profile.x11Backend == 1)
+            head += s.profile.x11Trust != 0 ? "  X11 TRUSTED" : "  X11 RESTRICTED";
+    }
+    m_prims.AddText(tx, ty, head, 1.0f, m_sampler);
+    if (n > 0)
+    {
+        char cnt[48];
+        snprintf(cnt, sizeof(cnt), "%d of %d", m_appsSel + 1, n);
+        const float cw = m_prims.MeasureText(cnt, m_sampler);
+        m_prims.AddText(x0 + boxW - pad - cw, ty, cnt, 0.45f, m_sampler);
+    }
+    const float sepY = ty + lineH + 2.0f * dpi;
+    float sep[4] = { lin[0], lin[1], lin[2], 0.45f };
+    m_prims.AddRectRgba(x0 + pad, sepY, boxW - 2.0f * pad, bw, sep, 0.0f, PrimLayer::Over);
+
+    const float listY = sepY + 6.0f * dpi;
+    if (!r.valid)
+    {
+        m_prims.AddText(tx, listY,
+                        HasSession() && Cur().profile.x11Backend == 1
+                            ? "Waiting for the AmberX host"
+                            : "This session has no remote GUI (SSH \xc2\xbb X11 in its profile)",
+                        0.45f, m_sampler);
+    }
+    else if (n == 0)
+    {
+        m_prims.AddText(tx, listY, "No forwarded windows open", 0.45f, m_sampler);
+    }
+    else
+    {
+        const int first = std::max(0, std::min(m_appsSel - rows + 1, n - rows));
+        for (int i = 0; i < rows && first + i < n; ++i)
+        {
+            const int idx = first + i;
+            const RemoteAppWindow& w = wins[static_cast<size_t>(idx)];
+            const float ry = listY + static_cast<float>(i) * lineH;
+            if (idx == m_appsSel)
+            {
+                float selc[4] = { lin[0], lin[1], lin[2], 0.18f };
+                m_prims.AddRectRgba(x0 + pad * 0.5f, ry - 2.0f * dpi,
+                                    boxW - pad, lineH, selc, 0.0f, PrimLayer::OverBlend);
+            }
+            const char* state = (w.flags & 1u) ? "minimized"
+                              : (w.flags & 4u) ? "active"
+                              : (w.flags & 2u) ? "maximized" : "open";
+            // The title came from the remote machine. It was sanitised and
+            // bounded by the X side and bounded again by the parser; it is cut
+            // to the column here so it cannot push the state text off the row.
+            std::string title = w.title.empty() ? std::string("(untitled)") : w.title;
+            if (title.size() > 60)
+                title = title.substr(0, 57) + "...";
+            m_prims.AddText(tx, ry, title, idx == m_appsSel ? 1.0f : 0.7f, m_sampler);
+            const float sw = m_prims.MeasureText(state, m_sampler);
+            m_prims.AddText(x0 + boxW - pad - sw, ry, state, 0.45f, m_sampler);
+        }
+    }
+
+    // The footer is the session's traffic, which is the number that says
+    // whether a window that looks frozen is actually receiving anything.
+    char foot[192];
+    snprintf(foot, sizeof foot,
+             "%u client%s  %u window%s  in %.1f MiB  out %.1f MiB  %u presents%s",
+             r.clients, r.clients == 1 ? "" : "s", r.windows, r.windows == 1 ? "" : "s",
+             static_cast<double>(r.x11In) / 1048576.0,
+             static_cast<double>(r.x11Out) / 1048576.0, r.presents,
+             r.rejected ? "  refused frames" : "");
+    m_prims.AddText(tx, y0 + boxH - pad - lineH, foot, 0.4f, m_sampler);
+    m_prims.AddText(tx, y0 + boxH - pad - lineH * 2.0f,
+                    "Enter show    M minimize    C close    Esc dismiss", 0.35f, m_sampler);
+}
+
 void App::DrawJournal()
 {
     if (!m_jrnOpen)
@@ -11069,6 +11291,39 @@ void App::BuildSshConfig(const amber::ConnectionProfile& p, SshConfig& cfg) cons
             cfg.amberxSkin = amber::ChromeId();
             cfg.x11Trusted = p.x11Trust != 0;
             cfg.x11Clipboard = p.x11Clipboard;
+
+            // ---- Remote GUI (Phase 7) ------------------------------------
+            // The X screen this session gets. Computed here because this is
+            // the process that knows where its own window is; the host is
+            // told a rectangle, not a policy.
+            RECT desk{};
+            if (p.displayMode == 1)
+            {
+                HMONITOR mon = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTOPRIMARY);
+                MONITORINFO mi{ sizeof mi };
+                if (GetMonitorInfoW(mon, &mi))
+                    desk = mi.rcMonitor;
+            }
+            else if (p.displayMode == 2)
+            {
+                HMONITOR mon = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTOPRIMARY);
+                MONITORINFO mi{ sizeof mi };
+                if (GetMonitorInfoW(mon, &mi))
+                    desk = { mi.rcMonitor.left, mi.rcMonitor.top,
+                             mi.rcMonitor.left + p.displayW, mi.rcMonitor.top + p.displayH };
+            }
+            cfg.x11DesktopX = desk.left;
+            cfg.x11DesktopY = desk.top;
+            cfg.x11DesktopW = desk.right - desk.left;
+            cfg.x11DesktopH = desk.bottom - desk.top;
+            // Performance: a repaint ceiling for forwarded windows. Auto and
+            // Quality leave it alone; the other two trade smoothness for the
+            // work this machine does. It is not compression — see the page.
+            cfg.x11PresentCapHz = p.perfMode == 2 ? 60 : p.perfMode == 3 ? 20 : 0;
+            // Window mode: only native windows exist, so anything else is
+            // carried through and reported by the session rather than
+            // silently ignored here.
+            cfg.x11WindowMode = p.windowMode;
         }
         else
         {

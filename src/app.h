@@ -603,6 +603,8 @@ private:
     bool m_jrnOpen = false;
     std::string m_jrnQuery;
     int m_jrnSel = 0;
+    bool m_appsOpen = false;      // the Remote Apps shelf
+    int m_appsSel = 0;
     std::vector<size_t> m_jrnHits;     // indices into m_journal.Entries()
     // The rectangle of whichever overlay panel is open this frame, in pixels.
     // Published to the particle field (which is evicted from it) and used to
@@ -613,6 +615,10 @@ private:
     void SetPanelRect(float x, float y, float w, float h);
 
     void ToggleJournal();
+    // The Remote Apps shelf (AmberX): Ctrl+Shift+G.
+    void ToggleRemoteApps();
+    void DrawRemoteApps();
+    bool RemoteAppsKey(WPARAM vk);
     void FilterJournal();
     bool JournalKey(WPARAM vk);
     void DrawJournal();

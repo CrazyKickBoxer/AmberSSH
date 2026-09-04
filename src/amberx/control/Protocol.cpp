@@ -47,6 +47,8 @@ bool KnownType(uint16_t t)
     case MsgType::SetCookie:
     case MsgType::Shutdown:
     case MsgType::ClipboardText:
+    case MsgType::WindowAction:
+    case MsgType::HostReport:
     case MsgType::ChannelOpen:
     case MsgType::ChannelData:
     case MsgType::ChannelClose:
@@ -67,6 +69,8 @@ bool IsControlOnly(MsgType t)
     case MsgType::SetCookie:
     case MsgType::Shutdown:
     case MsgType::ClipboardText:
+    case MsgType::WindowAction:
+    case MsgType::HostReport:
     case MsgType::HostStatus:
     case MsgType::HostError:
         return true;
@@ -271,6 +275,105 @@ bool ParseHostStatus(const std::vector<uint8_t>& p, uint32_t& openChannels,
     bytesIn = static_cast<uint64_t>(GetU32(p.data() + 4)) |
               (static_cast<uint64_t>(GetU32(p.data() + 8)) << 32);
     cookieSet = GetU32(p.data() + 12) != 0;
+    return true;
+}
+
+std::vector<uint8_t> MakeHostReport(const HostReport& r)
+{
+    std::vector<uint8_t> out;
+    PutU32(out, 1);                                     // layout version
+    PutU32(out, r.clients);
+    PutU32(out, r.windows);
+    PutU32(out, static_cast<uint32_t>(r.pixmapBytes & 0xFFFFFFFFu));
+    PutU32(out, static_cast<uint32_t>(r.pixmapBytes >> 32));
+    PutU32(out, static_cast<uint32_t>(r.x11In & 0xFFFFFFFFu));
+    PutU32(out, static_cast<uint32_t>(r.x11In >> 32));
+    PutU32(out, static_cast<uint32_t>(r.x11Out & 0xFFFFFFFFu));
+    PutU32(out, static_cast<uint32_t>(r.x11Out >> 32));
+    PutU32(out, r.presents);
+    PutU32(out, r.dirtyRects);
+    PutU32(out, r.ipcHighWater);
+    PutU32(out, r.rejected);
+    const uint32_t n = static_cast<uint32_t>(
+        r.windowList.size() > kMaxReportWindows ? kMaxReportWindows : r.windowList.size());
+    PutU32(out, n);
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        const ReportWindow& w = r.windowList[i];
+        PutU32(out, w.xid);
+        PutU32(out, w.flags);
+        const uint32_t len = static_cast<uint32_t>(
+            w.title.size() > kMaxWindowTitle ? kMaxWindowTitle : w.title.size());
+        PutU32(out, len);
+        out.insert(out.end(), w.title.begin(), w.title.begin() + static_cast<ptrdiff_t>(len));
+    }
+    return out;
+}
+
+bool ParseHostReport(const std::vector<uint8_t>& p, HostReport& r)
+{
+    // Fixed head first, then a counted list. Every length is checked against
+    // what is actually left in the buffer before it is used, and the counts
+    // are bounded before anything is reserved.
+    constexpr size_t kHead = 14 * 4;
+    if (p.size() < kHead)
+        return false;
+    if (GetU32(p.data()) != 1)
+        return false;
+    r = HostReport{};
+    r.clients = GetU32(p.data() + 4);
+    r.windows = GetU32(p.data() + 8);
+    r.pixmapBytes = static_cast<uint64_t>(GetU32(p.data() + 12)) |
+                    (static_cast<uint64_t>(GetU32(p.data() + 16)) << 32);
+    r.x11In = static_cast<uint64_t>(GetU32(p.data() + 20)) |
+              (static_cast<uint64_t>(GetU32(p.data() + 24)) << 32);
+    r.x11Out = static_cast<uint64_t>(GetU32(p.data() + 28)) |
+               (static_cast<uint64_t>(GetU32(p.data() + 32)) << 32);
+    r.presents = GetU32(p.data() + 36);
+    r.dirtyRects = GetU32(p.data() + 40);
+    r.ipcHighWater = GetU32(p.data() + 44);
+    r.rejected = GetU32(p.data() + 48);
+    const uint32_t n = GetU32(p.data() + 52);
+    if (n > kMaxReportWindows)
+        return false;
+
+    size_t at = kHead;
+    r.windowList.reserve(n);
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        if (p.size() - at < 12)
+            return false;
+        ReportWindow w;
+        w.xid = GetU32(p.data() + at);
+        w.flags = GetU32(p.data() + at + 4);
+        const uint32_t len = GetU32(p.data() + at + 8);
+        at += 12;
+        if (len > kMaxWindowTitle || p.size() - at < len)
+            return false;
+        w.title.assign(reinterpret_cast<const char*>(p.data() + at), len);
+        at += len;
+        r.windowList.push_back(std::move(w));
+    }
+    return at == p.size();
+}
+
+std::vector<uint8_t> MakeWindowAction(uint32_t xid, WindowAct act)
+{
+    std::vector<uint8_t> out;
+    PutU32(out, xid);
+    PutU32(out, static_cast<uint32_t>(act));
+    return out;
+}
+
+bool ParseWindowAction(const std::vector<uint8_t>& p, uint32_t& xid, WindowAct& act)
+{
+    if (p.size() != 8)
+        return false;
+    const uint32_t a = GetU32(p.data() + 4);
+    if (a > static_cast<uint32_t>(WindowAct::Close))
+        return false;
+    xid = GetU32(p.data());
+    act = static_cast<WindowAct>(a);
     return true;
 }
 

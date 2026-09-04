@@ -60,6 +60,14 @@ public:
         // AmberSSH is the authority — it is the only one of the two that can
         // reach the Windows clipboard — but the host enforces its own copy.
         int clipboardMode = 0;
+        // Phase 7. The X screen this session gets, in Windows desktop
+        // coordinates: all monitors, one monitor, or a fixed size. Computed
+        // by AmberSSH, which is the process that knows where its own window
+        // is; zero width means "the whole virtual desktop", the default.
+        int desktopX = 0, desktopY = 0, desktopW = 0, desktopH = 0;
+        // How often a forwarded window may repaint, in hertz. 0 = uncapped.
+        // This bounds local work; it does not compress the X11 stream.
+        int presentCapHz = 0;
     };
     void Configure(const Launch& l) { m_launch = l; }
 
@@ -81,6 +89,9 @@ public:
     // applied the clipboard policy by the time this is called; the host and
     // the server apply their own copy of it again.
     bool SendClipboard(const std::string& utf8);
+    // Show, minimise or close one forwarded window, from the Remote Apps
+    // shelf. Close asks the application through the X side; it never kills.
+    bool SendWindowAction(uint32_t xid, WindowAct act);
     bool CloseChannel(uint32_t id);
     // Incoming HostStatus / HostError.
     PipeRead Poll(Frame& out, DWORD timeoutMs);

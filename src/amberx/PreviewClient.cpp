@@ -41,6 +41,7 @@ struct XClient
     std::vector<std::vector<uint8_t>> events;   // 32-byte events set aside
     std::vector<std::vector<uint8_t>>* others = nullptr;   // frames for other channels
     std::string* clipboardIn = nullptr;   // where ClipboardText frames land
+    HostReport* reportIn = nullptr;       // where HostReport frames land
     uint32_t root = 0, ridBase = 0, rootW = 0, rootH = 0, rootDepth = 0;
 
     XClient(AmberXController& ctl, Line l, uint32_t channel) : c(ctl), line(std::move(l)), ch(channel) {}
@@ -143,6 +144,8 @@ struct XClient
             }
             else if (r.type == MsgType::ClipboardText && clipboardIn)
                 clipboardIn->assign(r.payload.begin(), r.payload.end());
+            else if (r.type == MsgType::HostReport && reportIn)
+                ParseHostReport(r.payload, *reportIn);
             else if (r.type == MsgType::ChannelClose && r.channel == ch)
                 return false;
         }
@@ -806,6 +809,59 @@ int RunPreviewClient(AmberXController& c, const Line& line)
                 check("RANDR screen resources", false, "no reply");
             }
         }
+    }
+
+    // ---- Phase 7: the report the Remote Apps shelf is drawn from ----------------
+    // The host sends this twice a second on its own. It must find this
+    // client's window, with the title the client set, and the counts must be
+    // the counts — a shelf drawn from a report nobody checks is decoration.
+    {
+        HostReport shelf;
+        x.reportIn = &shelf;
+        const ULONGLONG until = GetTickCount64() + 4000;
+        while (shelf.windowList.empty() && GetTickCount64() < until)
+        {
+            std::vector<uint8_t> probe = { 14, 0, 0, 0 };
+            XClient::put32(probe, x.root);
+            x.send(probe);
+            std::vector<uint8_t> rp;
+            x.reply(x.seq, rp, 400);
+        }
+        const auto it = std::find_if(shelf.windowList.begin(), shelf.windowList.end(),
+                                     [&](const ReportWindow& w) { return w.title == "AmberX preview"; });
+        check("the host reports the window list", it != shelf.windowList.end(),
+              std::to_string(shelf.windowList.size()) + " windows reported");
+        check("the report counts this client and its windows",
+              shelf.clients >= 1 && shelf.windows >= 1,
+              std::to_string(shelf.clients) + " clients, " + std::to_string(shelf.windows) + " X windows");
+
+        // An action from the shelf reaches the window it names. Minimize is
+        // the one to test: it is visible in the native window state, and it
+        // does not need the application to cooperate.
+        if (it != shelf.windowList.end() && frame)
+        {
+            c.SendWindowAction(it->xid, WindowAct::Minimize);
+            bool iconic = false;
+            const ULONGLONG till = GetTickCount64() + 3000;
+            while (!iconic && GetTickCount64() < till)
+            {
+                iconic = IsIconic(frame) != 0;
+                if (!iconic)
+                    Sleep(50);
+            }
+            check("a shelf action minimizes the window it names", iconic);
+            c.SendWindowAction(it->xid, WindowAct::Show);
+            bool restored = false;
+            const ULONGLONG back = GetTickCount64() + 3000;
+            while (!restored && GetTickCount64() < back)
+            {
+                restored = IsIconic(frame) == 0;
+                if (!restored)
+                    Sleep(50);
+            }
+            check("and shows it again", restored);
+        }
+        x.reportIn = nullptr;
     }
 
     // ---- window B: a transient dialog owned by A ----------------------------------

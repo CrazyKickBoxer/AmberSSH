@@ -313,3 +313,104 @@ TEST_CASE("The channel cap is enforced", "[amberx]")
     CHECK(t.Count() == 0);
     CHECK(t.Open(1));
 }
+
+// ---------------------------------------------------------- the host report
+// The report is the one message with a variable-length list in it, which
+// makes it the one message a length bug could be hiding in. Every test here
+// is about what the parser refuses, not what it accepts.
+
+TEST_CASE("A host report survives a round trip with its window list", "[amberx]")
+{
+    HostReport r;
+    r.clients = 3;
+    r.windows = 11;
+    r.pixmapBytes = 5ull * 1024 * 1024;
+    r.x11In = 0x1'0000'0007ull;          // over 32 bits, to catch a truncation
+    r.x11Out = 4242;
+    r.presents = 900;
+    r.dirtyRects = 1800;
+    r.ipcHighWater = 65536;
+    r.rejected = 2;
+    r.windowList.push_back({ 0x200001u, 4u, "xterm" });
+    r.windowList.push_back({ 0x400002u, 1u, "" });
+
+    HostReport back;
+    REQUIRE(ParseHostReport(MakeHostReport(r), back));
+    CHECK(back.clients == 3);
+    CHECK(back.windows == 11);
+    CHECK(back.pixmapBytes == r.pixmapBytes);
+    CHECK(back.x11In == r.x11In);
+    CHECK(back.x11Out == 4242);
+    CHECK(back.presents == 900);
+    CHECK(back.dirtyRects == 1800);
+    CHECK(back.ipcHighWater == 65536);
+    CHECK(back.rejected == 2);
+    REQUIRE(back.windowList.size() == 2);
+    CHECK(back.windowList[0].xid == 0x200001u);
+    CHECK(back.windowList[0].flags == 4u);
+    CHECK(back.windowList[0].title == "xterm");
+    CHECK(back.windowList[1].title.empty());
+}
+
+TEST_CASE("A host report refuses everything that does not add up", "[amberx]")
+{
+    HostReport r;
+    r.windowList.push_back({ 1u, 0u, "one" });
+    std::vector<uint8_t> good = MakeHostReport(r);
+    HostReport out;
+
+    // Truncated anywhere: the head, the row header, the title.
+    for (size_t cut = 1; cut < good.size(); ++cut)
+    {
+        std::vector<uint8_t> shorter(good.begin(), good.begin() + static_cast<ptrdiff_t>(cut));
+        CHECK_FALSE(ParseHostReport(shorter, out));
+    }
+    // Trailing rubbish is refused too: a message that parses and has bytes
+    // left over is not the message that was sent.
+    std::vector<uint8_t> longer = good;
+    longer.push_back(0);
+    CHECK_FALSE(ParseHostReport(longer, out));
+
+    // A layout version this build does not know.
+    std::vector<uint8_t> future = good;
+    future[0] = 9;
+    CHECK_FALSE(ParseHostReport(future, out));
+
+    // A window count larger than the cap, with no rows behind it: the count
+    // must be refused before anything is reserved for it.
+    std::vector<uint8_t> liar = good;
+    liar[52] = 0xff; liar[53] = 0xff; liar[54] = 0xff; liar[55] = 0xff;
+    CHECK_FALSE(ParseHostReport(liar, out));
+}
+
+TEST_CASE("A host report bounds what it will carry", "[amberx]")
+{
+    HostReport r;
+    for (size_t i = 0; i < kMaxReportWindows + 10; ++i)
+        r.windowList.push_back({ static_cast<uint32_t>(i + 1), 0u, "w" });
+    r.windowList[0].title = std::string(kMaxWindowTitle + 50, 'x');
+
+    HostReport back;
+    REQUIRE(ParseHostReport(MakeHostReport(r), back));
+    CHECK(back.windowList.size() == kMaxReportWindows);
+    CHECK(back.windowList[0].title.size() == kMaxWindowTitle);
+}
+
+TEST_CASE("A window action is a window and one of three verbs", "[amberx]")
+{
+    uint32_t xid = 0;
+    WindowAct act = WindowAct::Show;
+    REQUIRE(ParseWindowAction(MakeWindowAction(0x123u, WindowAct::Close), xid, act));
+    CHECK(xid == 0x123u);
+    CHECK(act == WindowAct::Close);
+
+    // A verb this build does not have is refused rather than clamped: an
+    // action the far end meant and this end guessed at is worse than none.
+    std::vector<uint8_t> bad = MakeWindowAction(1u, WindowAct::Show);
+    bad[4] = 7;
+    CHECK_FALSE(ParseWindowAction(bad, xid, act));
+    CHECK_FALSE(ParseWindowAction({}, xid, act));
+    std::vector<uint8_t> shortAct = MakeWindowAction(1u, WindowAct::Show);
+    shortAct.pop_back();
+    CHECK_FALSE(ParseWindowAction(shortAct, xid, act));
+}

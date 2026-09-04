@@ -286,6 +286,15 @@ amber_limits_screen_init(ScreenPtr pScreen)
 }
 
 void
+amber_limits_counts(int *windows, long long *pixmapBytes)
+{
+    if (windows)
+        *windows = windowsTotal;
+    if (pixmapBytes)
+        *pixmapBytes = pixmapBytesTotal;
+}
+
+void
 amber_limits_os_init(void)
 {
     /* BIG-REQUESTS: the largest request, in 4-byte units */
