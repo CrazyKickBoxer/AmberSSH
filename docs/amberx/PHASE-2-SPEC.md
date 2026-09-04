@@ -1,5 +1,14 @@
 # AmberX — Phase 2 specification, as written by the linker
 
+> **Addendum, 2026-09-04 — executed.** The plan below was carried out and the
+> gate passed; PHASE-2-GATE.md is the report. Where reality differed: §A lost
+> `xsha1.c` (its CryptoAPI path pulls `<windows.h>` into an X unit) and
+> `strcasecmp.c` (BSD types), both trivially re-provided; `os/log.c` and the
+> timer half of `WaitFor.c` were rewritten rather than retained, the timer
+> list carried over with attribution; §C gained a keymap layer because
+> `xkb/ddxLoad.c` spawns `xkbcomp` and was excluded; §E gained zlib, because
+> libXfont2's built-in fonts are gzipped. The final unresolved count was zero.
+
 Phase 2 is "a standalone minimal AmberX server". Rather than describe it from
 the prompt, this document describes it from the only source that cannot be
 wrong about what is missing: the linker. `run-link-probe.sh` archives the 228

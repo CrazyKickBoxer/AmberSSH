@@ -204,6 +204,16 @@ if(MSVC)
     target_compile_options(AmberXHost PRIVATE /W3 /utf-8 /EHsc /MP)
 endif()
 target_link_libraries(AmberXHost PRIVATE bcrypt advapi32)
+# With the X.Org core built (-DAMBERX_CORE=ON), the host carries the server:
+# the Windows backend joins the target and the four static libraries link in.
+# Without it, main.cpp compiles to the transport-only stub, as before.
+if(AMBERX_CORE)
+    target_sources(AmberXHost PRIVATE src/amberx/host/WinBackend.cpp)
+    target_compile_definitions(AmberXHost PRIVATE AMBERX_HAVE_SERVER)
+    target_link_libraries(AmberXHost PRIVATE AmberXServer AmberXCore AmberXPixman AmberXFont gdi32 user32)
+    # a linker map, so an exception offset in the host log resolves to a symbol
+    target_link_options(AmberXHost PRIVATE /MAP)
+endif()
 # Built alongside AmberSSH.exe so the controller finds it next to itself.
 add_dependencies(AmberSSH AmberXHost)
 

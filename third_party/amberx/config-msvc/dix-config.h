@@ -87,6 +87,10 @@ int ffs(int i);
 #define PRESENT 1
 #define XCSECURITY 1
 #define XACE 1
+/* XREGISTRY names requests and errors for XACE audit messages. dix/registry.c
+ * compiles regardless of this macro in 21.1 and looks for protocol.txt under
+ * SERVER_MISC_CONFIG_PATH at start; with no such file it logs one warning and
+ * reports names as <unknown>, which is acceptable: no path is compiled in. */
 #define XREGISTRY 1
 #define MITSHM 0
 

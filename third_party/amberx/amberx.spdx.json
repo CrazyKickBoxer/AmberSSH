@@ -13,7 +13,7 @@
     {
       "SPDXID": "SPDXRef-AmberX",
       "name": "AmberX",
-      "versionInfo": "0.0-phase1",
+      "versionInfo": "0.0-phase2",
       "supplier": "Organization: AmberSSH",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
@@ -32,7 +32,7 @@
       "licenseConcluded": "MIT",
       "licenseDeclared": "MIT",
       "copyrightText": "See COPYING in the pinned tree; reproduced in THIRD-PARTY-NOTICES.md",
-      "comment": "Subtrees compiled: dix, mi, fb, miext/damage, miext/sync (excluding misyncshm.c), render, randr, xfixes, damageext, composite, present, xkb, Xi, and the Xext subset in LICENSE-MATRIX.md. hw/, glx/, glamor/, dri3/, os/ (platform files) not compiled."
+      "comment": "Subtrees compiled: dix, mi, fb, miext/damage, miext/sync (excluding misyncshm.c), render, randr, xfixes, damageext, composite, present, xkb (excluding ddxLoad.c), Xi, the Xext subset in LICENSE-MATRIX.md, and the os/ subset mitauth oscolor xprintf strlcpy strlcat strndup reallocarray timingsafe_memcmp. hw/, glx/, glamor/, dri3/ and the os/ platform files are not compiled."
     },
     {
       "SPDXID": "SPDXRef-xorgproto",
@@ -56,7 +56,7 @@
       "licenseConcluded": "MIT",
       "licenseDeclared": "MIT",
       "copyrightText": "See COPYING; reproduced in THIRD-PARTY-NOTICES.md",
-      "comment": "Headers used by the compile gate; the library itself is not yet built."
+      "comment": "The portable C paths (28 files) compiled as AmberXPixman; SIMD files not compiled."
     },
     {
       "SPDXID": "SPDXRef-libXfont2",
@@ -81,6 +81,18 @@
       "licenseDeclared": "MIT",
       "copyrightText": "See COPYING; reproduced in THIRD-PARTY-NOTICES.md",
       "comment": "Only X11/extensions/XKMformat.h is referenced at Phase 1."
+    },
+    {
+      "SPDXID": "SPDXRef-zlib",
+      "name": "zlib",
+      "versionInfo": "1.3.2",
+      "supplier": "Organization: Jean-loup Gailly and Mark Adler",
+      "downloadLocation": "https://github.com/madler/zlib (via vcpkg port zlib, triplet x64-windows)",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Zlib",
+      "licenseDeclared": "Zlib",
+      "copyrightText": "(C) 1995-2026 Jean-loup Gailly and Mark Adler; reproduced in THIRD-PARTY-NOTICES.md",
+      "comment": "Required: libXfont2 stores its built-in fonts gzip-compressed. Linked as z.dll from the vcpkg install, the same binary AmberSSH ships for libssh2."
     }
   ],
   "relationships": [

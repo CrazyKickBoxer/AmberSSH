@@ -25,6 +25,14 @@ done
     IFS='|' read -r title file <<<"$spec"
     echo "---"; echo; echo "## $title"; echo; echo '```'; cat "$file"; echo '```'; echo
   done
+  # zlib is consumed from vcpkg, not a pinned tree; its licence text comes from
+  # the port. AMBERX_ZLIB_COPYRIGHT overrides the search.
+  z="${AMBERX_ZLIB_COPYRIGHT:-$(ls ../../build*/vcpkg_installed/x64-windows/share/zlib/copyright 2>/dev/null | head -1)}"
+  if [ -n "$z" ] && [ -f "$z" ]; then
+    echo "---"; echo; echo "## zlib 1.3.2 (vcpkg)"; echo; echo "Required by libXfont2 for its gzip-compressed built-in fonts."; echo; echo '```'; cat "$z"; echo '```'; echo
+  else
+    echo "zlib copyright file not found; set AMBERX_ZLIB_COPYRIGHT" >&2; exit 1
+  fi
   echo "---"; echo; echo "## xorgproto 2025.1 — per-protocol licences"; echo
   echo "xorgproto carries one licence file per protocol. The ones for protocols in"
   echo "AmberX's scope are reproduced; GLX (SGI Free Software License B) is excluded"

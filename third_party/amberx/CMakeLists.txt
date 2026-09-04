@@ -58,7 +58,7 @@ endforeach()
 include(${AMBERX_ROOT}/AmberXCore-sources.cmake)
 set(AMBERX_APPROVED_DIRS dix mi fb miext/damage miext/sync render randr xfixes
                          damageext composite present xkb Xi Xext)
-set(AMBERX_EXCLUDED_FILES miext/sync/misyncshm.c)
+set(AMBERX_EXCLUDED_FILES miext/sync/misyncshm.c xkb/ddxLoad.c)
 set(AMBERX_XEXT_SUBSET Xext/bigreq.c Xext/shape.c Xext/sync.c Xext/xcmisc.c
                        Xext/xtest.c Xext/security.c Xext/hashtable.c Xext/geext.c
                        Xext/xace.c)
@@ -120,4 +120,128 @@ if(MSVC)
     # /W3 here, unlike the probe's /w: the probe measured errors; the build
     # is where warnings get counted and, eventually, fixed.
     target_compile_options(AmberXCore PRIVATE /W3 /utf-8 /TC)
+endif()
+
+# ---- pixman ---------------------------------------------------------------------
+# The portable C paths only. pixman's SIMD files need per-file /arch flags and
+# a runtime dispatcher; that is an optimisation for a later phase, and until it
+# is measured the general implementation is the honest baseline. pixman is
+# MSVC-aware natively (thread-local storage, force-inline) and needs no
+# generated config when HAVE_CONFIG_H is left undefined.
+set(AMBERX_PIXMAN_DIR ${AMBERX_UPSTREAM}/pixman/pixman)
+set(AMBERX_PIXMAN_SOURCES
+    pixman.c pixman-access.c pixman-access-accessors.c pixman-bits-image.c
+    pixman-combine32.c pixman-combine-float.c pixman-conical-gradient.c
+    pixman-edge.c pixman-edge-accessors.c pixman-fast-path.c pixman-filter.c
+    pixman-general.c pixman-glyph.c pixman-gradient-walker.c pixman-image.c
+    pixman-implementation.c pixman-linear-gradient.c pixman-matrix.c
+    pixman-noop.c pixman-radial-gradient.c pixman-region16.c pixman-region32.c
+    pixman-region64f.c pixman-solid-fill.c pixman-timer.c pixman-trap.c
+    pixman-utils.c pixman-x86.c pixman-arm.c pixman-mips.c pixman-ppc.c pixman-riscv.c)
+list(TRANSFORM AMBERX_PIXMAN_SOURCES PREPEND ${AMBERX_PIXMAN_DIR}/)
+add_library(AmberXPixman STATIC ${AMBERX_PIXMAN_SOURCES})
+target_include_directories(AmberXPixman PUBLIC ${AMBERX_PIXMAN_DIR} ${AMBERX_ROOT}/config-msvc/pixman)
+target_compile_definitions(AmberXPixman PRIVATE PACKAGE="pixman" _CRT_SECURE_NO_WARNINGS)
+set_target_properties(AmberXPixman PROPERTIES C_STANDARD 11 C_EXTENSIONS OFF)
+if(MSVC)
+    target_compile_options(AmberXPixman PRIVATE /W3 /utf-8 /TC)
+endif()
+
+# ---- libXfont2 ---------------------------------------------------------------------
+# The subset the core actually calls: pattern cache, font names, glyph
+# extents, and the built-in "fixed"/"cursor" fonts the server cannot start
+# without. No FreeType (a dependency and a second licence), no font-server
+# client (sockets), no compressed font files (zlib/bzip2), no catalogue
+# directories (realpath). Every excluded piece is out for scope, not licence.
+set(AMBERX_XFONT_DIR ${AMBERX_UPSTREAM}/libxfont/src)
+set(AMBERX_XFONT_SOURCES
+    fontfile/bitsource.c fontfile/bufio.c fontfile/decompress.c fontfile/defaults.c fontfile/dirfile.c fontfile/gunzip.c
+    fontfile/fileio.c fontfile/filewr.c fontfile/fontdir.c fontfile/fontfile.c
+    fontfile/fontscale.c fontfile/register.c fontfile/renderers.c
+    bitmap/bdfread.c bitmap/bdfutils.c bitmap/bitmap.c bitmap/bitmapfunc.c
+    bitmap/bitmaputil.c bitmap/bitscale.c bitmap/fontink.c bitmap/pcfread.c
+    bitmap/pcfwrite.c bitmap/snfread.c
+    builtins/dir.c builtins/file.c builtins/fonts.c builtins/fpe.c builtins/render.c
+    util/fontaccel.c util/fontnames.c util/fontutil.c util/fontxlfd.c
+    util/format.c util/miscutil.c util/patcache.c util/private.c util/reallocarray.c
+    util/utilbitmap.c
+    stubs/atom.c stubs/libxfontstubs.c)
+list(TRANSFORM AMBERX_XFONT_SOURCES PREPEND ${AMBERX_XFONT_DIR}/)
+add_library(AmberXFont STATIC ${AMBERX_XFONT_SOURCES})
+target_include_directories(AmberXFont
+    PUBLIC  ${AMBERX_UPSTREAM}/libxfont/include ${AMBERX_UPSTREAM}/xorgproto/include
+    PRIVATE ${AMBERX_UPSTREAM}/libxfont ${AMBERX_XFONT_DIR} ${AMBERX_ROOT}/config-msvc/compat)
+# strlcpy/strlcat are the server's os/ definitions; reallocarray is libXfont2's own
+# (the server's is xreallocarray). Both declared by src/util/replace.h.
+target_compile_definitions(AmberXFont PRIVATE
+    XFONT_FONTFILE XFONT_BITMAP XFONT_BUILTINS XFONT_PCFFORMAT XFONT_SNFFORMAT
+    XFONT_BDFFORMAT X_GZIP_FONT_COMPRESSION
+    # O_NOFOLLOW guards a symlink race on POSIX open(); the CRT open() has no
+    # such flag. Defined away rather than shimmed: the only directories this
+    # server ever opens are ones it was launched with, never one a client names.
+    O_NOFOLLOW=0
+    _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+# The built-in fonts (fixed, cursor) are stored gzip-compressed inside
+# libXfont2 itself, so zlib is a requirement of the runtime closure, not an
+# option. It is the same zlib AmberSSH already ships for libssh2.
+find_package(ZLIB REQUIRED)
+target_link_libraries(AmberXFont PUBLIC ZLIB::ZLIB)
+set_target_properties(AmberXFont PROPERTIES C_STANDARD 11 C_EXTENSIONS OFF)
+if(MSVC)
+    target_compile_options(AmberXFont PRIVATE /W3 /utf-8 /TC /FI${AMBERX_ROOT}/config-msvc/xfont-compat.h)
+endif()
+
+# ---- AmberXServer: AmberX's own os and DDX layers, plus retained os/ files ----
+# The X side of AmberXHost (docs/amberx/PHASE-2-SPEC.md). C, compiled against
+# the X headers, never against <windows.h>: everything it needs from Windows
+# goes through src/amberx/server/amberwin.h.
+#
+# The retained os/ files are the pure-C ones the port keeps unmodified. This
+# list is its own allowlist: an os/ file not named here is not compiled, and
+# the licence matrix records os/ as "approved — subset" on exactly this basis.
+set(AMBERX_OS_RETAINED
+    os/mitauth.c os/oscolor.c os/xprintf.c os/strlcpy.c os/strlcat.c
+    os/strndup.c os/reallocarray.c os/timingsafe_memcmp.c)
+# Not retained: os/xsha1.c (its CryptoAPI path drags <windows.h> into an X
+# translation unit; x_sha1_* is implemented on the Windows side over BCrypt)
+# and os/strcasecmp.c (BSD u_char; two one-line CRT mappings in os_misc.c).
+list(TRANSFORM AMBERX_OS_RETAINED PREPEND ${AMBERX_UPSTREAM}/xserver/)
+set(AMBERX_SERVER_DIR ${CMAKE_SOURCE_DIR}/src/amberx/server)
+add_library(AmberXServer STATIC
+    ${AMBERX_SERVER_DIR}/os_alloc.c
+    ${AMBERX_SERVER_DIR}/os_log.c
+    ${AMBERX_SERVER_DIR}/os_timer.c
+    ${AMBERX_SERVER_DIR}/os_auth.c
+    ${AMBERX_SERVER_DIR}/os_misc.c
+    ${AMBERX_SERVER_DIR}/os_connection.c
+    ${AMBERX_SERVER_DIR}/ddx_screen.c
+    ${AMBERX_SERVER_DIR}/ddx_input.c
+    ${AMBERX_SERVER_DIR}/ddx_keymap.c
+    ${AMBERX_SERVER_DIR}/server_main.c
+    ${AMBERX_OS_RETAINED})
+target_include_directories(AmberXServer PRIVATE
+    ${AMBERX_SERVER_DIR}
+    ${AMBERX_UPSTREAM}/xserver/os)
+# the same view of the tree the core has
+get_target_property(_core_inc AmberXCore INCLUDE_DIRECTORIES)
+target_include_directories(AmberXServer PRIVATE ${_core_inc})
+target_compile_definitions(AmberXServer PRIVATE
+    HAVE_DIX_CONFIG_H _USE_MATH_DEFINES _CRT_SECURE_NO_WARNINGS
+    _CRT_NONSTDC_NO_WARNINGS)
+set_target_properties(AmberXServer PROPERTIES C_STANDARD 11 C_EXTENSIONS OFF)
+if(MSVC)
+    target_compile_options(AmberXServer PRIVATE /W3 /utf-8 /TC)
+endif()
+
+# ---- AmberXFontProbe: opens the built-in fonts through libXfont2 alone -----
+add_executable(AmberXFontProbe
+    ${CMAKE_SOURCE_DIR}/tests/amberx/FontProbe.c
+    ${AMBERX_UPSTREAM}/xserver/os/strlcpy.c
+    ${AMBERX_UPSTREAM}/xserver/os/strlcat.c)
+target_include_directories(AmberXFontProbe PRIVATE ${_core_inc} ${AMBERX_UPSTREAM}/libxfont/include)
+target_compile_definitions(AmberXFontProbe PRIVATE HAVE_DIX_CONFIG_H _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+target_link_libraries(AmberXFontProbe PRIVATE AmberXFont ZLIB::ZLIB)
+set_target_properties(AmberXFontProbe PROPERTIES C_STANDARD 11 C_EXTENSIONS OFF)
+if(MSVC)
+    target_compile_options(AmberXFontProbe PRIVATE /W3 /utf-8 /TC)
 endif()

@@ -1,11 +1,10 @@
-// AmberXHost — the isolated per-session process that will one day contain
-// the X server. Today it contains the transport: it proves the secret, runs
-// the handshake, tracks channels, and reports counts.
+// AmberXHost — the isolated per-session process that contains the X server.
 //
-// There is no X11 in this file and it does not pretend otherwise. What it
-// establishes is everything around the server — the process boundary, the
-// authenticated pipe, the channel bookkeeping and the lifetime rules — so
-// that when a server core is dropped in, the only new thing is the server.
+// This file establishes everything around the server — the process boundary,
+// the authenticated pipe, the lifetime rules — and then hands over. With the
+// X.Org core built in (AMBERX_HAVE_SERVER), the Windows backend takes the
+// pipe and runs the server on its own thread; without it, the loop below
+// counts frames so the transport can be exercised on its own.
 //
 // Rules this process keeps regardless of what it grows into:
 //   * it never logs a cookie, a nonce, a secret or a byte of channel data;
@@ -22,6 +21,9 @@
 #include "../control/Handshake.h"
 #include "../control/Pipe.h"
 #include "../control/Protocol.h"
+#ifdef AMBERX_HAVE_SERVER
+#include "WinBackend.h"
+#endif
 
 using namespace amber::amberx;
 
@@ -33,7 +35,22 @@ struct Args
     std::wstring pipe;
     HANDLE secretHandle = nullptr;
     DWORD parentPid = 0;
+    int width = 1280;
+    int height = 800;
+    uint32_t display = 0;
+    std::string keymap;     // an .xkm path, or empty for the built-in map
 };
+
+std::string Narrow(const std::wstring& w)
+{
+    if (w.empty())
+        return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string s(static_cast<size_t>(n > 0 ? n - 1 : 0), '\0');
+    if (n > 1)
+        WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, s.data(), n, nullptr, nullptr);
+    return s;
+}
 
 bool ParseArgs(int argc, wchar_t** argv, Args& a)
 {
@@ -47,9 +64,20 @@ bool ParseArgs(int argc, wchar_t** argv, Args& a)
             a.secretHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(_wcstoui64(v.c_str(), nullptr, 10)));
         else if (k == L"--parent")
             a.parentPid = static_cast<DWORD>(wcstoul(v.c_str(), nullptr, 10));
+        else if (k == L"--geometry")
+        {
+            if (swscanf_s(v.c_str(), L"%dx%d", &a.width, &a.height) != 2)
+                return false;
+        }
+        else if (k == L"--display")
+            a.display = static_cast<uint32_t>(wcstoul(v.c_str(), nullptr, 10));
+        else if (k == L"--keymap")
+            a.keymap = Narrow(v);
         else
             return false;
     }
+    if (a.width < 64 || a.height < 64 || a.width > 16384 || a.height > 16384)
+        return false;
     return !a.pipe.empty() && a.secretHandle && a.parentPid;
 }
 
@@ -76,6 +104,17 @@ bool ParentGone(HANDLE parent)
     return parent && WaitForSingleObject(parent, 0) == WAIT_OBJECT_0;
 }
 
+// Ends the process when the parent goes away, even while the server is busy
+// or blocked: a second line of defence behind the Job Object.
+DWORD WINAPI ParentWatch(LPVOID p)
+{
+    HANDLE parent = static_cast<HANDLE>(p);
+    if (parent)
+        WaitForSingleObject(parent, INFINITE);
+    ExitProcess(0);
+}
+
+#ifndef AMBERX_HAVE_SERVER
 bool SendStatus(FramedPipe& p, const ChannelTable& t, uint64_t bytesIn, bool cookieSet)
 {
     Frame f;
@@ -93,11 +132,42 @@ bool SendError(FramedPipe& p, const char* what)
     f.payload = MakeHostError(what);   // a fixed description, never an echo
     return p.WriteFrame(f);
 }
+#endif
 
 } // namespace
 
+// The job's DIE_ON_UNHANDLED_EXCEPTION ends the process without a dialog;
+// this runs first and leaves one line in the log saying where. Nothing here
+// touches the heap or any server state.
+LONG WINAPI CrashLine(EXCEPTION_POINTERS* ep)
+{
+    const auto* r = ep ? ep->ExceptionRecord : nullptr;
+    if (r)
+    {
+        HMODULE mod = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           static_cast<LPCWSTR>(r->ExceptionAddress), &mod);
+        wchar_t name[MAX_PATH] = L"?";
+        if (mod)
+            GetModuleFileNameW(mod, name, MAX_PATH);
+        const uintptr_t off = reinterpret_cast<uintptr_t>(r->ExceptionAddress) - reinterpret_cast<uintptr_t>(mod);
+        fprintf(stderr, "AmberXHost: unhandled exception 0x%08lx at %ls+0x%llx", r->ExceptionCode, name,
+                static_cast<unsigned long long>(off));
+        if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2)
+            fprintf(stderr, " (%s 0x%llx)", r->ExceptionInformation[0] ? "write" : "read",
+                    static_cast<unsigned long long>(r->ExceptionInformation[1]));
+        fputc('\n', stderr);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 int wmain(int argc, wchar_t** argv)
 {
+    SetUnhandledExceptionFilter(CrashLine);
+    // An X server's pixels are the pixels: without this, a scaled desktop
+    // makes Windows render the display window enlarged and blurred, and
+    // divides every mouse coordinate in its queue by the scale factor.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     Args a;
     if (!ParseArgs(argc, argv, a))
     {
@@ -138,7 +208,19 @@ int wmain(int argc, wchar_t** argv)
             return 70;
     }
 
-    // ---- main loop: the stub where the X server goes -------------------
+    if (parent)
+        CloseHandle(CreateThread(nullptr, 0, ParentWatch, parent, 0, nullptr));
+
+#ifdef AMBERX_HAVE_SERVER
+    // ---- the server -------------------------------------------------------
+    if (!BackendInit(pipe, a.width, a.height, a.display, a.keymap, err))
+    {
+        fprintf(stderr, "AmberXHost: %s\n", err.c_str());
+        return 74;
+    }
+    return BackendRun();
+#else
+    // ---- transport-only loop: counts frames, contains no X11 --------------
     ChannelTable channels;
     uint64_t bytesIn = 0;
     bool cookieSet = false;
@@ -197,4 +279,5 @@ int wmain(int argc, wchar_t** argv)
             return 72;
         }
     }
+#endif
 }

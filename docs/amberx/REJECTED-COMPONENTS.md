@@ -19,18 +19,24 @@ was looked at and left out.
 | `Xext/panoramiX*.c` (Xinerama) | present, not built | Multi-monitor is done through RANDR, not Xinerama. | scope |
 | `Xext/dpms.c`, `Xext/saver.c`, `Xext/xres.c`, `Xext/xf86bigfont.c` | present, not built | Not needed for the milestone. | scope |
 | `record/`, `dbe/`, `Xext/xselinux*` | present, not built | Not needed; XSELinux is Linux-only. | scope |
-| `os/` platform files — `connection.c`, `xstrans.c`, `access.c`, `xdmcp.c`, `xdmauth.c`, `rpcauth.c`, `busfault.c`, `backtrace.c`, `inputthread.c`, `ospoll.c`, `xserver_poll.c`, `WaitFor.c` | present, not built in the probe | The POSIX layer: sockets, signals, poll, DMCP, credentials. This is what the Windows port *replaces*, and it is where the survey found the Unix headers concentrated. Which of `os/`'s pure-C files (`xprintf.c`, `log.c`, `utils.c`, the `strl*`/`strndup` shims) are retained is decided in Phase 2. | replaced by AmberWinDDX |
-| `xkb/` keymap *compilation* (`xkbcomp` invocation) | present | The server shells out to `xkbcomp`; AmberX may not spawn processes (Job Object limit). Keymap delivery needs its own design. | needs design |
+| `os/` platform files — `connection.c`, `io.c`, `access.c`, `client.c`, `osinit.c`, `utils.c`, `log.c`, `auth.c`, `WaitFor.c`, `xstrans.c`, `xdmcp.c`, `xdmauth.c`, `rpcauth.c`, `busfault.c`, `backtrace.c`, `inputthread.c`, `ospoll.c`, `xserver_poll.c` | present, not built | The POSIX layer: sockets, signals, poll, XDMCP, credentials, an auth file, a host list. Replaced by `src/amberx/server/os_*.c` (Phase 2), which is smaller because there is nothing to listen on. `ReadRequestFromClient`'s framing and `WriteToClient`'s coalescing were carried over from `io.c` (MIT) with the socket calls replaced; that derivation is stated in the file. | replaced by AmberWinOS |
+| `os/xsha1.c` | present, not built | Its CryptoAPI backend includes `<windows.h>` through `X11/Xwindows.h` inside an X translation unit, and X's `#define None` breaks `winnt.h`. `x_sha1_*` is implemented on the Windows side over BCrypt instead. | port rule (no `<windows.h>` in X units) |
+| `os/strcasecmp.c` | present, not built | BSD `u_char`. Two one-line CRT mappings in `os_misc.c`. | trivial |
+| `xkb/ddxLoad.c` | present, **excluded by the allowlist gate** | Compiles a keymap by spawning `xkbcomp`; the host cannot spawn (Job Object limit of one process) and must not. Replaced by `src/amberx/server/ddx_keymap.c`: an `.xkm` file read with the server's own `XkmReadFile`, or a built-in US map constructed directly in `XkbDesc` structures. `XkbCompileKeymapFromString` is refused. | policy |
+| libXfont2 `FreeType/` | present, not built | Needs FreeType, a dependency and a further licence, for scalable fonts. The built-in bitmap fonts are all the core needs to start; scalable fonts are a later decision. | scope |
+| libXfont2 `fc/` (font-server client) | present, not built | Sockets to a font server. AmberX opens no connections. | prompt rule |
+| libXfont2 `fontfile/catalogue.c`, `util/realpath.c` | present, not built | Font catalogue directories via `readlink`/`realpath`. Not needed. | scope |
+| libXfont2 `fontfile/bunzip2.c` | present, not built | bzip2-compressed font files; would add libbz2. gzip **is** built (`gunzip.c` + zlib) because the built-in fonts are stored gzipped. | scope |
+| pixman SIMD (`pixman-mmx.c`, `-sse2.c`, `-ssse3.c`, and the ARM/MIPS/PPC/RISC-V files' fast paths) | present, dispatchers compiled without `USE_*` | Per-file `/arch` flags and a runtime CPU dispatcher: an optimisation to measure in a later phase. The portable C paths are the baseline. | performance, later |
 | **meson build system** | present, not used | AmberSSH builds with CMake; the probe drives `cl.exe` directly and Phase 2 will add a CMake target over the approved file list. meson itself is Apache-2.0 and would be fine to use; it is a toolchain choice, not a licence one. | toolchain |
 | Anything from Stack Overflow, gists, forums | — | Provenance rule. Nothing of the kind was consulted or copied. | provenance rule |
 
-## Not rejected, but not yet accepted
+## The `os/` decision (Phase 2)
 
-`os/` as a whole is neither approved nor rejected. The probe (PHASE-1-GATE.md)
-compiled all 228 allowlisted files **without** `os/`, so the core does not
-need it to compile — but it needs it to *link*: every `os_*` symbol, plus the
-POSIX calls behind the six shim headers, is unresolved. Which of `os/`'s
-files are pure C and can be retained (`xprintf.c`, `log.c`, `utils.c`, the
-`strl*`/`strndup`/`reallocarray`/`timingsafe_memcmp` shims) versus replaced
-by AmberWinDDX is a Phase 2 decision, made from the linker's unresolved list.
-It stays "needs review" in `LICENSE-MATRIX.md` until then.
+Made from the linker's unresolved list (PHASE-2-SPEC.md). **Retained,
+unmodified**: `mitauth.c`, `oscolor.c`, `xprintf.c`, `strlcpy.c`,
+`strlcat.c`, `strndup.c`, `reallocarray.c`, `timingsafe_memcmp.c` — pure C
+with no platform in them. **Replaced** by `src/amberx/server/`: everything
+that talks to sockets, signals, files, processes or credentials, listed in
+the table above. The retained set is its own allowlist in
+`third_party/amberx/CMakeLists.txt` (`AMBERX_OS_RETAINED`).

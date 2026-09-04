@@ -38,14 +38,16 @@ outside `hw/`**, and `hw/` is not a candidate.
 | xserver `Xi/` | 21.1.24 | MIT / X11 | preserve headers; attribute | no | **approved** |
 | xserver `Xext/` | 21.1.24 | MIT / X11 | preserve headers; attribute | no | **approved — subset** (see below) |
 | xserver `present/` | 21.1.24 | MIT (Keith Packard form) | preserve headers; attribute | no | **approved** |
-| xserver `os/` | 21.1.24 | MIT / X11 | preserve headers; attribute | no | **needs review** — platform layer; most files are replaced by AmberWinDDX, the retained subset is not yet chosen |
+| xserver `os/` | 21.1.24 | MIT / X11 | preserve headers; attribute | no | **approved — subset**: `mitauth.c oscolor.c xprintf.c strlcpy.c strlcat.c strndup.c reallocarray.c timingsafe_memcmp.c` (pure C, compiled unmodified into AmberXServer). Everything else in `os/` is replaced by `src/amberx/server/` — see REJECTED-COMPONENTS.md |
 | xserver `miext/damage`, `miext/sync` | 21.1.24 | MIT | preserve headers; attribute | no | **approved** |
 | **xorgproto** `include/` | 2025.1 | MIT variants, per-proto `COPYING-*` | preserve; attribute | no | **approved — subset**: every proto used must have its `COPYING-*` in the notice bundle |
 | xorgproto `glxproto` | 2025.1 | SGI Free Software License B 2.0 | preserve | no | **rejected — out of scope** (GLX is not a first-milestone feature; see REJECTED-COMPONENTS.md) |
-| **pixman** | 0.46.4 | MIT | preserve `COPYING`; attribute | no | **approved** |
-| **libXfont2** (headers) | 2.0.9 | MIT (Red Hat / Oracle form) | preserve `COPYING`; attribute | no | **approved — headers**; compiling its sources is a Phase 2 decision |
+| **pixman** | 0.46.4 | MIT | preserve `COPYING`; attribute | no | **approved — compiled**: the portable C paths (28 files) as `AmberXPixman`; the SIMD files are not compiled (see REJECTED-COMPONENTS.md) |
+| **libXfont2** | 2.0.9 | MIT (Red Hat / Oracle form) | preserve `COPYING`; attribute | no | **approved — subset**: `fontfile/` (less `catalogue.c`, `bunzip2.c`), `bitmap/`, `builtins/`, `util/`, `stubs/` as `AmberXFont`; no FreeType, no font-server client |
 | **libxkbfile** (headers) | 1.1.3 | MIT (Silicon Graphics form) | preserve `COPYING`; attribute | no | **approved — headers**; only `XKMformat.h` is referenced |
+| **zlib** | 1.3.2 (vcpkg) | zlib | preserve licence text | no | **approved — required**: libXfont2's built-in `fixed` and `cursor` fonts are stored gzip-compressed inside the library, so `fontfile/gunzip.c` and zlib are in the runtime closure. Same zlib AmberSSH already ships for libssh2 |
 | xserver `miext/sync/misyncshm.c` | 21.1.24 | MIT | — | no | **rejected — scope**: the MIT-SHM fence path; MIT-SHM is off by policy |
+| xserver `xkb/ddxLoad.c` | 21.1.24 | MIT | — | no | **rejected — policy**: spawns `xkbcomp`; the host may not spawn. Replaced by `src/amberx/server/ddx_keymap.c` |
 | **MSVC / Windows SDK** | 14.44 | proprietary, redistributable runtime | none in source | — | approved by existing AmberSSH policy |
 
 ### `Xext/` subset
@@ -82,12 +84,13 @@ recorded here so that determination is visible rather than implicit.
 
 ## Build coverage
 
-Every row marked **approved** above is compiled by the `AmberXCore` CMake
-target under MSVC — 229 files, 0 errors at `/W3`, Release — with no upstream
-file modified (PHASE-1-GATE.md). Approval here therefore means two things at
-once: the licence is on the allowlist, *and* the file has been shown to
-compile with the approved toolchain. Rows marked "headers" or "needs review"
-are not compiled.
+Every row marked **approved** above is compiled by a CMake target under
+MSVC — `AmberXCore` (228 files), `AmberXServer` (the `os/` subset),
+`AmberXPixman` and `AmberXFont` — 0 errors at `/W3`, Release, with no
+upstream file modified (PHASE-1-GATE.md, PHASE-2-GATE.md). Approval here
+therefore means two things at once: the licence is on the allowlist, *and*
+the file has been shown to compile with the approved toolchain and to link
+and run in AmberXHost. Rows marked "headers" are not compiled.
 
 ## How the gate is enforced
 

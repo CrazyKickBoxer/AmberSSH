@@ -214,7 +214,6 @@ set(AMBERX_CORE_SOURCES
     ${AMBERX_UPSTREAM}/xserver/xkb/ddxCtrls.c
     ${AMBERX_UPSTREAM}/xserver/xkb/ddxKillSrv.c
     ${AMBERX_UPSTREAM}/xserver/xkb/ddxLEDs.c
-    ${AMBERX_UPSTREAM}/xserver/xkb/ddxLoad.c
     ${AMBERX_UPSTREAM}/xserver/xkb/ddxPrivate.c
     ${AMBERX_UPSTREAM}/xserver/xkb/ddxVT.c
     ${AMBERX_UPSTREAM}/xserver/xkb/maprules.c
