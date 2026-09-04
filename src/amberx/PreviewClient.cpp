@@ -1505,6 +1505,128 @@ int RunPreviewConformance(AmberXController& c, const Line& line)
         y.send(q);
     }
 
+    {
+        // Resizing under a client that keeps handing over whole frames.
+        //
+        // miext/rootless resizes a window by pointing a pixmap header at the
+        // new buffer while still describing it with the old geometry, so a
+        // toolkit that settles its size by growing one dimension while
+        // shrinking the other can walk that pixmap off the end of the
+        // allocation. Nothing in this suite had ever put a pixel into a
+        // window, which is why it took GTK 4 killing the host to find it.
+        //
+        // The sizes are deliberately odd and deliberately alternate: a stride
+        // is not a width, and the interesting case is the one where neither
+        // dimension moves the same way as the other.
+        const uint32_t win = y.ridBase + 30, gc = y.ridBase + 31;
+        y.createToplevel(win, 60, 60, 320, 160, 0x00202020, 0,
+                         y.internAtom("_NET_WM_NAME"), y.internAtom("UTF8_STRING"),
+                         "AmberX resize");
+        y.mapWindow(win);
+        {
+            std::vector<uint8_t> r = { 55, 0, 0, 0 };
+            XClient::put32(r, gc); XClient::put32(r, win); XClient::put32(r, 0);
+            y.send(r);
+        }
+        static const struct { int w, h; } steps[] = {
+            { 320, 160 }, { 401, 137 }, { 137, 401 }, { 399, 99 },
+            { 99, 399 }, { 200, 200 }, { 1, 1 }, { 293, 201 },
+        };
+        for (const auto& s : steps)
+        {
+            std::vector<uint8_t> cw = { 12, 0, 0, 0 };
+            XClient::put32(cw, win);
+            XClient::put16(cw, 0x4 | 0x8);      // CWWidth | CWHeight
+            XClient::put16(cw, 0);
+            XClient::put32(cw, static_cast<uint32_t>(s.w));
+            XClient::put32(cw, static_cast<uint32_t>(s.h));
+            y.send(cw);
+
+            // one whole frame, exactly the size the window now is
+            std::vector<uint8_t> pi = { 72, 2, 0, 0 };   // format 2 = ZPixmap
+            XClient::put32(pi, win);
+            XClient::put32(pi, gc);
+            XClient::put16(pi, s.w); XClient::put16(pi, s.h);
+            XClient::put16(pi, 0); XClient::put16(pi, 0);
+            pi.push_back(0);        // left pad
+            pi.push_back(24);       // depth
+            pi.push_back(0); pi.push_back(0);
+            pi.insert(pi.end(), static_cast<size_t>(s.w) * static_cast<size_t>(s.h) * 4u,
+                      static_cast<uint8_t>(0x40));
+            y.send(pi);
+        }
+        std::vector<uint8_t> probe = { 14, 0, 0, 0 };
+        XClient::put32(probe, y.root);
+        y.send(probe);
+        std::vector<uint8_t> rep;
+        const bool alive = y.reply(y.seq, rep, 15000);
+        check("the host survives a resize under a client drawing whole frames", alive,
+              alive ? "8 sizes, each followed by a full-window PutImage"
+                    : "the server stopped answering");
+
+        // A toolkit hands over a whole window at once, and for anything
+        // desktop-sized that does not fit in a core request at all — it goes
+        // through BIG-REQUESTS. Nothing here had ever sent an image that
+        // large, and a couple of megabytes of pixels is exactly where the
+        // input buffer and the window buffer have to agree.
+        {
+            std::vector<uint8_t> q = { 98, 0, 0, 0 };
+            XClient::put16(q, 12); XClient::put16(q, 0);
+            const char* ext = "BIG-REQUESTS"; q.insert(q.end(), ext, ext + 12);
+            y.send(q);
+            uint8_t major = 0;
+            if (y.reply(y.seq, rep) && rep[8])
+                major = rep[9];
+            bool big = false;
+            if (major)
+            {
+                std::vector<uint8_t> on = { major, 0, 0, 0 };
+                y.send(on);
+                big = y.reply(y.seq, rep);
+            }
+            check("BIG-REQUESTS enabled for the drawing client", big);
+            if (big)
+            {
+                static const struct { int w, h; } wide[] = {
+                    { 800, 600 }, { 1024, 500 }, { 500, 700 }, { 803, 621 },
+                };
+                for (const auto& s : wide)
+                {
+                    std::vector<uint8_t> cw = { 12, 0, 0, 0 };
+                    XClient::put32(cw, win);
+                    XClient::put16(cw, 0x4 | 0x8);
+                    XClient::put16(cw, 0);
+                    XClient::put32(cw, static_cast<uint32_t>(s.w));
+                    XClient::put32(cw, static_cast<uint32_t>(s.h));
+                    y.send(cw);
+
+                    std::vector<uint8_t> pi = { 72, 2, 0, 0 };
+                    XClient::put32(pi, win);
+                    XClient::put32(pi, gc);
+                    XClient::put16(pi, s.w); XClient::put16(pi, s.h);
+                    XClient::put16(pi, 0); XClient::put16(pi, 0);
+                    pi.push_back(0);
+                    pi.push_back(24);
+                    pi.push_back(0); pi.push_back(0);
+                    pi.insert(pi.end(), static_cast<size_t>(s.w) * static_cast<size_t>(s.h) * 4u,
+                              static_cast<uint8_t>(0x60));
+                    y.sendBig(pi);
+                }
+                std::vector<uint8_t> p2 = { 14, 0, 0, 0 };
+                XClient::put32(p2, y.root);
+                y.send(p2);
+                const bool stillThere = y.reply(y.seq, rep, 20000);
+                check("the host survives whole-window images through BIG-REQUESTS", stillThere,
+                      stillThere ? "four desktop-sized frames, each after a resize"
+                                 : "the server stopped answering");
+            }
+        }
+
+        std::vector<uint8_t> q = { 4, 0, 0, 0 };
+        XClient::put32(q, win);
+        y.send(q);
+    }
+
     check("no host errors during conformance", y.hostErrors.empty(), y.hostErrors);
     c.CloseChannel(3);
     return failures;

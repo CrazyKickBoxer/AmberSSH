@@ -41,4 +41,13 @@ bool BackendInit(FramedPipe& pipe, const HostOptions& opt, std::string& err);
 // returned, and returns the server's exit code.
 int BackendRun();
 
+// For the crash handler only: says whether a faulting address lands in — or
+// just past — a frame's pixel buffer, and prints that frame's geometry. A bare
+// address says nothing; "3,158,016 bytes past frame 0x2000003, window 802x622,
+// buffer 802x622" names the bug. Writes at most `cap` bytes including the
+// terminator and returns the length, or 0 if the address belongs to no frame.
+// Reads live frame state from whichever thread is dying, which is only
+// defensible because the process is already ending.
+int DescribeAddress(const void* addr, char* out, int cap);
+
 } // namespace amber::amberx

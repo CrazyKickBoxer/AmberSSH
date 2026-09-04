@@ -18,6 +18,8 @@
 #include <string>
 #include <vector>
 
+#include <dbghelp.h>
+
 #include "../control/Handshake.h"
 #include "../control/Pipe.h"
 #include "../control/Protocol.h"
@@ -201,6 +203,58 @@ LONG WINAPI CrashLine(EXCEPTION_POINTERS* ep)
             fprintf(stderr, " (%s 0x%llx)", r->ExceptionInformation[0] ? "write" : "read",
                     static_cast<unsigned long long>(r->ExceptionInformation[1]));
         fputc('\n', stderr);
+
+        // Most of the ways this server can die end in somebody walking off the
+        // end of a window's pixel buffer, and the address alone never says
+        // whose or by how much.
+        if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2)
+        {
+            char where[256];
+            if (amber::amberx::DescribeAddress(reinterpret_cast<const void*>(r->ExceptionInformation[1]),
+                                               where, static_cast<int>(sizeof where)) > 0)
+                fprintf(stderr, "AmberXHost: address is %s\n", where);
+        }
+
+        // The stack, as module-relative offsets. An address alone says where
+        // the process died; the chain says which path got it there, and with
+        // the linker map beside the binary that is the difference between a
+        // fix and a guess. Offsets only: no symbols are loaded, nothing is
+        // allocated, and nothing here can fail in a way that matters — the
+        // process is ending either way.
+        if (ep->ContextRecord)
+        {
+            CONTEXT ctx = *ep->ContextRecord;
+            STACKFRAME64 sf = {};
+            sf.AddrPC.Offset = ctx.Rip;
+            sf.AddrPC.Mode = AddrModeFlat;
+            sf.AddrFrame.Offset = ctx.Rbp;
+            sf.AddrFrame.Mode = AddrModeFlat;
+            sf.AddrStack.Offset = ctx.Rsp;
+            sf.AddrStack.Mode = AddrModeFlat;
+            const HANDLE proc = GetCurrentProcess();
+            SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_FAIL_CRITICAL_ERRORS);
+            SymInitialize(proc, nullptr, TRUE);
+            fprintf(stderr, "AmberXHost: stack (module+offset, innermost first)\n");
+            for (int depth = 0; depth < 24; ++depth)
+            {
+                if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, proc, GetCurrentThread(), &sf, &ctx,
+                                 nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr))
+                    break;
+                if (sf.AddrPC.Offset == 0)
+                    break;
+                HMODULE m = nullptr;
+                GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCWSTR>(sf.AddrPC.Offset), &m);
+                wchar_t mn[MAX_PATH] = L"?";
+                if (m)
+                    GetModuleFileNameW(m, mn, MAX_PATH);
+                const wchar_t* leaf = wcsrchr(mn, L'\\');
+                fprintf(stderr, "  [%02d] %ls+0x%llx\n", depth, leaf ? leaf + 1 : mn,
+                        static_cast<unsigned long long>(sf.AddrPC.Offset -
+                                                        reinterpret_cast<uintptr_t>(m)));
+            }
+        }
     }
     return EXCEPTION_CONTINUE_SEARCH;
 }

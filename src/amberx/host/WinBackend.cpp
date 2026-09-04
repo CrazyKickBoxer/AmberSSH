@@ -61,6 +61,8 @@ struct amberwin_frame
     HBITMAP dib = nullptr;
     void* bits = nullptr;
     int stride = 0;
+    int allocW = 0, allocH = 0;       // what the buffer is; never below the window
+    int dibW = 0, dibH = 0;           // what the window was, last time it changed
     int x = 0, y = 0, w = 1, h = 1;   // X screen coordinates / size of the view
     bool overrideRedirect = false;
     bool mapped = false;
@@ -609,18 +611,72 @@ void LayoutChildren(amberwin_frame* f)
                  SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
+// The frame buffer has to stay valid for the window's *previous* size as well
+// as its current one.
+//
+// miext/rootless resizes a frame by pointing a scratch pixmap header at the
+// new buffer while still describing it with the old width and height
+// (rootlessWindow.c, StartFrameResize, `need_window_source`), then reading the
+// gravity bits back out of it with fbBlt. When one dimension shrinks, that read
+// runs off the end of the new allocation. A DIB section is its own mapping, so
+// on Windows it faults rather than quietly reading whatever heap block came
+// next: GTK 4 killed the host on startup doing exactly this, because it settles
+// its size by growing one dimension while shrinking the other.
+//
+// So the buffer covers both geometries. The X side is told the stride
+// explicitly, so a buffer wider than the window costs it nothing, and only the
+// top-left w x h is ever painted to the screen. It follows one step of history
+// and no more, so the allocation decays again instead of holding the largest
+// size the window ever had.
 void AllocDib(amberwin_frame* f, int w, int h)
 {
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    const int aw = w > f->dibW ? w : f->dibW;
+    const int ah = h > f->dibH ? h : f->dibH;
+
+    // Geometry, bounded to the start of a session — which is where a
+    // disagreement between what the X side thinks a window is and what its
+    // buffer actually is has shown up so far. Sizes only: no titles, no pixels.
+    static int logged = 0;
+    if (logged < 64)
+    {
+        ++logged;
+        fprintf(stderr, "AmberXHost: frame 0x%lx window %dx%d buffer %dx%d\n",
+                static_cast<unsigned long>(f->xid), w, h, aw, ah);
+    }
+
+    if (f->dib && f->bits && aw == f->allocW && ah == f->allocH)
+    {
+        // Same allocation: clear only what the window has just grown into, so
+        // the client is not shown pixels it drew at some earlier size.
+        auto* base = static_cast<uint8_t*>(f->bits);
+        const size_t pitch = static_cast<size_t>(f->stride);
+        if (w > f->dibW)
+            for (int y = 0; y < h; ++y)
+                memset(base + static_cast<size_t>(y) * pitch + static_cast<size_t>(f->dibW) * 4u,
+                       0, static_cast<size_t>(w - f->dibW) * 4u);
+        if (h > f->dibH)
+        {
+            const size_t keep = static_cast<size_t>(w < f->dibW ? w : f->dibW) * 4u;
+            for (int y = f->dibH; y < h; ++y)
+                memset(base + static_cast<size_t>(y) * pitch, 0, keep);
+        }
+        f->dibW = w; f->dibH = h;
+        return;
+    }
+
     if (f->dib)
     {
         DeleteObject(f->dib);
         f->dib = nullptr;
         f->bits = nullptr;
+        f->allocW = f->allocH = 0;
     }
     BITMAPINFO bi{};
     bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
-    bi.bmiHeader.biWidth = w;
-    bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biWidth = aw;
+    bi.bmiHeader.biHeight = -ah;
     bi.bmiHeader.biPlanes = 1;
     bi.bmiHeader.biBitCount = 32;
     bi.bmiHeader.biCompression = BI_RGB;
@@ -630,9 +686,11 @@ void AllocDib(amberwin_frame* f, int w, int h)
     ReleaseDC(nullptr, dc);
     if (f->dib && p)
     {
-        memset(p, 0, static_cast<size_t>(w) * 4u * static_cast<size_t>(h));
+        memset(p, 0, static_cast<size_t>(aw) * 4u * static_cast<size_t>(ah));
         f->bits = p;
-        f->stride = w * 4;
+        f->stride = aw * 4;
+        f->allocW = aw; f->allocH = ah;
+        f->dibW = w;    f->dibH = h;
     }
 }
 
@@ -1539,6 +1597,38 @@ int BackendRun()
     CloseHandle(serverThread);
     CloseHandle(pipeThread);
     return static_cast<int>(rc);
+}
+
+int DescribeAddress(const void* addr, char* out, int cap)
+{
+    if (!addr || !out || cap < 2)
+        return 0;
+    const uintptr_t a = reinterpret_cast<uintptr_t>(addr);
+    // A megabyte past the end is still recognisably "this buffer, overrun":
+    // beyond that the address belongs to something else and a guess would be
+    // worse than silence.
+    constexpr uintptr_t kSlack = 1u << 20;
+    for (amberwin_frame* f : g.live)
+    {
+        if (!f || !f->bits)
+            continue;
+        const uintptr_t base = reinterpret_cast<uintptr_t>(f->bits);
+        const uintptr_t size = static_cast<uintptr_t>(f->allocW) * 4u * static_cast<uintptr_t>(f->allocH);
+        if (a < base || a >= base + size + kSlack)
+            continue;
+        const long long delta = static_cast<long long>(a - base) - static_cast<long long>(size);
+        const int n = _snprintf_s(out, static_cast<size_t>(cap), _TRUNCATE,
+                                  "%s frame 0x%lx: window %dx%d, buffer %dx%d stride %d, "
+                                  "offset %llu of %llu%s",
+                                  delta < 0 ? "inside" : "past the end of",
+                                  static_cast<unsigned long>(f->xid), f->w, f->h,
+                                  f->allocW, f->allocH, f->stride,
+                                  static_cast<unsigned long long>(a - base),
+                                  static_cast<unsigned long long>(size),
+                                  delta < 0 ? "" : " — overrun");
+        return n < 0 ? 0 : n;
+    }
+    return 0;
 }
 
 } // namespace amber::amberx

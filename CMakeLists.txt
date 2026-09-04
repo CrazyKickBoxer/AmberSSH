@@ -203,7 +203,7 @@ target_compile_definitions(AmberXHost PRIVATE
 if(MSVC)
     target_compile_options(AmberXHost PRIVATE /W3 /utf-8 /EHsc /MP)
 endif()
-target_link_libraries(AmberXHost PRIVATE bcrypt advapi32)
+target_link_libraries(AmberXHost PRIVATE bcrypt advapi32 dbghelp)
 # With the X.Org core built (-DAMBERX_CORE=ON), the host carries the server:
 # the Windows backend joins the target and the four static libraries link in.
 # Without it, main.cpp compiles to the transport-only stub, as before.
