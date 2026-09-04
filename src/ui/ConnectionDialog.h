@@ -85,6 +85,10 @@ private:
     void RefreshSessionList();
     void LoadSelectedProfile();
     void SaveCurrentProfile();
+    // Brings x11Forward/x11Backend/x11Trust into step with the Remote GUI
+    // setting. Called when saving AND when connecting, so a mode chosen and
+    // connected without a save is not silently ignored.
+    static void ApplyRemoteGui(ConnectionProfile& p);
     void DeleteSelectedProfile();
     bool CollectRequest();
     void ReadFields(ConnectionProfile& p);            // controls → profile

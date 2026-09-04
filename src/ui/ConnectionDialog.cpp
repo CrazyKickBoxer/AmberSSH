@@ -1998,27 +1998,7 @@ void ConnectionDialog::SaveCurrentProfile()
     secret(p.rememberPassphrase, IdPassphrase, SecretKind::KeyPassphrase);
     secret(p.rememberProxyPassword, IdProxyPassword, SecretKind::ProxyPassword);
 
-    // Remote GUI is the authority for AmberX, so the three older fields are
-    // brought into step with it before anything else looks at them. They keep
-    // their own meaning when Remote GUI is off, which is what leaves the
-    // external-X-server path on the X11 page working exactly as before.
-    if (p.remoteGui != 0)
-    {
-        p.x11Forward = true;
-        p.x11Backend = 1;
-        if (p.remoteGui == 2 && p.x11Trust == 0)
-            p.x11Trust = 1;
-        else if (p.remoteGui == 1)
-            p.x11Trust = 0;
-    }
-    else if (p.x11Backend == 1)
-    {
-        // Remote GUI turned off on a profile that used AmberX: turn the
-        // backend off with it rather than leaving a host that nothing asked
-        // for.
-        p.x11Backend = 0;
-        p.x11Trust = 0;
-    }
+    ApplyRemoteGui(p);
 
     // Trusted X11 is an opt-in behind a typed confirmation, asked whenever
     // trust is being turned on or changed to the other kind — never when a
@@ -2079,6 +2059,36 @@ void ConnectionDialog::DeleteSelectedProfile()
     SetStatus(L"Deleted.");
 }
 
+// Remote GUI is the authority for AmberX, so the three older fields are
+// brought into step with it before anything else looks at them. They keep
+// their own meaning when Remote GUI is off, which is what leaves the
+// external-X-server path on the X11 page working exactly as before.
+//
+// Called from BOTH saving and connecting. Only saving would be the obvious
+// place and it is not enough: a user who picks a Remote GUI mode and presses
+// Open without pressing Save would get a session with the setting ignored and
+// nothing to say why.
+void ConnectionDialog::ApplyRemoteGui(ConnectionProfile& p)
+{
+    if (p.remoteGui != 0)
+    {
+        p.x11Forward = true;
+        p.x11Backend = 1;
+        if (p.remoteGui == 2 && p.x11Trust == 0)
+            p.x11Trust = 1;
+        else if (p.remoteGui == 1)
+            p.x11Trust = 0;
+    }
+    else if (p.x11Backend == 1)
+    {
+        // Remote GUI turned off on a profile that used AmberX: turn the
+        // backend off with it rather than leaving a host that nothing asked
+        // for.
+        p.x11Backend = 0;
+        p.x11Trust = 0;
+    }
+}
+
 bool ConnectionDialog::CollectRequest()
 {
     ConnectionProfile& p = m_out.profile;
@@ -2086,6 +2096,9 @@ bool ConnectionDialog::CollectRequest()
     p.id = m_selectedProfileId.empty() ? MakeUuid() : m_selectedProfileId;
     ReadFields(p);
     p.name = Narrow(GetText(GetDlgItem(m_dlg, IdProfileName)));
+    // Connecting applies the same rule saving does, so "set it and connect"
+    // works without a save first.
+    ApplyRemoteGui(p);
 
     if (p.protocol == Protocol::Serial)
     {
