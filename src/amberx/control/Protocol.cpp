@@ -177,15 +177,25 @@ std::vector<uint8_t> MakeHello(const std::vector<uint8_t>& nonce)
 }
 
 std::vector<uint8_t> MakeHelloAck(const std::vector<uint8_t>& echo,
-                                  const std::vector<uint8_t>& own)
+                                  const std::vector<uint8_t>& own,
+                                  const std::vector<uint8_t>& proof)
 {
-    if (echo.size() != kNonceBytes || own.size() != kNonceBytes)
+    if (echo.size() != kNonceBytes || own.size() != kNonceBytes ||
+        proof.size() != kProofBytes)
         return {};
     std::vector<uint8_t> out;
-    out.reserve(kNonceBytes * 2);
+    out.reserve(kNonceBytes * 2 + kProofBytes);
     out.insert(out.end(), echo.begin(), echo.end());
     out.insert(out.end(), own.begin(), own.end());
+    out.insert(out.end(), proof.begin(), proof.end());
     return out;
+}
+
+std::vector<uint8_t> MakeAuthProof(const std::vector<uint8_t>& proof)
+{
+    if (proof.size() != kProofBytes)
+        return {};
+    return proof;
 }
 
 std::vector<uint8_t> MakeSetCookie(const std::vector<uint8_t>& cookie,
@@ -210,12 +220,22 @@ bool ParseHello(const std::vector<uint8_t>& p, std::vector<uint8_t>& nonce)
 }
 
 bool ParseHelloAck(const std::vector<uint8_t>& p, std::vector<uint8_t>& echo,
-                   std::vector<uint8_t>& own)
+                   std::vector<uint8_t>& own, std::vector<uint8_t>& proof)
 {
-    if (p.size() != kNonceBytes * 2)
+    if (p.size() != kNonceBytes * 2 + kProofBytes)
         return false;
-    echo.assign(p.begin(), p.begin() + static_cast<ptrdiff_t>(kNonceBytes));
-    own.assign(p.begin() + static_cast<ptrdiff_t>(kNonceBytes), p.end());
+    auto at = [&](size_t i) { return p.begin() + static_cast<ptrdiff_t>(i); };
+    echo.assign(at(0), at(kNonceBytes));
+    own.assign(at(kNonceBytes), at(kNonceBytes * 2));
+    proof.assign(at(kNonceBytes * 2), p.end());
+    return true;
+}
+
+bool ParseAuthProof(const std::vector<uint8_t>& p, std::vector<uint8_t>& proof)
+{
+    if (p.size() != kProofBytes)
+        return false;
+    proof = p;
     return true;
 }
 
@@ -226,6 +246,51 @@ bool ParseSetCookie(const std::vector<uint8_t>& p, std::vector<uint8_t>& cookie,
         return false;
     display = GetU32(p.data());
     cookie.assign(p.begin() + 4, p.end());
+    return true;
+}
+
+std::vector<uint8_t> MakeHostStatus(uint32_t openChannels, uint64_t bytesIn,
+                                    bool cookieSet)
+{
+    std::vector<uint8_t> out;
+    PutU32(out, openChannels);
+    PutU32(out, static_cast<uint32_t>(bytesIn & 0xFFFFFFFFu));
+    PutU32(out, static_cast<uint32_t>(bytesIn >> 32));
+    PutU32(out, cookieSet ? 1u : 0u);
+    return out;
+}
+
+bool ParseHostStatus(const std::vector<uint8_t>& p, uint32_t& openChannels,
+                     uint64_t& bytesIn, bool& cookieSet)
+{
+    if (p.size() != 16)
+        return false;
+    openChannels = GetU32(p.data());
+    bytesIn = static_cast<uint64_t>(GetU32(p.data() + 4)) |
+              (static_cast<uint64_t>(GetU32(p.data() + 8)) << 32);
+    cookieSet = GetU32(p.data() + 12) != 0;
+    return true;
+}
+
+std::vector<uint8_t> MakeHostError(const std::string& text)
+{
+    // Truncated rather than refused: an error the host could not report is
+    // worse than a shortened one. Never contains a payload echo — the caller
+    // passes a fixed description, not the bytes that caused it.
+    const size_t n = text.size() > kMaxErrorBytes ? kMaxErrorBytes : text.size();
+    return std::vector<uint8_t>(text.begin(), text.begin() + static_cast<ptrdiff_t>(n));
+}
+
+bool ParseHostError(const std::vector<uint8_t>& p, std::string& text)
+{
+    if (p.size() > kMaxErrorBytes)
+        return false;
+    text.assign(p.begin(), p.end());
+    // Control characters are stripped: this string ends up in a status bar,
+    // and a host must not be able to inject escape sequences into it.
+    for (char& c : text)
+        if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F)
+            c = ' ';
     return true;
 }
 

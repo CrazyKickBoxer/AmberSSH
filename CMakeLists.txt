@@ -63,6 +63,9 @@ set(AMBER_SOURCES
     src/remote/XAuth.h           src/remote/XAuth.cpp
     src/remote/RemoteDisplay.h   src/remote/RemoteDisplay.cpp
     src/amberx/control/Protocol.h src/amberx/control/Protocol.cpp
+    src/amberx/control/Handshake.h src/amberx/control/Handshake.cpp
+    src/amberx/control/Pipe.h     src/amberx/control/Pipe.cpp
+    src/amberx/AmberXController.h src/amberx/AmberXController.cpp
     src/term/palette.h
     src/term/input.h       src/term/input.cpp
     src/ssh/ring.h
@@ -182,3 +185,24 @@ endif()
 # ------------------------------------------------------------------------ tests
 enable_testing()
 add_subdirectory(tests)
+
+# ---- AmberXHost: the isolated per-session process (docs/amberx/) ----------
+# A console executable, launched by AmberSSH into a Job Object and reached only
+# over a DACL'd named pipe. Shares the protocol/handshake/pipe sources with the
+# main target rather than a library, so there is exactly one build of each.
+add_executable(AmberXHost
+    src/amberx/host/main.cpp
+    src/amberx/control/Protocol.cpp
+    src/amberx/control/Handshake.cpp
+    src/amberx/control/Pipe.cpp
+    src/utility/Hash.cpp
+)
+target_include_directories(AmberXHost PRIVATE src)
+target_compile_definitions(AmberXHost PRIVATE
+    UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+if(MSVC)
+    target_compile_options(AmberXHost PRIVATE /W3 /utf-8 /EHsc /MP)
+endif()
+target_link_libraries(AmberXHost PRIVATE bcrypt advapi32)
+# Built alongside AmberSSH.exe so the controller finds it next to itself.
+add_dependencies(AmberSSH AmberXHost)

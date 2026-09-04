@@ -109,6 +109,43 @@ bool Sha256Bytes(const void* data, size_t len, std::string& hexOut)
     return !hexOut.empty();
 }
 
+std::vector<uint8_t> HmacSha256(const std::vector<uint8_t>& key,
+                                const std::vector<uint8_t>& data)
+{
+    // Same provider as Sha256 above, opened with the HMAC flag so the key
+    // handling is the OS's rather than a hand-rolled ipad/opad.
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr,
+                                    BCRYPT_ALG_HANDLE_HMAC_FLAG) != 0)
+        return {};
+    std::vector<uint8_t> out;
+    DWORD objLen = 0, hashLen = 0, got = 0;
+    std::string obj;
+    BCRYPT_HASH_HANDLE h = nullptr;
+    if (BCryptGetProperty(alg, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&objLen),
+                          sizeof(objLen), &got, 0) == 0 &&
+        BCryptGetProperty(alg, BCRYPT_HASH_LENGTH, reinterpret_cast<PUCHAR>(&hashLen),
+                          sizeof(hashLen), &got, 0) == 0)
+    {
+        obj.resize(objLen);
+        if (BCryptCreateHash(alg, &h, reinterpret_cast<PUCHAR>(obj.data()), objLen,
+                             const_cast<PUCHAR>(key.data()),
+                             static_cast<ULONG>(key.size()), 0) == 0)
+        {
+            if (BCryptHashData(h, const_cast<PUCHAR>(data.data()),
+                               static_cast<ULONG>(data.size()), 0) == 0)
+            {
+                out.resize(hashLen);
+                if (BCryptFinishHash(h, out.data(), hashLen, 0) != 0)
+                    out.clear();
+            }
+            BCryptDestroyHash(h);
+        }
+    }
+    BCryptCloseAlgorithmProvider(alg, 0);
+    return out;
+}
+
 namespace
 {
 

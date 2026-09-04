@@ -112,12 +112,22 @@ inline constexpr size_t kNonceBytes = 32;
 bool ConstantTimeEqual(const std::vector<uint8_t>& a,
                        const std::vector<uint8_t>& b);
 
+// An HMAC-SHA256 proof over the nonce transcript (see Handshake.h).
+inline constexpr size_t kProofBytes = 32;
+
 // Builds the payloads. Kept as functions rather than structs with a memcpy so
 // there is exactly one definition of each layout, and no C++ object graph is
 // ever deserialised from the wire.
+//
+//   Hello      nonceA
+//   HelloAck   nonceA (echoed) | nonceB | host proof
+//   AuthProof  controller proof
+//   SetCookie  display (u32) | 16-byte cookie
 std::vector<uint8_t> MakeHello(const std::vector<uint8_t>& nonce);
 std::vector<uint8_t> MakeHelloAck(const std::vector<uint8_t>& echo,
-                                  const std::vector<uint8_t>& own);
+                                  const std::vector<uint8_t>& own,
+                                  const std::vector<uint8_t>& proof);
+std::vector<uint8_t> MakeAuthProof(const std::vector<uint8_t>& proof);
 std::vector<uint8_t> MakeSetCookie(const std::vector<uint8_t>& cookie,
                                    uint32_t display);
 
@@ -125,9 +135,22 @@ std::vector<uint8_t> MakeSetCookie(const std::vector<uint8_t>& cookie,
 // short, long, or absent — rather than reading what it can.
 bool ParseHello(const std::vector<uint8_t>& p, std::vector<uint8_t>& nonce);
 bool ParseHelloAck(const std::vector<uint8_t>& p, std::vector<uint8_t>& echo,
-                   std::vector<uint8_t>& own);
+                   std::vector<uint8_t>& own, std::vector<uint8_t>& proof);
+bool ParseAuthProof(const std::vector<uint8_t>& p, std::vector<uint8_t>& proof);
 bool ParseSetCookie(const std::vector<uint8_t>& p, std::vector<uint8_t>& cookie,
                     uint32_t& display);
+
+// Host → controller. Counts only: nothing in a status message can be a
+// secret, a window's contents, or a byte of X11 data.
+//   HostStatus  openChannels (u32) | bytesIn (u64) | cookieSet (u32)
+//   HostError   UTF-8 text, at most kMaxErrorBytes, never a payload echo
+inline constexpr size_t kMaxErrorBytes = 256;
+std::vector<uint8_t> MakeHostStatus(uint32_t openChannels, uint64_t bytesIn,
+                                    bool cookieSet);
+bool ParseHostStatus(const std::vector<uint8_t>& p, uint32_t& openChannels,
+                     uint64_t& bytesIn, bool& cookieSet);
+std::vector<uint8_t> MakeHostError(const std::string& text);   // truncates
+bool ParseHostError(const std::vector<uint8_t>& p, std::string& text);
 
 // ------------------------------------------------------------ channel state
 // Tracks which channel ids this side has opened, so a frame naming a channel

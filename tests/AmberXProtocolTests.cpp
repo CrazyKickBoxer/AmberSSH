@@ -234,17 +234,30 @@ TEST_CASE("Handshake payloads are exact length or nothing", "[amberx]")
     CHECK(MakeHello(std::vector<uint8_t>(8, 0)).empty());
 }
 
-TEST_CASE("HelloAck carries both nonces and splits them back", "[amberx]")
+TEST_CASE("HelloAck carries both nonces and the proof, and splits them back", "[amberx]")
 {
     const std::vector<uint8_t> echo = Nonce(0xAA), own = Nonce(0xBB);
-    const std::vector<uint8_t> p = MakeHelloAck(echo, own);
-    REQUIRE(p.size() == kNonceBytes * 2);
-    std::vector<uint8_t> gotEcho, gotOwn;
-    REQUIRE(ParseHelloAck(p, gotEcho, gotOwn));
+    const std::vector<uint8_t> proof(kProofBytes, 0xCC);
+    const std::vector<uint8_t> p = MakeHelloAck(echo, own, proof);
+    REQUIRE(p.size() == kNonceBytes * 2 + kProofBytes);
+    std::vector<uint8_t> gotEcho, gotOwn, gotProof;
+    REQUIRE(ParseHelloAck(p, gotEcho, gotOwn, gotProof));
     CHECK(gotEcho == echo);
     CHECK(gotOwn == own);
-    CHECK_FALSE(ParseHelloAck(std::vector<uint8_t>(kNonceBytes, 0), gotEcho, gotOwn));
-    CHECK(MakeHelloAck(echo, std::vector<uint8_t>(4, 0)).empty());
+    CHECK(gotProof == proof);
+    // The old two-nonce layout, one byte short, one byte long: all refused.
+    CHECK_FALSE(ParseHelloAck(std::vector<uint8_t>(kNonceBytes * 2, 0), gotEcho, gotOwn, gotProof));
+    CHECK_FALSE(ParseHelloAck(std::vector<uint8_t>(p.size() - 1, 0), gotEcho, gotOwn, gotProof));
+    CHECK_FALSE(ParseHelloAck(std::vector<uint8_t>(p.size() + 1, 0), gotEcho, gotOwn, gotProof));
+    CHECK(MakeHelloAck(echo, std::vector<uint8_t>(4, 0), proof).empty());
+    CHECK(MakeHelloAck(echo, own, std::vector<uint8_t>(16, 0)).empty());
+
+    std::vector<uint8_t> ap;
+    CHECK(MakeAuthProof(proof).size() == kProofBytes);
+    CHECK(MakeAuthProof(std::vector<uint8_t>(31, 0)).empty());
+    CHECK(ParseAuthProof(proof, ap));
+    CHECK(ap == proof);
+    CHECK_FALSE(ParseAuthProof(std::vector<uint8_t>(33, 0), ap));
 }
 
 TEST_CASE("A cookie install is 16 bytes and a display number", "[amberx]")

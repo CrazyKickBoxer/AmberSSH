@@ -2,6 +2,7 @@
 #include "common.h"
 #include "app.h"
 #include "platform/JumpList.h"
+#include "amberx/AmberXController.h"
 #include "resource.h"
 
 #include <dwmapi.h>
@@ -83,6 +84,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int nCmdSho
     int previewSafety = 0;
     if (lpCmdLine && wcsstr(lpCmdLine, L"--preview-safety"))
         previewSafety = wcsstr(lpCmdLine, L"--changed") ? 2 : 1;
+    // --preview-amberx: launch an AmberXHost, handshake, push a cookie and
+    // a channel through it, and write a report. Needs no window and no GPU,
+    // so it runs and exits before anything else is set up.
+    if (lpCmdLine && wcsstr(lpCmdLine, L"--preview-amberx"))
+        return amber::amberx::RunPreview();
     amber::InitAppUserModelId();
 
     WNDCLASSEXW wc = {};

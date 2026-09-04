@@ -27,6 +27,7 @@ add_executable(AmberTests
     XAuthTests.cpp
     RemoteDisplayTests.cpp
     AmberXProtocolTests.cpp
+    AmberXHandshakeTests.cpp
 
     ${CMAKE_SOURCE_DIR}/src/term/vtparser.cpp
     ${CMAKE_SOURCE_DIR}/src/term/grid.cpp
@@ -54,6 +55,7 @@ add_executable(AmberTests
     ${CMAKE_SOURCE_DIR}/src/remote/XAuth.cpp
     ${CMAKE_SOURCE_DIR}/src/remote/RemoteDisplay.cpp
     ${CMAKE_SOURCE_DIR}/src/amberx/control/Protocol.cpp
+    ${CMAKE_SOURCE_DIR}/src/amberx/control/Handshake.cpp
 )
 
 target_include_directories(AmberTests PRIVATE ${CMAKE_SOURCE_DIR}/src)

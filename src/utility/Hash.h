@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace amber
 {
@@ -47,6 +48,14 @@ bool Sha256FileRange(const std::wstring& path, uint64_t offset, uint64_t length,
                      std::string& hexOut, std::string& err);
 
 bool Sha256Bytes(const void* data, size_t len, std::string& hexOut);
+
+// HMAC-SHA256, raw 32 bytes. Empty on provider failure — never a partial
+// or zero-filled MAC, because a caller comparing against one of those would
+// be comparing against something an attacker can also produce. Used by the
+// AmberX handshake, where the key is a per-launch secret and the message is
+// the nonce transcript.
+std::vector<uint8_t> HmacSha256(const std::vector<uint8_t>& key,
+                                const std::vector<uint8_t>& data);
 
 // Pulls a 64-character hex digest out of whatever a remote command printed.
 // `sha256sum` writes "<hex>  <name>", `shasum -a 256` the same, BSD `sha256`
