@@ -769,6 +769,81 @@ SOCKET ConnectX11Display(const std::string& display)
     return s;
 }
 
+// The host-key algorithms this machine already has a key for, in the order to
+// ask for them; empty when known_hosts says nothing about this host.
+//
+// Why this exists: known_hosts stores one key per algorithm, and a server
+// usually offers several. If the stored key is ed25519 and the handshake
+// settles on ecdsa, the key that arrives is a perfectly genuine key that does
+// not match the stored one — and a naive comparison calls that a
+// man-in-the-middle. OpenSSH avoids it by ordering its HostKeyAlgorithms by
+// what it already trusts; this does the same, and it is the difference
+// between a warning that means something and a warning users learn to click
+// through.
+//
+// Hashed known_hosts entries have no readable name, so they cannot be matched
+// here. That is safe: no preference is expressed, the handshake picks its
+// default, and the check afterwards behaves as it always did.
+std::string HostKeyPrefFromKnownHosts(LIBSSH2_KNOWNHOSTS* kh,
+                                      const std::string& name, int port)
+{
+    if (!kh || name.empty())
+        return {};
+    const std::string bracketed = "[" + name + "]:" + std::to_string(port);
+    std::vector<int> have;
+    struct libssh2_knownhost* store = nullptr;
+    struct libssh2_knownhost* prev = nullptr;
+    while (libssh2_knownhost_get(kh, &store, prev) == 0 && store)
+    {
+        prev = store;
+        if (!store->name)
+            continue;                      // hashed: not matchable by name
+        if (name != store->name && bracketed != store->name)
+            continue;
+        const int type = store->typemask & LIBSSH2_KNOWNHOST_KEY_MASK;
+        if (std::find(have.begin(), have.end(), type) == have.end())
+            have.push_back(type);
+    }
+    if (have.empty())
+        return {};
+
+    // Strongest first among what is on file. Everything not on file is left
+    // out entirely: asking for an algorithm we could not check against would
+    // put us back where we started.
+    static const struct { int type; const char* names; } kOrder[] = {
+        { LIBSSH2_KNOWNHOST_KEY_ED25519,   "ssh-ed25519" },
+        { LIBSSH2_KNOWNHOST_KEY_ECDSA_521, "ecdsa-sha2-nistp521" },
+        { LIBSSH2_KNOWNHOST_KEY_ECDSA_384, "ecdsa-sha2-nistp384" },
+        { LIBSSH2_KNOWNHOST_KEY_ECDSA_256, "ecdsa-sha2-nistp256" },
+        { LIBSSH2_KNOWNHOST_KEY_SSHRSA,    "rsa-sha2-512,rsa-sha2-256,ssh-rsa" },
+        { LIBSSH2_KNOWNHOST_KEY_SSHDSS,    "ssh-dss" },
+    };
+    std::string pref;
+    for (const auto& o : kOrder)
+        if (std::find(have.begin(), have.end(), o.type) != have.end())
+        {
+            if (!pref.empty())
+                pref += ",";
+            pref += o.names;
+        }
+    return pref;
+}
+
+// The name a known_hosts key type goes by, for messages.
+const char* KnownHostKeyTypeName(int typemask)
+{
+    switch (typemask & LIBSSH2_KNOWNHOST_KEY_MASK)
+    {
+    case LIBSSH2_KNOWNHOST_KEY_ED25519:   return "ssh-ed25519";
+    case LIBSSH2_KNOWNHOST_KEY_ECDSA_521: return "ecdsa-sha2-nistp521";
+    case LIBSSH2_KNOWNHOST_KEY_ECDSA_384: return "ecdsa-sha2-nistp384";
+    case LIBSSH2_KNOWNHOST_KEY_ECDSA_256: return "ecdsa-sha2-nistp256";
+    case LIBSSH2_KNOWNHOST_KEY_SSHRSA:    return "ssh-rsa";
+    case LIBSSH2_KNOWNHOST_KEY_SSHDSS:    return "ssh-dss";
+    default:                              return "an unrecognised type";
+    }
+}
+
 } // anonymous namespace
 
 SshSession::SshSession() = default;
@@ -1030,8 +1105,41 @@ void SshSession::ThreadMain(SshConfig cfg)
     }
     if (!cfg.kexPref.empty())
         libssh2_session_method_pref(session, LIBSSH2_METHOD_KEX, cfg.kexPref.c_str());
+    // ---- known_hosts, loaded BEFORE the handshake ------------------------
+    // The file has to be read first so the handshake can ask for the host-key
+    // algorithm this machine already trusts. Reading it afterwards, as this
+    // did, is how a genuine server ends up accused of being an impostor: the
+    // stored key is ed25519, the handshake settles on ecdsa, and the two do
+    // not match because they were never the same key.
+    wchar_t profileW[MAX_PATH] = L"";
+    GetEnvironmentVariableW(L"USERPROFILE", profileW, MAX_PATH);
+    std::string sshDir;
+    {
+        char profileA[MAX_PATH * 3];
+        int n = WideCharToMultiByte(CP_UTF8, 0, profileW, -1, profileA,
+                                    sizeof(profileA), nullptr, nullptr);
+        sshDir = (n > 0) ? std::string(profileA) + "\\.ssh" : ".ssh";
+    }
+    const std::string khPath = sshDir + "\\known_hosts";
+    // "Logical name of remote host" (Connection page): the known_hosts entry
+    // is looked up and stored under this name instead of the address.
+    const std::string khName = cfg.logicalHost.empty() ? cfg.host : cfg.logicalHost;
+    kh = libssh2_knownhost_init(session);
+    if (kh)
+        libssh2_knownhost_readfile(kh, khPath.c_str(),
+                                   LIBSSH2_KNOWNHOST_FILE_OPENSSH);
+
     if (!cfg.hostKeyPref.empty())
+    {
+        // An explicit preference is the user's decision and is not overridden.
         libssh2_session_method_pref(session, LIBSSH2_METHOD_HOSTKEY, cfg.hostKeyPref.c_str());
+    }
+    else
+    {
+        const std::string pref = HostKeyPrefFromKnownHosts(kh, khName, cfg.port);
+        if (!pref.empty())
+            libssh2_session_method_pref(session, LIBSSH2_METHOD_HOSTKEY, pref.c_str());
+    }
 
     PostEvent(SshEventType::Status, "ssh handshake...");
     if (libssh2_session_handshake(session, sock) != 0)
@@ -1098,32 +1206,13 @@ void SshSession::ThreadMain(SshConfig cfg)
         fingerprint = "SHA256:" +
             Base64(reinterpret_cast<const uint8_t*>(sha256), 32);
 
-    wchar_t profileW[MAX_PATH] = L"";
-    GetEnvironmentVariableW(L"USERPROFILE", profileW, MAX_PATH);
-    std::string sshDir;
-    {
-        char profileA[MAX_PATH * 3];
-        int n = WideCharToMultiByte(CP_UTF8, 0, profileW, -1, profileA,
-                                    sizeof(profileA), nullptr, nullptr);
-        sshDir = (n > 0) ? std::string(profileA) + "\\.ssh" : ".ssh";
-    }
-    std::string khPath = sshDir + "\\known_hosts";
-
-    // "Logical name of remote host" (Connection page): the known_hosts entry
-    // is looked up and stored under this name instead of the address.
-    const std::string khName = cfg.logicalHost.empty() ? cfg.host : cfg.logicalHost;
-    kh = libssh2_knownhost_init(session);
     int checkResult = LIBSSH2_KNOWNHOST_CHECK_NOTFOUND;
+    struct libssh2_knownhost* found = nullptr;
     if (kh)
-    {
-        libssh2_knownhost_readfile(kh, khPath.c_str(),
-                                   LIBSSH2_KNOWNHOST_FILE_OPENSSH);
-        struct libssh2_knownhost* found = nullptr;
         checkResult = libssh2_knownhost_checkp(
             kh, khName.c_str(), cfg.port, hostKey, keyLen,
             LIBSSH2_KNOWNHOST_TYPE_PLAIN | LIBSSH2_KNOWNHOST_KEYENC_RAW,
             &found);
-    }
 
     // Manually configured host keys (SSH > Host keys): when any are listed
     // they are the whole trust store for this session - a listed
@@ -1160,9 +1249,18 @@ void SshSession::ThreadMain(SshConfig cfg)
 
     if (checkResult == LIBSSH2_KNOWNHOST_CHECK_MISMATCH)
     {
-        fail("HOST KEY MISMATCH for " + cfg.host +
-             " — possible man-in-the-middle. Remove the old entry from "
-             "known_hosts to continue. Fingerprint: " + typeName + " " + fingerprint);
+        // Name the stored key's type as well as the one that arrived. A
+        // mismatch between two keys of the SAME type is the alarming case;
+        // between different types it is almost always a stale entry, and
+        // saying which is which is the difference between a warning that can
+        // be acted on and one that can only be clicked through.
+        const char* stored = found ? KnownHostKeyTypeName(found->typemask)
+                                   : "an unknown type";
+        fail("HOST KEY MISMATCH for " + khName +
+             " — possible man-in-the-middle. known_hosts holds a " + stored +
+             " key for this host; the server offered " + typeName + " " +
+             fingerprint + ". Remove the old entry (ssh-keygen -R " + khName +
+             ") only if you are sure this is the same machine.");
         return;
     }
 
