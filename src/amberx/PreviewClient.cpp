@@ -40,6 +40,7 @@ struct XClient
     uint32_t seq = 0;           // of the last request sent
     std::vector<std::vector<uint8_t>> events;   // 32-byte events set aside
     std::vector<std::vector<uint8_t>>* others = nullptr;   // frames for other channels
+    std::string* clipboardIn = nullptr;   // where ClipboardText frames land
     uint32_t root = 0, ridBase = 0, rootW = 0, rootH = 0, rootDepth = 0;
 
     XClient(AmberXController& ctl, Line l, uint32_t channel) : c(ctl), line(std::move(l)), ch(channel) {}
@@ -140,6 +141,8 @@ struct XClient
                 ParseHostError(r.payload, t);
                 hostErrors += t + "; ";
             }
+            else if (r.type == MsgType::ClipboardText && clipboardIn)
+                clipboardIn->assign(r.payload.begin(), r.payload.end());
             else if (r.type == MsgType::ChannelClose && r.channel == ch)
                 return false;
         }
@@ -206,7 +209,13 @@ struct XClient
     static uint32_t eventWindow(const std::vector<uint8_t>& e)
     {
         const uint8_t t = e[0] & 0x7f;
-        return (t >= 2 && t <= 8) ? u32(&e[12]) : u32(&e[4]);
+        if (t >= 2 && t <= 8)
+            return u32(&e[12]);     // device events: time first, then windows
+        if (t == 29 || t == 31)
+            return u32(&e[8]);      // SelectionClear, SelectionNotify: after time
+        if (t == 30)
+            return u32(&e[12]);     // SelectionRequest: owner, then requestor
+        return u32(&e[4]);
     }
 
     // Waits for an event of `type` on `window` (0 = any), queueing others.
@@ -343,6 +352,137 @@ struct XClient
         changeProperty(wid, aNetWmName, aUtf8, 8, title, strlen(title));
     }
 
+    // GetKeyboardMapping for one keycode: the keysyms of its levels.
+    std::vector<uint32_t> keysymsFor(uint32_t keycode)
+    {
+        // opcode, unused, length 2 units, then first-keycode and count
+        std::vector<uint8_t> q = { 101, 0, 2, 0, static_cast<uint8_t>(keycode), 1, 0, 0 };
+        if (!send(q))
+            return {};
+        std::vector<uint8_t> rep;
+        if (!reply(seq, rep) || rep.size() < 32)
+            return {};
+        const int per = rep[1];         // keysyms per keycode
+        std::vector<uint32_t> syms;
+        for (int i = 0; i < per && 32 + 4 * i + 3 < static_cast<int>(rep.size()); ++i)
+            syms.push_back(u32(&rep[32 + 4 * i]));
+        return syms;
+    }
+
+    // ---- selections, for the clipboard bridge ------------------------------
+    void setSelectionOwner(uint32_t sel, uint32_t win)
+    {
+        std::vector<uint8_t> q = { 22, 0, 0, 0 };
+        put32(q, win);
+        put32(q, sel);
+        put32(q, 0);            // CurrentTime
+        send(q);
+    }
+
+    void convertSelection(uint32_t sel, uint32_t target, uint32_t prop, uint32_t win)
+    {
+        std::vector<uint8_t> q = { 24, 0, 0, 0 };
+        put32(q, win);
+        put32(q, sel);
+        put32(q, target);
+        put32(q, prop);
+        put32(q, 0);            // CurrentTime
+        send(q);
+    }
+
+    // GetProperty with delete, as 8-bit bytes.
+    std::string getPropertyText(uint32_t win, uint32_t prop)
+    {
+        std::vector<uint8_t> q = { 20, 1, 0, 0 };   // delete = 1
+        put32(q, win);
+        put32(q, prop);
+        put32(q, 0);            // AnyPropertyType
+        put32(q, 0);            // long offset
+        put32(q, 1 << 20);      // long length
+        if (!send(q))
+            return {};
+        std::vector<uint8_t> rep;
+        if (!reply(seq, rep) || rep.size() < 32)
+            return {};
+        const uint32_t n = u32(&rep[16]);           // number of items
+        if (rep[1] != 8 || 32 + n > rep.size())
+            return {};
+        return std::string(reinterpret_cast<const char*>(&rep[32]), n);
+    }
+
+    std::vector<uint32_t> getPropertyAtoms(uint32_t win, uint32_t prop)
+    {
+        std::vector<uint8_t> q = { 20, 1, 0, 0 };
+        put32(q, win);
+        put32(q, prop);
+        put32(q, 0);
+        put32(q, 0);
+        put32(q, 1024);
+        if (!send(q))
+            return {};
+        std::vector<uint8_t> rep;
+        if (!reply(seq, rep) || rep.size() < 32 || rep[1] != 32)
+            return {};
+        const uint32_t n = u32(&rep[16]);
+        std::vector<uint32_t> out;
+        for (uint32_t i = 0; i < n && 32 + 4 * i + 3 < rep.size(); ++i)
+            out.push_back(u32(&rep[32 + 4 * i]));
+        return out;
+    }
+
+    // SendEvent of a 32-byte event to one window, no propagation.
+    void sendEvent(uint32_t win, const std::vector<uint8_t>& ev32)
+    {
+        std::vector<uint8_t> q = { 25, 0, 0, 0 };
+        put32(q, win);
+        put32(q, 0);            // event mask 0 = to the client that owns it
+        q.insert(q.end(), ev32.begin(), ev32.end());
+        while (q.size() < 44)
+            q.push_back(0);
+        send(q);
+    }
+
+    // ListExtensions: every extension the server advertises, comma separated.
+    std::string listExtensions()
+    {
+        std::vector<uint8_t> q = { 99, 0, 0, 0 };
+        if (!send(q))
+            return {};
+        std::vector<uint8_t> rep;
+        if (!reply(seq, rep) || rep.size() < 32)
+            return {};
+        std::string out;
+        size_t at = 32;
+        for (int i = 0; i < rep[1] && at < rep.size(); ++i)
+        {
+            const size_t n = rep[at];
+            if (at + 1 + n > rep.size())
+                break;
+            if (!out.empty())
+                out += ",";
+            out.append(reinterpret_cast<const char*>(&rep[at + 1]), n);
+            at += 1 + n;
+        }
+        return out;
+    }
+
+    // QueryExtension: the major opcode, or 0 when the extension is absent.
+    uint32_t queryExtension(const char* name)
+    {
+        const size_t n = strlen(name);
+        std::vector<uint8_t> q = { 98, 0, 0, 0 };
+        put16(q, static_cast<uint32_t>(n));
+        put16(q, 0);
+        q.insert(q.end(), name, name + n);
+        pad4(q);
+        if (!send(q))
+            return 0;
+        std::vector<uint8_t> rep;
+        if (!reply(seq, rep) || rep.size() < 32 || rep[8] == 0)
+            return 0;
+        return rep[9];
+    }
+
     void mapWindow(uint32_t wid)
     {
         std::vector<uint8_t> r = { 8, 0, 0, 0 }; put32(r, wid);
@@ -370,6 +510,49 @@ HWND WaitFrame(const wchar_t* title, int tries = 30)
 HWND ChildOfClass(HWND parent, const wchar_t* cls)
 {
     return FindWindowExW(parent, nullptr, cls, nullptr);
+}
+
+std::string Hex32(uint32_t v)
+{
+    char b[16];
+    snprintf(b, sizeof b, "%08x", v);
+    return b;
+}
+
+// A monitor rectangle in X screen coordinates, for comparing what RANDR
+// says against what the desktop actually is.
+struct Rect
+{
+    int x, y, w, h;
+    bool operator==(const Rect& o) const { return x == o.x && y == o.y && w == o.w && h == o.h; }
+};
+
+std::string RectText(const Rect& r)
+{
+    return std::to_string(r.w) + "x" + std::to_string(r.h) + "+" + std::to_string(r.x) + "+" + std::to_string(r.y);
+}
+
+// The monitors as Windows has them, translated to X screen coordinates the
+// same way the host does: the virtual desktop's top-left is X's origin.
+// Enumerated here independently of the host, which is the point.
+std::vector<Rect> DesktopMonitors()
+{
+    struct Collect
+    {
+        std::vector<Rect> v;
+        int ox, oy;
+    } c{ {}, GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN) };
+    EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR mon, HDC, LPRECT, LPARAM lp) -> BOOL {
+        Collect& c = *reinterpret_cast<Collect*>(lp);
+        MONITORINFO mi{};
+        mi.cbSize = sizeof mi;
+        if (GetMonitorInfoW(mon, &mi))
+            c.v.push_back({ mi.rcMonitor.left - c.ox, mi.rcMonitor.top - c.oy,
+                            mi.rcMonitor.right - mi.rcMonitor.left,
+                            mi.rcMonitor.bottom - mi.rcMonitor.top });
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&c));
+    return c.v;
 }
 
 } // namespace
@@ -469,6 +652,160 @@ int RunPreviewClient(AmberXController& c, const Line& line)
                  : "none");
         ok = x.event(2, wid, ev);
         check("KeyPress keycode 38", ok && ev[1] == 38);
+    }
+
+    // ---- Phase 6: the keyboard is the user's own layout -------------------------
+    // The keysym the server reports for a key must be the character that key
+    // types on this machine. The expected value is worked out here from the
+    // Windows layout directly, so the check compares the server against
+    // Windows rather than against the code that fed it.
+    {
+        auto expectedKeysym = [](UINT scan, bool shift) -> uint32_t {
+            const HKL hkl = GetKeyboardLayout(0);
+            const UINT vk = MapVirtualKeyExW(scan, MAPVK_VSC_TO_VK_EX, hkl);
+            BYTE state[256] = {};
+            if (shift)
+            {
+                state[VK_SHIFT] = 0x80;
+                state[VK_LSHIFT] = 0x80;
+            }
+            wchar_t buf[8] = {};
+            const int n = ToUnicodeEx(vk, scan, state, buf, 8, 4, hkl);
+            if (n != 1 || buf[0] < 0x20 || buf[0] == 0x7f)
+                return 0;
+            return buf[0] < 0x100 ? buf[0] : (0x01000000u | buf[0]);
+        };
+
+        const std::vector<uint32_t> syms = x.keysymsFor(0x1E + 8);   // AC01
+        const uint32_t want1 = expectedKeysym(0x1E, false);
+        const uint32_t want2 = expectedKeysym(0x1E, true);
+        check("keysym matches the Windows layout",
+              !syms.empty() && want1 != 0 && syms[0] == want1,
+              "server 0x" + Hex32(syms.empty() ? 0 : syms[0]) + " windows 0x" + Hex32(want1));
+        check("shifted keysym matches the Windows layout",
+              syms.size() >= 2 && want2 != 0 && syms[1] == want2,
+              "server 0x" + Hex32(syms.size() >= 2 ? syms[1] : 0) + " windows 0x" + Hex32(want2));
+
+        // Right-alt is the level-three shift on a layout that has a third
+        // level and stays Alt_R on one that does not; it is never both, and
+        // never neither.
+        const std::vector<uint32_t> ralt = x.keysymsFor(100 + 8);
+        const bool isLevel3 = !ralt.empty() && ralt[0] == 0xfe03;   // ISO_Level3_Shift
+        const bool isAltR = !ralt.empty() && ralt[0] == 0xffea;     // Alt_R
+        bool layoutHasLevel3 = false;
+        for (UINT scan = 2; scan <= 53 && !layoutHasLevel3; ++scan)
+        {
+            const HKL hkl = GetKeyboardLayout(0);
+            const UINT vk = MapVirtualKeyExW(scan, MAPVK_VSC_TO_VK_EX, hkl);
+            BYTE state[256] = {};
+            state[VK_CONTROL] = state[VK_LCONTROL] = state[VK_MENU] = state[VK_RMENU] = 0x80;
+            wchar_t buf[8] = {};
+            const int n = ToUnicodeEx(vk, scan, state, buf, 8, 4, hkl);
+            if (n == 1 && buf[0] >= 0x20 && buf[0] != 0x7f && !(buf[0] >= 0x80 && buf[0] <= 0x9f))
+                layoutHasLevel3 = true;
+        }
+        check("right-alt matches what the layout needs",
+              layoutHasLevel3 ? isLevel3 : isAltR,
+              std::string(layoutHasLevel3 ? "layout has AltGr, " : "no AltGr on this layout, ")
+                  + (ralt.empty() ? "no keysym" : "keysym 0x" + Hex32(ralt[0])));
+    }
+
+    // ---- Phase 6: modifier state and wheel accumulation -------------------------
+    if (view)
+    {
+        // Shift held: the KeyPress must carry ShiftMask, which only happens
+        // if the modmap and the compat interpretations survived the layout
+        // being written over the built-in map.
+        PostMessageW(view, WM_KEYDOWN, VK_SHIFT, static_cast<LPARAM>((0x2A << 16) | 1));
+        PostMessageW(view, WM_KEYDOWN, 'A', static_cast<LPARAM>((0x1E << 16) | 1));
+        PostMessageW(view, WM_KEYUP, 'A', static_cast<LPARAM>((0x1E << 16) | 1 | (1u << 30) | (1u << 31)));
+        PostMessageW(view, WM_KEYUP, VK_SHIFT, static_cast<LPARAM>((0x2A << 16) | 1 | (1u << 30) | (1u << 31)));
+        bool shifted = false;
+        for (int i = 0; i < 4 && !shifted; ++i)
+        {
+            if (!x.event(2, wid, ev))
+                break;
+            shifted = ev[1] == 38 && (XClient::u16(&ev[28]) & 1) != 0;
+        }
+        check("Shift reaches the client as a modifier", shifted);
+
+        // A wheel that reports in thirds of a notch must still produce
+        // exactly one button click per notch, and no click for the part of
+        // a notch that has not arrived yet.
+        for (int i = 0; i < 3; ++i)
+            PostMessageW(view, WM_MOUSEWHEEL, MAKEWPARAM(0, 40), MAKELPARAM(200, 200));
+        int wheelUp = 0, wheelDown = 0;
+        while (x.event(4, wid, ev, 1500))
+        {
+            if (ev[1] == 4) ++wheelUp;
+            if (ev[1] == 5) ++wheelDown;
+            if (wheelUp + wheelDown >= 2)
+                break;
+        }
+        check("three partial wheel deltas make one notch",
+              wheelUp == 1 && wheelDown == 0,
+              std::to_string(wheelUp) + " up, " + std::to_string(wheelDown) + " down");
+
+        // Reversing direction discards the part-notch rather than crediting
+        // it, so two half-turns the opposite way are not a click.
+        PostMessageW(view, WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-60)), MAKELPARAM(200, 200));
+        PostMessageW(view, WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-60)), MAKELPARAM(200, 200));
+        int down = 0;
+        while (x.event(4, wid, ev, 1500))
+            if (ev[1] == 5)
+                ++down;
+        check("a reversed wheel scrolls the other way once", down == 1,
+              std::to_string(down) + " down");
+    }
+
+    // ---- Phase 6: RANDR describes the real monitors ------------------------------
+    {
+        const uint32_t randr = x.queryExtension("RANDR");
+        check("RANDR present", randr != 0, x.listExtensions());
+        if (randr)
+        {
+            std::vector<uint8_t> q = { static_cast<uint8_t>(randr), 0, 0, 0 };
+            XClient::put32(q, 1); XClient::put32(q, 6);      // version 1.6
+            std::vector<uint8_t> ver;
+            const bool okv = x.send(q) && x.reply(x.seq, ver) && ver.size() >= 32;
+            check("RANDR version", okv && XClient::u32(&ver[8]) == 1,
+                  okv ? std::to_string(XClient::u32(&ver[8])) + "." + std::to_string(XClient::u32(&ver[12])) : "none");
+
+            q = { static_cast<uint8_t>(randr), 8, 0, 0 };    // GetScreenResources
+            XClient::put32(q, x.root);
+            std::vector<uint8_t> res;
+            if (x.send(q) && x.reply(x.seq, res) && res.size() >= 32)
+            {
+                const int nCrtcs = static_cast<int>(XClient::u16(&res[16]));
+                std::vector<Rect> crtcs;
+                for (int i = 0; i < nCrtcs && 32 + 4 * i + 3 < static_cast<int>(res.size()); ++i)
+                {
+                    const uint32_t crtc = XClient::u32(&res[32 + 4 * i]);
+                    std::vector<uint8_t> cq = { static_cast<uint8_t>(randr), 20, 0, 0 };
+                    XClient::put32(cq, crtc);
+                    XClient::put32(cq, XClient::u32(&res[12]));   // config timestamp
+                    std::vector<uint8_t> ci;
+                    if (x.send(cq) && x.reply(x.seq, ci) && ci.size() >= 32)
+                        crtcs.push_back({ static_cast<int>(static_cast<int16_t>(XClient::u16(&ci[12]))),
+                                          static_cast<int>(static_cast<int16_t>(XClient::u16(&ci[14]))),
+                                          static_cast<int>(XClient::u16(&ci[16])),
+                                          static_cast<int>(XClient::u16(&ci[18])) });
+                }
+                const std::vector<Rect> real = DesktopMonitors();
+                check("one RANDR output per monitor", crtcs.size() == real.size(),
+                      std::to_string(crtcs.size()) + " CRTCs, " + std::to_string(real.size()) + " monitors");
+                bool allMatch = crtcs.size() == real.size();
+                for (size_t i = 0; i < crtcs.size() && i < real.size(); ++i)
+                    if (!(crtcs[i] == real[i]))
+                        allMatch = false;
+                check("each output has its monitor's geometry", allMatch,
+                      crtcs.empty() ? "none" : RectText(crtcs[0]) + " vs " + RectText(real[0]));
+            }
+            else
+            {
+                check("RANDR screen resources", false, "no reply");
+            }
+        }
     }
 
     // ---- window B: a transient dialog owned by A ----------------------------------
@@ -718,6 +1055,140 @@ int RunPreviewTrustChecks(AmberXController& c, bool trusted, const Line& line)
 }
 
 // ---- Phase 5: an untrusted authorization that expires ------------------------
+// ---- Phase 6: the clipboard bridge ------------------------------------------
+// `mode` is what the host was launched with. Both directions are exercised
+// either way: a mode is only proven by what it refuses as well as by what it
+// carries.
+int RunPreviewClipboardChecks(AmberXController& c, int mode, const Line& line)
+{
+    int failures = 0;
+    auto check = [&](const char* step, bool ok, const std::string& detail = {}) {
+        line(step, ok, detail);
+        if (!ok)
+            ++failures;
+    };
+    const bool wantToRemote = (mode == 1 || mode == 3 || mode == 4);
+    const bool wantToLocal = (mode == 1 || mode == 2 || mode == 4);
+    const std::string tag = mode == 4 ? " [clipboard both]"
+                          : mode == 2 ? " [clipboard to-local]" : " [clipboard off]";
+    auto step = [&](const char* s) { return (std::string(s) + tag); };
+
+    std::string fromRemote;
+    c.OpenChannel(1);
+    XClient x(c, line, 1);
+    x.clipboardIn = &fromRemote;
+    if (!x.setup("clipboard host setup"))
+    {
+        check(step("clipboard host setup").c_str(), false);
+        c.CloseChannel(1);
+        return failures + 1;
+    }
+
+    const uint32_t aClipboard = x.internAtom("CLIPBOARD");
+    const uint32_t aUtf8 = x.internAtom("UTF8_STRING");
+    const uint32_t aTargets = x.internAtom("TARGETS");
+    const uint32_t aProp = x.internAtom("AMBERX_PREVIEW_CLIP");
+    const uint32_t win = x.ridBase + 1;
+    std::vector<uint8_t> r = { 1, 0, 0, 0 };     // CreateWindow, InputOutput
+    XClient::put32(r, win);
+    XClient::put32(r, x.root);
+    XClient::put16(r, 0); XClient::put16(r, 0);
+    XClient::put16(r, 1); XClient::put16(r, 1);
+    XClient::put16(r, 0); XClient::put16(r, 0);  // border, class CopyFromParent
+    XClient::put32(r, 0);                        // visual CopyFromParent
+    XClient::put32(r, 0);                        // value mask: nothing
+    r[1] = 24;                                   // depth
+    x.send(r);
+
+    // ---- local → remote: AmberSSH's text becomes the X selection ------------
+    const std::string sent = "amberx clipboard \xe2\x86\x92 remote";
+    c.SendClipboard(sent);
+    Sleep(300);                                  // the host relays on its own thread
+
+    x.convertSelection(aClipboard, aUtf8, aProp, win);
+    std::vector<uint8_t> ev;
+    bool got = x.event(31 /*SelectionNotify*/, win, ev, 3000);
+    const bool answered = got && XClient::u32(&ev[20]) != 0;
+    std::string back = answered ? x.getPropertyText(win, aProp) : std::string();
+    check(step("local text reaches the X selection").c_str(),
+          wantToRemote ? (answered && back == sent) : !answered,
+          wantToRemote ? (answered ? std::to_string(back.size()) + " bytes back"
+                                   : "no property")
+                       : (answered ? "answered, and should not have" : "refused, as configured"));
+
+    if (wantToRemote)
+    {
+        x.convertSelection(aClipboard, aTargets, aProp, win);
+        got = x.event(31, win, ev, 3000);
+        const std::vector<uint32_t> targets = got && XClient::u32(&ev[20])
+                                                  ? x.getPropertyAtoms(win, aProp)
+                                                  : std::vector<uint32_t>();
+        const bool hasUtf8 = std::find(targets.begin(), targets.end(), aUtf8) != targets.end();
+        check(step("TARGETS offers UTF8_STRING").c_str(), hasUtf8,
+              std::to_string(targets.size()) + " targets");
+    }
+
+    // ---- remote → local: an X client's selection reaches AmberSSH -----------
+    // The client takes CLIPBOARD; the server asks it for the text; the client
+    // answers the way any X application would, and the text should arrive at
+    // the controller as a clipboard frame — or not at all, if the mode says so.
+    fromRemote.clear();
+    const std::string offered = "remote \xe2\x86\x92 amberx clipboard";
+    x.setSelectionOwner(aClipboard, win);
+    got = x.event(30 /*SelectionRequest*/, 0, ev, 3000);
+    bool answeredRequest = false;
+    if (got)
+    {
+        const uint32_t requestor = XClient::u32(&ev[12]);
+        const uint32_t selection = XClient::u32(&ev[16]);
+        const uint32_t target = XClient::u32(&ev[20]);
+        const uint32_t property = XClient::u32(&ev[24]);
+        if (target == aUtf8 && property != 0)
+        {
+            x.changeProperty(requestor, property, aUtf8, 8, offered.data(), offered.size());
+            // SelectionNotify: type, unused, sequence, time, then requestor,
+            // selection, target and property, each four bytes.
+            std::vector<uint8_t> note(32, 0);
+            note[0] = 31;
+            auto at32 = [&note](size_t off, uint32_t v) {
+                for (int i = 0; i < 4; ++i)
+                    note[off + i] = static_cast<uint8_t>((v >> (8 * i)) & 0xff);
+            };
+            at32(4, 0);                          // CurrentTime
+            at32(8, requestor);
+            at32(12, selection);
+            at32(16, target);
+            at32(20, property);
+            x.sendEvent(requestor, note);
+            answeredRequest = true;
+        }
+    }
+    check(step("the server asks the selection owner for text").c_str(),
+          wantToLocal ? answeredRequest : !got,
+          wantToLocal ? (got ? "asked" : "never asked")
+                      : (got ? "asked, and should not have" : "did not ask, as configured"));
+
+    if (wantToLocal && answeredRequest)
+    {
+        // Drain until the frame arrives: it comes up the control channel, not
+        // this client's, so any request will carry the wait.
+        for (int i = 0; i < 20 && fromRemote.empty(); ++i)
+        {
+            std::vector<uint8_t> probe = { 14, 0, 0, 0 };
+            XClient::put32(probe, x.root);
+            x.send(probe);
+            std::vector<uint8_t> rep;
+            x.reply(x.seq, rep, 250);
+        }
+        check(step("selection text reaches AmberSSH").c_str(), fromRemote == offered,
+              fromRemote.empty() ? "nothing arrived" : std::to_string(fromRemote.size()) + " bytes");
+    }
+
+    check(step("no X errors and no host errors").c_str(), x.hostErrors.empty(), x.hostErrors);
+    c.CloseChannel(1);
+    return failures;
+}
+
 int RunPreviewTimeoutCheck(AmberXController& c, const Line& line)
 {
     int failures = 0;
@@ -745,11 +1216,12 @@ int RunPreviewTimeoutCheck(AmberXController& c, const Line& line)
         s.insert(s.end(), 16, 0x42);
         y.sendRaw(s);
         bool refused = false;
-        std::string reason;
+        std::string reason = "no reply to the setup";
         if (y.recv(8, 5000))
         {
             const uint8_t status = y.inbuf[0];
             const uint32_t extra = XClient::u16(&y.inbuf[6]) * 4;
+            reason = "setup status " + std::to_string(status);
             if (y.recv(8 + extra, 3000) && status == 0)
             {
                 refused = true;

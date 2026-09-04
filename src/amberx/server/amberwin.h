@@ -44,8 +44,77 @@ typedef struct amberwin_config {
                                the SECURITY extension (Phase 5); 1: trusted */
     int auth_timeout_seconds; /* untrusted authorization timeout; 0 = none */
     int skin;               /* AmberSSH chrome style index for the badge */
+    int clipboard_mode;     /* one of the AMBERWIN_CLIP_* values below */
 } amberwin_config;
+
+/* Clipboard policy. The authority is AmberSSH — it is the process that can
+ * reach the Windows clipboard at all — but the mode is passed down and the
+ * X side enforces its own copy, so a host that has been subverted still
+ * cannot move text in a direction the user did not enable. There is no
+ * "advanced/full integration" value: images, file lists and markup each
+ * need their own threat analysis and their own bounded parser, and until
+ * they have one the bridge is text. */
+enum {
+    AMBERWIN_CLIP_OFF = 0,       /* the default: no bridge at all */
+    AMBERWIN_CLIP_ASK = 1,       /* every transfer is confirmed by the user */
+    AMBERWIN_CLIP_TO_LOCAL = 2,  /* remote → local text only */
+    AMBERWIN_CLIP_TO_REMOTE = 3, /* local → remote text only */
+    AMBERWIN_CLIP_BOTH = 4       /* both directions, no confirmation */
+};
 const amberwin_config *amberwin_get_config(void);
+
+/* ---- the keyboard layout (X side pulls, once and on change) ------------
+ *
+ * The Windows side reads the live keyboard layout and reports what each key
+ * produces as Unicode code points; the X side turns those into keysyms and
+ * builds the XKB map (ddx_keymap.c). The split is deliberate: reading the
+ * layout needs Win32, and keysym values are an X constant, so neither half
+ * has to know the other's headers.
+ *
+ * Four levels, in XKB order: plain, Shift, AltGr, Shift+AltGr. A level with
+ * ucs 0 does not exist on that key. `dead` marks a level that composes with
+ * the next keystroke rather than producing its character; the X side maps
+ * the spacing character to the matching dead keysym.
+ *
+ * Only keys that produce characters are reported. Everything structural —
+ * function keys, navigation, modifiers, the keypad — comes from the X
+ * side's own table, which is what makes a partial or unusual layout safe:
+ * the worst case is a key with no symbol, never a keyboard with no Escape. */
+enum { AMBERWIN_KEY_LEVELS = 4 };
+typedef struct amberwin_key {
+    uint16_t evdev;
+    uint32_t ucs[AMBERWIN_KEY_LEVELS];
+    uint8_t dead[AMBERWIN_KEY_LEVELS];
+} amberwin_key;
+
+typedef struct amberwin_keymap {
+    const amberwin_key *keys;
+    int nkeys;
+    int has_level3;         /* the layout puts anything on AltGr */
+    int repeat_delay_ms;    /* Windows' repeat delay and rate, for XKB's */
+    int repeat_interval_ms;
+    char name[96];          /* the layout's own name, for the log only */
+} amberwin_keymap;
+/* NULL when the Windows side could not read a layout: the X side then uses
+ * its built-in US map unchanged. */
+const amberwin_keymap *amberwin_get_keymap(void);
+
+/* ---- monitors (X side pulls, once and on AMBERWIN_EV_MONITORS) --------
+ * Rectangles are in X screen coordinates (desktop minus the origin), so a
+ * monitor left of the primary one has a non-negative x here even though its
+ * Windows coordinate is negative. mm_w/mm_h are derived from the monitor's
+ * own DPI, which is how a client learns that two monitors scale
+ * differently. */
+typedef struct amberwin_monitor {
+    int32_t x, y, w, h;
+    int32_t mm_w, mm_h;
+    int32_t dpi;
+    int32_t primary;
+    char name[32];
+} amberwin_monitor;
+/* Writes at most `cap` monitors, returns how many exist (which may exceed
+ * `cap`). Always at least 1. */
+int amberwin_monitors(amberwin_monitor *out, int cap);
 
 /* ---- services (X side → Windows side) --------------------------------- */
 uint32_t amberwin_now_ms(void);
@@ -125,6 +194,10 @@ enum {
     AMBERWIN_EV_BUTTON,         /* button 1..7, pressed */
     AMBERWIN_EV_KEY,            /* keycode (evdev), pressed */
     AMBERWIN_EV_FOCUS,          /* rootful: pressed = 1 gained, 0 lost */
+    AMBERWIN_EV_LOCKS,          /* x = caps, y = num, w = scroll (Windows') */
+    AMBERWIN_EV_KEYMAP,         /* the Windows layout changed; re-read it */
+    AMBERWIN_EV_MONITORS,       /* the monitor topology changed */
+    AMBERWIN_EV_CLIPBOARD,      /* AmberSSH sent text; pull it */
     /* rootless frame events, all carrying xid */
     AMBERWIN_EV_FRAME_CLOSE,    /* the user closed the native window */
     AMBERWIN_EV_FRAME_CONFIGURE,/* the user moved/resized it: x,y,w,h of the view */
@@ -161,6 +234,19 @@ void amberwin_channel_close(uint32_t ch);
 
 /* Host → controller status. Counts only, by construction. */
 void amberwin_report(uint32_t open_clients, uint64_t bytes_in, int cookie_set);
+
+/* ---- clipboard: UTF-8 text, both directions ---------------------------
+ * Neither side keeps a copy longer than the transfer needs, and neither
+ * logs one. The X side pulls after AMBERWIN_EV_CLIPBOARD rather than being
+ * handed a pointer, so there is no question of who frees what.
+ *
+ * pull: copies the pending text into `buf`, at most `cap` bytes, and
+ *       returns how many were copied; 0 when there is nothing pending or it
+ *       does not fit. The pending text is consumed either way.
+ * push: hands an X client's selection text to the Windows side, which
+ *       applies the session's clipboard policy to it. */
+uint32_t amberwin_clipboard_pull(char *buf, uint32_t cap);
+void amberwin_clipboard_push(const char *utf8, uint32_t len);
 
 /* ---- entry (Windows side → X side, once, on the server thread) -------- */
 int  amberx_server_main(int argc, char **argv);

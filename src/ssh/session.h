@@ -98,6 +98,10 @@ struct SshConfig
     int amberxSkin = 0;
     // Trusted X11: an explicit, warned opt-in. Fixed for the host's lifetime.
     bool x11Trusted = false;
+    // Clipboard policy for AmberX, one of the AMBERWIN_CLIP_* values in
+    // src/amberx/server/amberwin.h. Disabled by default; every other value
+    // is something the user chose in the profile.
+    int x11Clipboard = 0;
 
     // ---- Telnet / Rlogin ---------------------------------------------------
     bool telnetPassive = false;
@@ -128,6 +132,11 @@ enum class SshEventType
     Connected,
     Closed,          // text = reason
     Error,           // text = message
+    // Phase 6: UTF-8 text an X client put on the session's clipboard. The
+    // worker never touches the Windows clipboard itself — opening it can
+    // block on whichever application currently holds it — so the text is
+    // handed to the UI thread as an ordinary event and applied there.
+    ClipboardText,
 };
 
 struct SshEvent
@@ -167,6 +176,11 @@ public:
     // reconnect. It only ever ADDS: nothing here can remove a forward the user
     // configured, and a listener still binds loopback only.
     void AddForward(const std::string& spec);
+    // Offers UTF-8 text from the Windows clipboard to this session's X
+    // clients. Thread-safe and non-blocking: the worker sends it on its next
+    // pass, and drops it if the session has no AmberX host or the policy
+    // does not allow this direction.
+    void OfferClipboard(std::string utf8);
     void Disconnect();
     bool Running() const { return m_running.load(); }
     // True when the far end echoes what we type (SSH/Rlogin always; Telnet
@@ -218,6 +232,12 @@ private:
     // worker; the mutex is held only long enough to move the strings out.
     std::mutex m_fwdMutex;
     std::vector<std::string> m_pendingForwards;
+    // Clipboard text waiting to go to the AmberX host. One value: a
+    // clipboard has one current content, and an older copy is not worth
+    // delivering late.
+    std::mutex m_clipMutex;
+    std::string m_pendingClipboard;
+    bool m_clipPending = false;
     // The AmberX host for this session, when x11Backend == 1. Owned by the
     // worker thread: created after the x11-req succeeds, stopped as the
     // thread exits. Its Job Object ends the host if this process dies first.

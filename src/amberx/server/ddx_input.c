@@ -151,6 +151,65 @@ ProcessInputEvents(void)
     mieqProcessInputEvents();
 }
 
+/* ---- lock keys ------------------------------------------------------------
+ *
+ * Caps Lock and Num Lock are latched state, and the user can change them in
+ * another window while a forwarded application has no idea. Windows reports
+ * the truth when a frame is activated; the X side reconciles by pressing
+ * and releasing the lock key itself, which goes through XKB's own path, so
+ * indicators, the modifier mask and every client's idea of the state all
+ * move together. Setting the mask behind XKB's back does none of that.
+ *
+ * Scroll Lock has no modifier in AmberX's map, so it is accepted and
+ * ignored rather than bound to something arbitrary. */
+#define KEYCODE_CAPS (58 + 8)
+#define KEYCODE_NUM  (69 + 8)
+
+static void
+tap_key(int keycode)
+{
+    QueueKeyboardEvents(amberKeyboard, KeyPress, keycode);
+    QueueKeyboardEvents(amberKeyboard, KeyRelease, keycode);
+}
+
+static void
+sync_locks(int caps, int num)
+{
+    XkbSrvInfoPtr xkbi;
+    unsigned locked;
+
+    if (!amberKeyboard || !amberKeyboard->key || !amberKeyboard->key->xkbInfo)
+        return;
+    xkbi = amberKeyboard->key->xkbInfo;
+    locked = xkbi->state.locked_mods;
+    if (!!(locked & LockMask) != !!caps)
+        tap_key(KEYCODE_CAPS);
+    if (!!(locked & Mod2Mask) != !!num)
+        tap_key(KEYCODE_NUM);
+}
+
+/* The user switched Windows keyboard layout. Rebuilding the map through
+ * XkbCompileKeymap picks up the new one (ddx_keymap.c reads it from the
+ * Windows side), and XkbDeviceApplyKeymap installs it and tells clients,
+ * which is how a running application follows the switch without
+ * reconnecting. */
+static void
+reload_keymap(void)
+{
+    XkbDescPtr xkb;
+
+    if (!amberKeyboard)
+        return;
+    xkb = XkbCompileKeymap(amberKeyboard, NULL);
+    if (!xkb) {
+        LogMessage(X_WARNING, "AmberX: the new keyboard layout could not be built; keeping the old one\n");
+        return;
+    }
+    if (!XkbDeviceApplyKeymap(amberKeyboard, xkb))
+        LogMessage(X_WARNING, "AmberX: the new keyboard layout was rejected; keeping the old one\n");
+    XkbFreeKeyboard(xkb, XkbAllComponentsMask, TRUE);
+}
+
 /* One event from the Windows side. Coordinates are already screen pixels
  * and keycodes are already evdev codes; the +8 is the X keycode offset. */
 void
@@ -178,6 +237,12 @@ amber_ddx_input_event(const struct amberwin_event *ev)
             break;
         QueueKeyboardEvents(amberKeyboard, ev->pressed ? KeyPress : KeyRelease,
                             (int) ev->keycode + 8);
+        break;
+    case AMBERWIN_EV_LOCKS:
+        sync_locks(ev->x, ev->y);
+        break;
+    case AMBERWIN_EV_KEYMAP:
+        reload_keymap();
         break;
     default:
         break;

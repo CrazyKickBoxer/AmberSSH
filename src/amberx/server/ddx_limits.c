@@ -44,6 +44,8 @@ amber_limits amberLimits = {
     /* request_max_bytes */     4LL * 1024 * 1024,
     /* atoms_per_window */      2000,
     /* atoms_window_ms */       10000,
+    /* clipboard_max_bytes */   1LL * 1024 * 1024,
+    /* selection_timeout_ms */  5000,
 };
 
 /* ---- per-client bookkeeping ------------------------------------------------ */

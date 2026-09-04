@@ -56,6 +56,22 @@ OsInit(void)
      * being told by a signal */
     TimerInit();
     amber_limits_os_init();
+
+    /* AmberX never resets.
+     *
+     * A stock X server, when its last client disconnects, tears the whole
+     * server down and builds it again — a new generation, new screen, new
+     * atoms, new everything — because that is how an X display gets a clean
+     * slate between logins. None of that applies to a display that belongs
+     * to one SSH session: there is no next login, the cookie was delivered
+     * once and cannot be delivered again, and rebuilding the screen while
+     * the Windows side still holds the frames is a way to lose windows, not
+     * to clean up. The session ends when the session ends.
+     *
+     * This is -noreset, set here rather than left to a command line nobody
+     * types. The symptom when it was missing: close the last client, and
+     * the next one to connect got no answer at all. */
+    dispatchExceptionAtReset = 0;
 }
 
 void

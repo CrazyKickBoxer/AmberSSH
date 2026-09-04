@@ -56,6 +56,10 @@ public:
         // changed once the host is running.
         bool trusted = false;
         int authTimeoutSeconds = 1200;   // an unused untrusted cookie expires after this
+        // Phase 6 clipboard policy (AMBERWIN_CLIP_* in server/amberwin.h).
+        // AmberSSH is the authority — it is the only one of the two that can
+        // reach the Windows clipboard — but the host enforces its own copy.
+        int clipboardMode = 0;
     };
     void Configure(const Launch& l) { m_launch = l; }
 
@@ -73,6 +77,10 @@ public:
     bool SetCookie(const std::vector<uint8_t>& cookie16, uint32_t display);
     bool OpenChannel(uint32_t id);
     bool SendData(uint32_t id, const uint8_t* data, size_t len);
+    // UTF-8 clipboard text for the session's X clients. AmberSSH has already
+    // applied the clipboard policy by the time this is called; the host and
+    // the server apply their own copy of it again.
+    bool SendClipboard(const std::string& utf8);
     bool CloseChannel(uint32_t id);
     // Incoming HostStatus / HostError.
     PipeRead Poll(Frame& out, DWORD timeoutMs);

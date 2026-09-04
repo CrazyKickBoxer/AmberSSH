@@ -562,7 +562,8 @@ void PumpTunnels(std::vector<FwdTunnel>& tunnels, LIBSSH2_SESSION* session,
 // from the host: it is reported and dropped, never used to create a tunnel.
 void PumpAmberX(std::vector<FwdTunnel>& tunnels, amber::amberx::AmberXController& host,
                 bool& activity, const std::vector<uint8_t>& x11Fake,
-                const std::vector<uint8_t>& x11Real, std::string* x11Error)
+                const std::vector<uint8_t>& x11Real, std::string* x11Error,
+                std::string* clipboardIn)
 {
     using namespace amber::amberx;
     uint8_t buf[32768];
@@ -686,6 +687,13 @@ void PumpAmberX(std::vector<FwdTunnel>& tunnels, amber::amberx::AmberXController
             }
             break;
         }
+        case MsgType::ClipboardText:
+            // An X client's selection text. The server has already bounded
+            // it and checked the session's policy; the caller checks it
+            // again before any of it reaches the Windows clipboard.
+            if (clipboardIn && !f.payload.empty())
+                clipboardIn->assign(f.payload.begin(), f.payload.end());
+            break;
         case MsgType::HostError:
         {
             std::string text;
@@ -839,6 +847,18 @@ void SshSession::AddForward(const std::string& spec)
         return;
     std::lock_guard<std::mutex> lock(m_fwdMutex);
     m_pendingForwards.push_back(spec);
+}
+
+void SshSession::OfferClipboard(std::string utf8)
+{
+    if (utf8.empty())
+        return;
+    std::lock_guard<std::mutex> lock(m_clipMutex);
+    // A clipboard has one current value: an offer that has not been sent yet
+    // is replaced rather than queued behind, so what reaches the session is
+    // what the user last copied and never a backlog of older copies.
+    m_pendingClipboard = std::move(utf8);
+    m_clipPending = true;
 }
 
 void SshSession::Disconnect()
@@ -1333,6 +1353,7 @@ void SshSession::ThreadMain(SshConfig cfg)
                                        ? std::string()
                                        : amber::SigilMnemonic(amber::MakeSigil(fingerprint));
                     launch.skin = cfg.amberxSkin;
+                    launch.clipboardMode = cfg.x11Clipboard;
                     m_amberx->Configure(launch);
                 }
                 std::string aerr;
@@ -1451,11 +1472,34 @@ void SshSession::ThreadMain(SshConfig cfg)
             std::string x11Err;
             PumpTunnels(tunnels, session, activity, x11FakeCookie, x11RealCookie,
                         &x11Err);
+            std::string clipIn;
             if (m_amberx)
                 PumpAmberX(tunnels, *m_amberx, activity, x11FakeCookie, x11RealCookie,
-                           &x11Err);
+                           &x11Err, &clipIn);
             if (!x11Err.empty())
                 PostEvent(SshEventType::Status, x11Err);
+            // Clipboard, both directions. The policy is checked here as well
+            // as in the host and the server: three copies of one rule, none
+            // of them able to move text on their own.
+            if (!clipIn.empty() &&
+                (cfg.x11Clipboard == 1 || cfg.x11Clipboard == 2 || cfg.x11Clipboard == 4))
+                PostEvent(SshEventType::ClipboardText, std::move(clipIn));
+            if (m_amberx &&
+                (cfg.x11Clipboard == 1 || cfg.x11Clipboard == 3 || cfg.x11Clipboard == 4))
+            {
+                std::string out;
+                {
+                    std::lock_guard<std::mutex> lock(m_clipMutex);
+                    if (m_clipPending)
+                    {
+                        out = std::move(m_pendingClipboard);
+                        m_pendingClipboard.clear();
+                        m_clipPending = false;
+                    }
+                }
+                if (!out.empty())
+                    m_amberx->SendClipboard(out);
+            }
         }
 
         // X11 channels the server opened: connect each to the local display.

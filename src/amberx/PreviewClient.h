@@ -22,4 +22,11 @@ int RunPreviewTrustChecks(AmberXController& c, bool trusted,
 int RunPreviewTimeoutCheck(AmberXController& c,
                            const std::function<void(const char*, bool, const std::string&)>& line);
 
+// Phase 6: the clipboard bridge, on a host launched with `mode`
+// (AMBERWIN_CLIP_* in server/amberwin.h). Checks both directions against
+// what that mode is supposed to allow, so a mode that lets text through in a
+// direction the user disabled fails the gate.
+int RunPreviewClipboardChecks(AmberXController& c, int mode,
+                              const std::function<void(const char*, bool, const std::string&)>& line);
+
 } // namespace amber::amberx

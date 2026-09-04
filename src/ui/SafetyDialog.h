@@ -53,6 +53,13 @@ bool ShowRiskDialog(HWND owner, const RiskReport& report, ConfirmStyle style,
 // only on that positive confirmation.
 bool ShowTrustedX11Dialog(HWND owner, const std::string& hostname, bool sessionOnly);
 
+// One clipboard transfer, for profiles set to "ask each transfer" (Phase 6 of
+// AmberX). `toRemote` is the direction; `bytes` is how much text. The dialog
+// never shows the text itself — a confirmation box that displays what it is
+// protecting defeats the point for anything worth protecting. Returns true
+// only on a positive confirmation.
+bool ShowClipboardDialog(HWND owner, const std::string& hostname, bool toRemote, size_t bytes);
+
 // Draws a sigil into `rc` on a GDI DC, in the colours of the active skin.
 // Exposed so the tab strip and the status bar can draw the same figure at a
 // smaller size — recognition only works if it is the same drawing everywhere.

@@ -26,6 +26,8 @@ typedef struct amber_limits {
     long long request_max_bytes;    /* including BIG-REQUESTS */
     int atoms_per_window;           /* InternAtom (creating) per client per window */
     int atoms_window_ms;            /* the window for the atom rate */
+    long long clipboard_max_bytes;  /* one clipboard transfer, either way */
+    int selection_timeout_ms;       /* how long a selection transfer may take */
 } amber_limits;
 
 /* the defaults; the Windows side may lower them from the command line */

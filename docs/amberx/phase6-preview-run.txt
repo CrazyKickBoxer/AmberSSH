@@ -1,0 +1,103 @@
+start + handshake            ok
+pipe DACL (read back)        ok  1 ACE, access-allowed, current user only
+host alive                   ok
+set cookie                   ok
+status after cookie          ok  cookieSet=1
+open channel 1               ok
+status after open            ok  open=1
+setup accepted                               ok  root=0x69 depth=24 1920x1080
+InternAtom                                   ok
+CreateWindow + MapWindow                     ok
+CreateGC                                     ok
+PolyFillRectangle                            ok
+GetGeometry reply                            ok  200x120 at 10,66
+GetImage pixel == foreground                 ok  0x203040
+Expose event                                 ok
+native frame titled from _NET_WM_NAME        ok
+frame has a view child                       ok
+frame has the identity strip                 ok
+strip sits above the X pixels, outside them  ok  strip 28px, view 200x120
+ButtonPress at the posted point              ok  window 40,40 root 50,106
+KeyPress keycode 38                          ok
+keysym matches the Windows layout            ok  server 0x00000061 windows 0x00000061
+shifted keysym matches the Windows layout    ok  server 0x00000041 windows 0x00000041
+right-alt matches what the layout needs      ok  no AltGr on this layout, keysym 0x0000ffea
+Shift reaches the client as a modifier       ok
+three partial wheel deltas make one notch    ok  1 up, 0 down
+a reversed wheel scrolls the other way once  ok  1 down
+RANDR present                                ok  Generic Event Extension,SHAPE,XInputExtension,BIG-REQUESTS,SYNC,XKEYBOARD,XC-MISC,XFIXES,RENDER,RANDR
+RANDR version                                ok  1.6
+one RANDR output per monitor                 ok  1 CRTCs, 1 monitors
+each output has its monitor's geometry       ok  1920x1080+0+0 vs 1920x1080+0+0
+transient dialog has its own frame           ok
+dialog frame is owned by A's frame           ok
+_NET_CLIENT_LIST lists both windows          ok  2 entries
+_NET_SUPPORTING_WM_CHECK set                 ok
+FocusIn after native activation              ok
+ConfigureNotify after native move            ok  70,96 (expected 70,96)
+open channel 2                               ok
+second client setup, fragmented              ok  root=0x69 depth=24 1920x1080
+second client's window has its own frame     ok
+second client GetGeometry over fragmented frames ok
+_NET_CLIENT_LIST now lists three windows     ok  3 entries
+first client still answers                   ok
+closing channel 2 removes its frame          ok
+WM_DELETE_WINDOW on native close             ok
+frame still open until the client acts       ok
+no X errors and no host errors               ok
+close channel 1              ok
+status after close           ok  open=0
+double close refused         ok
+control-channel data unencodable ok
+host exited after shutdown   ok
+restart after stop           ok
+second host alive            ok
+second host exited           ok
+restricted host started (confinement read back) ok  integrity=Low privileges=1
+host runs at low integrity with its privileges stripped ok  integrity=Low privileges=1
+setup [restricted]                           ok  root=0x69 depth=24 1920x1080
+ChangeProperty on the root window [restricted] ok  error 10 (expected 10 BadAccess)
+GrabKeyboard outcome [restricted]            ok  reply, status 0
+20000x20000 pixmap refused [restricted]      ok  error 11
+BIG-REQUESTS enabled [restricted]            ok
+2 MiB property refused [restricted]          ok  error 11
+atom flood rate-limited [restricted]         ok  102 of 2100 refused
+server still answers after the flood [restricted] ok
+cookie absent from the host log ok
+trusted host started         ok  integrity=Low privileges=1
+setup [trusted]                              ok  root=0x69 depth=24 1920x1080
+ChangeProperty on the root window [trusted]  ok  error 0 (expected none)
+GrabKeyboard outcome [trusted]               ok  reply, status 0
+20000x20000 pixmap refused [trusted]         ok  error 11
+BIG-REQUESTS enabled [trusted]               ok
+2 MiB property refused [trusted]             ok  error 11
+atom flood rate-limited [trusted]            ok  102 of 2100 refused
+server still answers after the flood [trusted] ok
+host with a 2 s authorization timeout started ok  integrity=Low privileges=1
+setup with a 2 s authorization               ok  root=0x69 depth=24 1920x1080
+client before the timeout                    ok
+client after the timeout is refused          ok  No authorization is installed for this display
+clipboard host started (both directions) ok  integrity=Low privileges=1
+clipboard host setup                         ok  root=0x69 depth=24 1920x1080
+local text reaches the X selection [clipboard both] ok  27 bytes back
+TARGETS offers UTF8_STRING [clipboard both]  ok  4 targets
+the server asks the selection owner for text [clipboard both] ok  asked
+selection text reaches AmberSSH [clipboard both] ok  27 bytes
+no X errors and no host errors [clipboard both] ok
+clipboard host started (remote to local only) ok  integrity=Low privileges=1
+clipboard host setup                         ok  root=0x69 depth=24 1920x1080
+local text reaches the X selection [clipboard to-local] ok  refused, as configured
+the server asks the selection owner for text [clipboard to-local] ok  asked
+selection text reaches AmberSSH [clipboard to-local] ok  27 bytes
+no X errors and no host errors [clipboard to-local] ok
+clipboard host started (clipboard disabled) ok  integrity=Low privileges=1
+clipboard host setup                         ok  root=0x69 depth=24 1920x1080
+local text reaches the X selection [clipboard off] ok  refused, as configured
+the server asks the selection owner for text [clipboard off] ok  did not ask, as configured
+no X errors and no host errors [clipboard off] ok
+host for the crash test started ok  integrity=Low privileges=1
+controller sees the host crash as a closed pipe ok
+controller starts a new host after the crash ok
+no host left after the crash test ok
+
+PREVIEW PASSED

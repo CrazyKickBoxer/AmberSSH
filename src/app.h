@@ -349,6 +349,9 @@ private:
     void SendToShell(const std::string& bytes);
     void CopySelection();
     void SetClipboardText(const std::string& utf8);
+    // WM_CLIPBOARDUPDATE: offers the new text to the session in front, if its
+    // profile enabled that direction. UI thread only.
+    void OnWindowsClipboardChanged();
     void Paste();
     void ToggleFullscreen();
     bool CellFromPx(int px, int py, int& row, int& col) const;
@@ -647,6 +650,11 @@ private:
     bool m_diagMode = false;
     // --preview-safety: show the safety modals once at startup, then exit.
     int m_previewSafety = 0;   // 1 = unknown key, 2 = changed key
+    // AmberX clipboard bridge: true once AddClipboardFormatListener took, and
+    // the last text handed to a session, so AmberSSH's own copies and the
+    // echo of a paste do not loop back round.
+    bool m_clipboardListener = false;
+    std::string m_lastClipboardSent;
 
 
     // perf logging (AMBERSSH_PERFLOG=<path> appends one CSV row per second)

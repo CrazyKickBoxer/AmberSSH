@@ -2,7 +2,7 @@
 
 What can go wrong when a remote machine draws windows on this desktop, and
 what AmberX does about each of it. Written against the code as it is after
-Phase 5; every "mitigation" names the place it lives, and every "gap" is a
+Phase 6; every "mitigation" names the place it lives, and every "gap" is a
 gap. The remote side of an SSH session is assumed hostile: it may be
 compromised, or it may simply be a machine the user does not fully trust.
 
@@ -38,7 +38,7 @@ identity strip; AmberSSH's own process and windows; the user's files.
 | 2 | **Integer overflow / signedness** | `ReadRequestFromClient` checks `needed > MAXINT >> 2`; limits refuse pixmap dimensions before `w*h*4` is computed on a large value; icon lengths checked against the property size; LLP64 warnings read and listed (PHASE-1-GATE §3). | `os_connection.c`, `ddx_limits.c`, `ddx_wm.c` | mitigated; 20 LLP64 casts listed, not individually proven |
 | 3 | **Oversized pixmaps / images / icons / properties** | Central limits: pixmap 8192² / 64 MiB / 512 MiB total; property 1 MiB; icon 256²; request 4 MiB. Refused with `BadAlloc`; the server continues. | `amberlimits.h`, `ddx_limits.c` | mitigated, gate-tested |
 | 4 | **Use-after-free across window/client teardown** | Upstream dix owns resource lifetimes; AmberX's per-client record is freed only in `CloseDownConnection`, its frame records only through the rootless `DestroyFrame`; the close timer is freed with the managed record. | dix, `os_connection.c`, `ddx_wm.c` | relies on upstream; no ASan run yet |
-| 5 | **Clipboard theft / clipboard bombs** | No clipboard bridge exists yet. When it does (Phase 6) it lives in AmberSSH, not the host: the host cannot read the desktop clipboard at low integrity, and payloads are size-capped before crossing the pipe. | — | **gap until Phase 6** |
+| 5 | **Clipboard theft / clipboard bombs** | Disabled by default; five explicit per-profile modes; text only (no images, file lists or markup, each of which would need its own bounded parser). The policy is enforced in AmberSSH, in the session worker and in the server, and the host — which is the part running at low integrity — cannot reach the Windows clipboard at all, only relay. One transfer is capped at 1 MiB and one selection transfer at 5 s, INCR included. In "ask" mode the confirmation names the direction, the host and the size, and never shows the text. | `app.cpp`, `session.cpp`, `ddx_clipboard.c`, `SafetyDialog.cpp` | mitigated, gate-tested in three modes |
 | 6 | **Keystroke monitoring in trusted mode** | Trusted mode is what makes it possible, by design (X11 trusted = one client may see another's input). It is an explicit per-profile opt-in behind a typed-hostname warning, shown as `X11 TRUSTED` on every frame, and cannot be entered from restricted mode without restarting the host. | `ConnectionDialog`, `SafetyDialog`, strip | mitigated by friction and display |
 | 7 | **Input injection** | XTEST is compiled; in restricted mode the SECURITY device policy denies untrusted clients keyboard access beyond the core mask. Synthetic input never leaves the host: it has no way to send messages to other processes (low integrity + UIPI). | `Xext/security.c`, token | mitigated |
 | 8 | **Focus stealing and fake security dialogs** | A remote window can only be a frame with the identity strip; it cannot draw outside its view, cannot raise itself above AmberSSH's dialogs by `SetForegroundWindow` (foreground rules; low integrity), and the strip text is not the remote's. AmberSSH's own safety dialogs are skinned and owned by AmberSSH's medium-integrity process. | `WinBackend.cpp` | mitigated |
@@ -58,6 +58,9 @@ identity strip; AmberSSH's own process and windows; the user's files.
 | 21 | **One forwarded client attacking another** | Nothing stops it. Upstream's `SecurityDoCheck` permits any access whose *object* is untrusted, and every forwarded client in a session shares the untrusted level, so two forwarded programs reach each other exactly as on a normal X server. Restricted mode is a boundary between the session and the server, not within the session. | `Xext/security.c` | **not mitigated, by upstream design** |
 | 22 | **Selection theft between trust levels** | The SECURITY extension does not register `XACE_SELECTION_ACCESS` in 21.1.24 — only the SELinux hooks do, and they are not built — so selection ownership is not restricted by trust level. | — | **gap; policy belongs with the Phase 6 clipboard** |
 
+| 23 | **An extension as an attack surface** | Restricted clients may use ten extensions by name (`ddx_policy.c`), each with its reason recorded there. XTEST (input injection), SECURITY (authorization management), DAMAGE and Composite (both screen scraping) and MIT-SHM are excluded although compiled. Upstream's own list of two is not usable — it denies RENDER and XKEYBOARD, so nothing runs — and a default mode nothing runs in pushes users to trusted mode, which is worse. | `ddx_policy.c` | mitigated by an allowlist that is wider than upstream's and narrower than trusted |
+| 24 | **Input from one forwarded client seen by another** | XI2 raw events can be selected on the root, so a forwarded client can see input directed at another forwarded window. The AmberX root only ever carries input the user aimed at a forwarded window — the server never sees the rest of the desktop's input — so this is not a keylogger for the machine. Within the session it is the same boundary as 21. | `ddx_policy.c`, `WinBackend.cpp` | **the same gap as 21, named separately because it is easy to miss** |
+
 ## Gaps, plainly
 
 - Forwarded clients are not isolated from each other (21), and selections
@@ -65,8 +68,6 @@ identity strip; AmberSSH's own process and windows; the user's files.
   "restricted" does not mean, and both are upstream semantics rather than
   AmberX shortcuts. Isolating them would break copy-and-paste between two
   forwarded applications, so it is a deliberate open item, not an oversight.
-- The clipboard (5) does not exist yet; when it does, it must not live in the
-  low-integrity host.
 - No fuzzing has been run against the request parser (1); Phase 8.
 - Two sessions have not been run at once (13).
 - AppContainer was evaluated and not adopted for now: it would need the

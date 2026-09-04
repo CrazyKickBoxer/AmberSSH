@@ -378,6 +378,11 @@ bool App::Init(HWND hwnd, bool diagMode, const std::string& connectId,
     // on the main window (re-applied by ApplyTheme when the theme changes).
     amber::ApplyWindowChrome(hwnd);
 
+    // The clipboard bridge listens from here on. Registering costs nothing
+    // when no session wants the clipboard: OnWindowsClipboardChanged returns
+    // immediately unless the session in front has asked for that direction.
+    m_clipboardListener = AddClipboardFormatListener(hwnd) != 0;
+
     RECT rc;
     GetClientRect(hwnd, &rc);
     uint32_t w = std::max<LONG>(rc.right - rc.left, 8);
@@ -943,6 +948,29 @@ void App::PumpSshEvents()
                         s.closeRequested = true;
                 }
                 break;
+
+            case SshEventType::ClipboardText:
+            {
+                // An X client put text on the session's clipboard. This runs
+                // on the UI thread, which is the only place allowed to touch
+                // the Windows clipboard: opening it can block on whichever
+                // application currently owns it, and the session worker has a
+                // terminal to keep responsive.
+                const int mode = s.profile.x11Clipboard;
+                bool allow = (mode == 2 || mode == 4);
+                if (mode == 1)
+                    allow = amber::ShowClipboardDialog(m_hwnd, s.profile.host, false,
+                                                       ev.text.size());
+                if (allow)
+                {
+                    SetClipboardText(ev.text);
+                    char msg[96];
+                    snprintf(msg, sizeof msg, "Clipboard: %zu bytes from the session",
+                             ev.text.size());
+                    SetStatus(msg);
+                }
+                break;
+            }
 
             case SshEventType::Error:
                 if (!onDrop(ev.text))
@@ -5088,6 +5116,49 @@ void App::OnWheel(int delta, bool ctrl)
             return;
         Foc().grid.ScrollView(notches * 3);
     }
+}
+
+// The Windows clipboard changed. Only the session the user is looking at is
+// offered the text, and only if its profile asked for that direction: a copy
+// meant for one host has no business reaching every other host that happens
+// to be connected. AmberSSH's own copies land here too — the text is the same
+// either way, and re-offering it costs one comparison.
+void App::OnWindowsClipboardChanged()
+{
+    if (!HasSession())
+        return;
+    amber::Session& s = Cur();
+    const int mode = s.profile.x11Clipboard;
+    if (mode != 1 && mode != 3 && mode != 4)
+        return;
+    if (s.profile.x11Backend != 1 || s.state != amber::SessionState::Connected)
+        return;
+
+    // Reading it is a UI-thread operation and may fail while another
+    // application holds the clipboard; a failure is simply "not this time".
+    if (!OpenClipboard(m_hwnd))
+        return;
+    std::string utf8;
+    if (HANDLE h = GetClipboardData(CF_UNICODETEXT))
+    {
+        if (const wchar_t* w = static_cast<const wchar_t*>(GlobalLock(h)))
+        {
+            utf8 = Utf8FromWide(w);
+            GlobalUnlock(h);
+        }
+    }
+    CloseClipboard();
+    if (utf8.empty() || utf8 == m_lastClipboardSent)
+        return;
+    if (utf8.size() > (1u << 20))
+    {
+        SetStatus("Clipboard: too large to share with the session");
+        return;
+    }
+    if (mode == 1 && !amber::ShowClipboardDialog(m_hwnd, s.profile.host, true, utf8.size()))
+        return;
+    m_lastClipboardSent = utf8;
+    s.ssh.OfferClipboard(utf8);
 }
 
 void App::SetClipboardText(const std::string& utf8)
@@ -10997,6 +11068,7 @@ void App::BuildSshConfig(const amber::ConnectionProfile& p, SshConfig& cfg) cons
             cfg.amberxIdentity = cfg.host + " \xc2\xb7 " + cfg.user;
             cfg.amberxSkin = amber::ChromeId();
             cfg.x11Trusted = p.x11Trust != 0;
+            cfg.x11Clipboard = p.x11Clipboard;
         }
         else
         {
@@ -14043,10 +14115,16 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
     case WM_ERASEBKGND:
         return 1;
 
+    case WM_CLIPBOARDUPDATE:
+        OnWindowsClipboardChanged();
+        return 0;
+
     case WM_CLOSE:
         DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
+        if (m_clipboardListener)
+            RemoveClipboardFormatListener(hwnd);
         PostQuitMessage(0);
         return 0;
 

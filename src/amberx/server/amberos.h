@@ -66,4 +66,16 @@ void amber_wm_frame_destroyed(WindowPtr pWin, struct amberwin_frame *f);
 void amber_wm_frame_switched(WindowPtr pNew, WindowPtr pOld, struct amberwin_frame *f);
 void amber_wm_event(const struct amberwin_event *ev);
 
+/* ---- ddx_clipboard.c: the X half of the clipboard bridge -------------- */
+Bool amber_clipboard_screen_init(ScreenPtr pScreen);
+void amber_clipboard_from_windows(void);
+void amber_clipboard_close(void);
+
+/* ---- ddx_policy.c: which extensions a restricted client may use ------ */
+Bool amber_policy_init(void);
+
+/* ---- ddx_randr.c: the Windows monitors as RANDR outputs ---------------- */
+Bool amber_randr_screen_init(ScreenPtr pScreen);
+void amber_randr_monitors_changed(void);
+
 #endif

@@ -265,6 +265,16 @@ amberScreenInit(ScreenPtr pScreen, int argc, char **argv)
             return FALSE;
         if (!amber_wm_screen_init(pScreen))
             return FALSE;
+        /* RANDR describes the desktop the screen actually is: one output
+         * per Windows monitor. Rootful mode has no such correspondence —
+         * its screen is one window, not the desktop — so it has no RANDR
+         * rather than a wrong one. */
+        if (!amber_randr_screen_init(pScreen))
+            return FALSE;
+        /* the clipboard bridge needs a root to hang its transfer window
+         * from, which rootless has and rootful does not use the same way */
+        if (!amber_clipboard_screen_init(pScreen))
+            return FALSE;
     }
     else {
         as->CreateScreenResources = pScreen->CreateScreenResources;
@@ -279,6 +289,14 @@ amberScreenInit(ScreenPtr pScreen, int argc, char **argv)
         return FALSE;
     /* limits wrap last, so they are outermost on every path */
     if (!amber_limits_screen_init(pScreen))
+        return FALSE;
+    /* The extension allowlist for restricted clients. Registered here,
+     * during InitOutput, so that it runs *after* the SECURITY extension's
+     * own hook, which is registered later in InitExtensions: dix prepends
+     * callbacks and calls them from the head, so the earlier registration
+     * is the later call, and only the later call can widen what the
+     * earlier one denied. */
+    if (!amber_policy_init())
         return FALSE;
     return TRUE;
 }

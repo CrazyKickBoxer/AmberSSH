@@ -208,9 +208,13 @@ target_link_libraries(AmberXHost PRIVATE bcrypt advapi32)
 # the Windows backend joins the target and the four static libraries link in.
 # Without it, main.cpp compiles to the transport-only stub, as before.
 if(AMBERX_CORE)
-    target_sources(AmberXHost PRIVATE src/amberx/host/WinBackend.cpp src/ui/Chrome.cpp)
+    target_sources(AmberXHost PRIVATE src/amberx/host/WinBackend.cpp
+                                      src/amberx/host/WinKeymap.cpp
+                                      src/ui/Chrome.cpp)
     target_compile_definitions(AmberXHost PRIVATE AMBERX_HAVE_SERVER)
-    target_link_libraries(AmberXHost PRIVATE AmberXServer AmberXCore AmberXPixman AmberXFont gdi32 user32)
+    # shcore: GetDpiForMonitor, so each monitor reports its own scale to RANDR
+    target_link_libraries(AmberXHost PRIVATE AmberXServer AmberXCore AmberXPixman AmberXFont
+                                             gdi32 user32 shcore)
     # a linker map, so an exception offset in the host log resolves to a symbol
     target_link_options(AmberXHost PRIVATE /MAP)
 endif()

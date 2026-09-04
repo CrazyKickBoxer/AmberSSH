@@ -53,6 +53,7 @@ enum class MsgType : uint16_t
     AuthProof = 3,      // controller → host: proof over the host's nonce
     SetCookie = 4,      // controller → host: the MIT-MAGIC-COOKIE-1 to accept
     Shutdown = 5,       // controller → host: close cleanly
+    ClipboardText = 6,  // either way: UTF-8 clipboard text, already policy-checked
     // --- per-channel ------------------------------------------------------
     ChannelOpen = 16,   // a forwarded X11 connection began
     ChannelData = 17,   // X11 bytes in either direction

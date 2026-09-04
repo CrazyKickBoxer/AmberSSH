@@ -69,7 +69,7 @@ HFONT MakeFont(UINT dpi, int px, int weight, const wchar_t* face)
 
 // The two dialogs share a window class and a paint routine for the ground, so
 // a skin only has to be taught the surface once.
-enum class Kind { HostKey, Risk, TrustedX11 };
+enum class Kind { HostKey, Risk, TrustedX11, Clipboard };
 
 struct SafetyState
 {
@@ -97,6 +97,9 @@ struct SafetyState
     std::wstring hostname;
     // trusted X11
     bool sessionOnly = false;
+    // clipboard: the direction and how much, never the text itself
+    bool toRemote = false;
+    size_t clipBytes = 0;
     HWND edit = nullptr;
     HWND yes = nullptr;
     HWND no = nullptr;
@@ -567,6 +570,52 @@ void PaintRisk(HDC dc, const RECT& rc, SafetyState& st)
     SelectObject(dc, oldFont);
 }
 
+// One clipboard transfer, in "ask each transfer" mode. It says which way the
+// text is going, to or from which host, and how much of it — and never shows
+// the text. A confirmation box that displays what it is protecting is a
+// shoulder-surfing hole and, for a password manager's clipboard, an obvious
+// one; the size is enough for the user to recognise their own copy.
+void PaintClipboard(HDC dc, const RECT& rc, SafetyState& st)
+{
+    const UINT dpi = st.dpi;
+    PaintGround(dc, rc, st);
+    SetBkMode(dc, TRANSPARENT);
+
+    const int pad = PadLeft(dpi);
+    const int padR = Px(26, dpi) + (PadLeft(dpi) > Px(26, dpi) ? Px(16, dpi) : 0);
+    int y = Px(26, dpi);
+
+    RECT band = { pad, y, rc.right - padR, y + Px(30, dpi) };
+    HGDIOBJ oldFont = SelectObject(dc, st.bodyFont);
+    const std::wstring head = skin::Label(st.toRemote ? L"Clipboard \x2014 to the remote session"
+                                                      : L"Clipboard \x2014 from the remote session");
+    PaintAlarmBand(dc, band, st, head.c_str());
+    y += Px(42, dpi);
+
+    wchar_t what[256];
+    if (st.toRemote)
+        swprintf_s(what, L"%zu bytes of text from this machine's clipboard would become "
+                         L"readable by every program forwarded from %s.",
+                   st.clipBytes, st.hostname.c_str());
+    else
+        swprintf_s(what, L"%zu bytes of text from %s would replace this machine's clipboard.",
+                   st.clipBytes, st.hostname.c_str());
+
+    SetTextColor(dc, st.pal.text);
+    RECT t = { pad, y, rc.right - padR, y + Px(60, dpi) };
+    DrawTextW(dc, what, -1, &t, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+    y += Px(56, dpi);
+
+    SelectObject(dc, st.smallFont);
+    SetTextColor(dc, st.pal.textDim);
+    RECT n = { pad, y, rc.right - padR, y + Px(40, dpi) };
+    DrawTextW(dc,
+              L"Text only, and only this transfer. The clipboard mode for this "
+              L"connection is set in its profile.",
+              -1, &n, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+    SelectObject(dc, oldFont);
+}
+
 // The trusted-X11 opt-in. Same ground, band, wells and typed confirmation as
 // the risk dialog, so every skin already knows how to draw it; the words are
 // the part that is new, and they say what trusted X11 actually permits.
@@ -662,7 +711,9 @@ void Paint(HWND hwnd, SafetyState& st)
     HBITMAP bmp = CreateCompatibleBitmap(front, rc.right, rc.bottom);
     HGDIOBJ oldBmp = SelectObject(dc, bmp);
 
-    if (st.kind == Kind::HostKey)
+    if (st.kind == Kind::Clipboard)
+        PaintClipboard(dc, rc, st);
+    else if (st.kind == Kind::HostKey)
         PaintHostKey(dc, rc, st);
     else if (st.kind == Kind::TrustedX11)
         PaintTrustedX11(dc, rc, st);
@@ -978,6 +1029,23 @@ bool ShowTrustedX11Dialog(HWND owner, const std::string& hostname, bool sessionO
         h += 22;
     return RunModal(owner, st, 660, h, L"AmberSSH \x2014 trusted X11",
                     L"Enable trusted X11", L"Keep restricted");
+}
+
+bool ShowClipboardDialog(HWND owner, const std::string& hostname, bool toRemote, size_t bytes)
+{
+    SafetyState st;
+    st.kind = Kind::Clipboard;
+    st.dpi = owner ? GetDpiForWindow(owner) : GetDpiForSystem();
+    st.pal = MakeDialogPalette();
+    st.style = ConfirmStyle::YesNo;      // per transfer: friction, not a ritual
+    st.hostname = Wide(hostname.empty() ? std::string("this session") : hostname);
+    st.toRemote = toRemote;
+    st.clipBytes = bytes;
+    int h = 150 + 56 + 40 + 34;
+    if (ChromeSkinned() && Chrome().elbow)
+        h += 22;
+    return RunModal(owner, st, 600, h, L"AmberSSH \x2014 clipboard",
+                    toRemote ? L"Send it" : L"Paste it", L"Block");
 }
 
 bool ShowRiskDialog(HWND owner, const RiskReport& report, ConfirmStyle style,

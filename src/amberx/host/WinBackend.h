@@ -25,6 +25,7 @@ struct HostOptions
     int skin = 0;               // AmberSSH chrome style index
     bool trusted = false;       // the SECURITY trust level of the session cookie
     int authTimeout = 1200;     // seconds an unused untrusted cookie lives
+    int clipboard = 0;          // AMBERWIN_CLIP_*; 0 (off) is the default
 };
 
 // Registers the window classes and, rootful, the display window. The pipe

@@ -962,6 +962,12 @@ drain_backend(void)
         case AMBERWIN_EV_FRAME_STATE:
             amber_wm_event(&ev);
             break;
+        case AMBERWIN_EV_MONITORS:
+            amber_randr_monitors_changed();
+            break;
+        case AMBERWIN_EV_CLIPBOARD:
+            amber_clipboard_from_windows();
+            break;
         default:
             amber_ddx_input_event(&ev);
             break;

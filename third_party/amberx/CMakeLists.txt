@@ -220,6 +220,9 @@ add_library(AmberXServer STATIC
     ${AMBERX_SERVER_DIR}/ddx_keymap.c
     ${AMBERX_SERVER_DIR}/ddx_frames.c
     ${AMBERX_SERVER_DIR}/ddx_wm.c
+    ${AMBERX_SERVER_DIR}/ddx_randr.c
+    ${AMBERX_SERVER_DIR}/ddx_policy.c
+    ${AMBERX_SERVER_DIR}/ddx_clipboard.c
     ${AMBERX_SERVER_DIR}/ddx_limits.c
     ${AMBERX_SERVER_DIR}/server_main.c
     ${AMBERX_OS_RETAINED})

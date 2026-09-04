@@ -348,6 +348,7 @@ bool AmberXController::Start(std::string& err)
     if (m_launch.trusted)
         cmd += L" --trusted";
     cmd += L" --auth-timeout " + std::to_wstring(m_launch.authTimeoutSeconds);
+    cmd += L" --clipboard " + std::to_wstring(m_launch.clipboardMode);
 
     STARTUPINFOEXW si = {};
     si.StartupInfo.cb = sizeof(si);
@@ -480,6 +481,17 @@ bool AmberXController::SendData(uint32_t id, const uint8_t* data, size_t len)
     f.type = MsgType::ChannelData;
     f.channel = id;
     f.payload.assign(data, data + len);
+    return m_pipe.WriteFrame(f);
+}
+
+bool AmberXController::SendClipboard(const std::string& utf8)
+{
+    if (!m_ready || utf8.empty() || utf8.size() > kMaxPayload)
+        return false;
+    Frame f;
+    f.type = MsgType::ClipboardText;
+    f.channel = kControlChannel;
+    f.payload.assign(utf8.begin(), utf8.end());
     return m_pipe.WriteFrame(f);
 }
 
@@ -684,6 +696,27 @@ int RunPreview()
                 fprintf(out, "%-44s %s%s%s\n", step, ok ? "ok" : "FAIL", detail.empty() ? "" : "  ", detail.c_str());
             });
             u.Stop();
+        }
+    }
+    {
+        // Phase 6: the clipboard bridge, once with both directions enabled and
+        // once with only remote → local, so the mode is proven by what it
+        // refuses as much as by what it carries.
+        for (const int mode : { 4, 2, 0 })
+        {
+            AmberXController cb;
+            AmberXController::Launch lc = launch;
+            lc.clipboardMode = mode;
+            const char* what = mode == 4 ? "clipboard host started (both directions)"
+                             : mode == 2 ? "clipboard host started (remote to local only)"
+                                         : "clipboard host started (clipboard disabled)";
+            if (startWithCookie(cb, lc, what))
+            {
+                failures += RunPreviewClipboardChecks(cb, mode, [&](const char* step, bool ok, const std::string& detail) {
+                    fprintf(out, "%-44s %s%s%s\n", step, ok ? "ok" : "FAIL", detail.empty() ? "" : "  ", detail.c_str());
+                });
+                cb.Stop();
+            }
         }
     }
     {

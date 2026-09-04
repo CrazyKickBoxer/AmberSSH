@@ -45,6 +45,7 @@ struct Args
     int skin = 0;
     bool trusted = false;
     int authTimeout = 1200;
+    int clipboard = 0;
 };
 
 std::string Narrow(const std::wstring& w)
@@ -99,6 +100,8 @@ bool ParseArgs(int argc, wchar_t** argv, Args& a)
         }
         else if (k == L"--auth-timeout")
             a.authTimeout = static_cast<int>(wcstol(v.c_str(), nullptr, 10));
+        else if (k == L"--clipboard")
+            a.clipboard = static_cast<int>(wcstol(v.c_str(), nullptr, 10));
         else
             return false;
     }
@@ -251,6 +254,7 @@ int wmain(int argc, wchar_t** argv)
     opt.skin = a.skin;
     opt.trusted = a.trusted;
     opt.authTimeout = a.authTimeout;
+    opt.clipboard = a.clipboard;
     if (!BackendInit(pipe, opt, err))
     {
         fprintf(stderr, "AmberXHost: %s\n", err.c_str());

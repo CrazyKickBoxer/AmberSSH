@@ -41,6 +41,15 @@
 /* ---- the built-in US table ------------------------------------------------ */
 enum { T_ONE, T_TWO, T_ALPHA, T_KEYPAD };
 
+/* two types beyond the four canonical ones, for layouts with an AltGr level */
+#define T_FOUR_LEVEL       (XkbNumRequiredTypes)
+#define T_FOUR_LEVEL_ALPHA (XkbNumRequiredTypes + 1)
+#define AMBER_NUM_TYPES    (XkbNumRequiredTypes + 2)
+
+/* RALT's X keycode: the key that becomes ISO_Level3_Shift on a layout that
+ * has a third level, and stays Alt_R on one that does not */
+#define KEYCODE_RALT (100 + 8)
+
 typedef struct {
     unsigned char evdev;      /* evdev keycode; X keycode is +8 */
     char name[5];             /* XKB key name */
@@ -209,13 +218,173 @@ init_canonical_types(XkbDescPtr xkb)
     static const unsigned char alpha_lvls[] = { 1, 1 };
     static const unsigned char kp_mods[] = { ShiftMask, Mod2Mask };
     static const unsigned char kp_lvls[] = { 1, 1 };
+    /* AltGr is a real modifier here (Mod5 on the RALT key) rather than a
+     * virtual one: there is no rules file to bind a virtual modifier
+     * through, and every client reads the type's map, not its provenance. */
+    static const unsigned char four_mods[] = {
+        ShiftMask, Mod5Mask, ShiftMask | Mod5Mask
+    };
+    static const unsigned char four_lvls[] = { 1, 2, 3 };
+    static const unsigned char foura_mods[] = {
+        ShiftMask, LockMask, ShiftMask | LockMask,
+        Mod5Mask, ShiftMask | Mod5Mask, LockMask | Mod5Mask
+    };
+    static const unsigned char foura_lvls[] = { 1, 1, 0, 2, 3, 3 };
 
-    if (xkb->map->num_types < XkbNumRequiredTypes)
-        xkb->map->num_types = XkbNumRequiredTypes;
+    if (xkb->map->num_types < AMBER_NUM_TYPES)
+        xkb->map->num_types = AMBER_NUM_TYPES;
     return set_type(xkb, XkbOneLevelIndex, "ONE_LEVEL", 0, 1, 0, NULL, NULL) &&
            set_type(xkb, XkbTwoLevelIndex, "TWO_LEVEL", ShiftMask, 2, 1, two_mods, two_lvls) &&
            set_type(xkb, XkbAlphabeticIndex, "ALPHABETIC", ShiftMask | LockMask, 2, 2, alpha_mods, alpha_lvls) &&
-           set_type(xkb, XkbKeypadIndex, "KEYPAD", ShiftMask | Mod2Mask, 2, 2, kp_mods, kp_lvls);
+           set_type(xkb, XkbKeypadIndex, "KEYPAD", ShiftMask | Mod2Mask, 2, 2, kp_mods, kp_lvls) &&
+           set_type(xkb, T_FOUR_LEVEL, "FOUR_LEVEL", ShiftMask | Mod5Mask, 4, 3,
+                    four_mods, four_lvls) &&
+           set_type(xkb, T_FOUR_LEVEL_ALPHA, "FOUR_LEVEL_ALPHABETIC",
+                    ShiftMask | LockMask | Mod5Mask, 4, 6, foura_mods, foura_lvls);
+}
+
+/* ---- the live Windows layout ------------------------------------------------
+ *
+ * The Windows side reports Unicode code points (amberwin.h); here they become
+ * keysyms and key types, and are written over the built-in table's character
+ * keys. Structure — Escape, Return, the function keys, the modifiers, the
+ * keypad — is never touched, so an odd layout can leave a key blank but can
+ * never take the keyboard away. */
+
+/* The X convention: Latin-1 is its own keysym, everything else is the code
+ * point with the Unicode flag. Nothing here needs a table. */
+static KeySym
+keysym_from_ucs(uint32_t cp)
+{
+    if (cp == 0)
+        return NoSymbol;
+    if (cp < 0x100)
+        return (KeySym) cp;
+    return (KeySym) (cp | 0x01000000);
+}
+
+/* A dead key is reported as the spacing character it would otherwise type;
+ * these are the ones X has a dead keysym for. An unrecognised dead key
+ * keeps its literal character, which types something rather than nothing. */
+static KeySym
+keysym_from_dead(uint32_t cp)
+{
+    switch (cp) {
+    case 0x0060: return XK_dead_grave;
+    case 0x0027: return XK_dead_acute;        /* US-International */
+    case 0x00B4: return XK_dead_acute;
+    case 0x005E: return XK_dead_circumflex;
+    case 0x007E: return XK_dead_tilde;
+    case 0x0022: return XK_dead_diaeresis;    /* US-International */
+    case 0x00A8: return XK_dead_diaeresis;
+    case 0x00AF: return XK_dead_macron;
+    case 0x02D8: return XK_dead_breve;
+    case 0x02D9: return XK_dead_abovedot;
+    case 0x00B0: return XK_dead_abovering;
+    case 0x02DA: return XK_dead_abovering;
+    case 0x02DD: return XK_dead_doubleacute;
+    case 0x02C7: return XK_dead_caron;
+    case 0x00B8: return XK_dead_cedilla;
+    case 0x02DB: return XK_dead_ogonek;
+    case 0x0387: return XK_dead_belowdot;
+    default:     return keysym_from_ucs(cp);
+    }
+}
+
+/* Simple upper-casing, enough to recognise "this key is a letter": ASCII,
+ * Latin-1, and the even/odd pairs of Latin Extended-A. A letter AmberX
+ * fails to recognise gets TWO_LEVEL instead of ALPHABETIC, which types
+ * correctly and only differs under Caps Lock. */
+static uint32_t
+ucs_upper(uint32_t cp)
+{
+    if (cp >= 'a' && cp <= 'z')
+        return cp - 32;
+    if (cp >= 0xE0 && cp <= 0xFE && cp != 0xF7)
+        return cp - 32;
+    if (cp >= 0x100 && cp < 0x180 && (cp & 1))
+        return cp - 1;
+    return cp;
+}
+
+static Bool
+layout_is_alphabetic(const struct amberwin_key *k)
+{
+    return k->ucs[1] != 0 && k->ucs[0] != k->ucs[1] &&
+           ucs_upper(k->ucs[0]) == k->ucs[1];
+}
+
+static void
+apply_layout(XkbDescPtr xkb, const struct amberwin_keymap *km)
+{
+    int i, lv;
+    int applied = 0;
+
+    for (i = 0; i < km->nkeys; i++) {
+        const struct amberwin_key *k = &km->keys[i];
+        KeyCode kc = (KeyCode) (k->evdev + 8);
+        KeySym syms[AMBERWIN_KEY_LEVELS];
+        int width = 0;
+        int type;
+        KeySym *dst;
+
+        if (k->evdev == 0 || (unsigned) (k->evdev + 8) > 255)
+            continue;
+        for (lv = 0; lv < AMBERWIN_KEY_LEVELS; lv++) {
+            syms[lv] = k->dead[lv] ? keysym_from_dead(k->ucs[lv])
+                                   : keysym_from_ucs(k->ucs[lv]);
+            if (syms[lv] != NoSymbol)
+                width = lv + 1;
+        }
+        if (width == 0 || syms[0] == NoSymbol)
+            continue;
+
+        if (width > 2) {
+            width = 4;      /* a four-level type must have four levels */
+            type = layout_is_alphabetic(k) ? T_FOUR_LEVEL_ALPHA : T_FOUR_LEVEL;
+        }
+        else if (width == 2) {
+            type = layout_is_alphabetic(k) ? XkbAlphabeticIndex : XkbTwoLevelIndex;
+        }
+        else {
+            type = XkbOneLevelIndex;
+        }
+
+        dst = XkbResizeKeySyms(xkb, kc, width);
+        if (!dst)
+            continue;
+        for (lv = 0; lv < width; lv++)
+            dst[lv] = syms[lv];
+        xkb->map->key_sym_map[kc].kt_index[0] = (unsigned char) type;
+        xkb->map->key_sym_map[kc].group_info = XkbSetNumGroups(0, 1);
+        xkb->map->key_sym_map[kc].width = (unsigned char) width;
+        applied++;
+    }
+
+    /* A layout with a third level needs a key that reaches it. Windows
+     * sends right-alt as Ctrl+Alt; the Windows side drops the phantom
+     * control, and here right-alt becomes the level-three shift rather
+     * than a second Alt. On a layout with no third level it stays Alt_R,
+     * because taking Alt away from a US keyboard would be a regression. */
+    if (km->has_level3) {
+        KeySym *dst = XkbResizeKeySyms(xkb, KEYCODE_RALT, 1);
+        if (dst) {
+            dst[0] = XK_ISO_Level3_Shift;
+            xkb->map->key_sym_map[KEYCODE_RALT].kt_index[0] = XkbOneLevelIndex;
+            xkb->map->key_sym_map[KEYCODE_RALT].group_info = XkbSetNumGroups(0, 1);
+            xkb->map->key_sym_map[KEYCODE_RALT].width = 1;
+            xkb->map->modmap[KEYCODE_RALT] = Mod5Mask;
+        }
+    }
+
+    if (km->repeat_delay_ms > 0 && km->repeat_interval_ms > 0) {
+        xkb->ctrls->repeat_delay = (unsigned short) km->repeat_delay_ms;
+        xkb->ctrls->repeat_interval = (unsigned short) km->repeat_interval_ms;
+    }
+
+    LogMessage(X_INFO, "AmberX: keyboard layout %s applied to %d keys%s\n",
+               km->name[0] ? km->name : "(unnamed)", applied,
+               km->has_level3 ? ", AltGr is level three" : "");
 }
 
 static XkbDescPtr
@@ -231,7 +400,7 @@ build_builtin(void)
     xkb->min_key_code = 8;
     xkb->max_key_code = 255;
 
-    if (XkbAllocClientMap(xkb, XkbAllClientInfoMask, XkbNumRequiredTypes) != Success ||
+    if (XkbAllocClientMap(xkb, XkbAllClientInfoMask, AMBER_NUM_TYPES) != Success ||
         XkbAllocServerMap(xkb, XkbAllServerInfoMask, 0) != Success ||
         XkbAllocCompatMap(xkb, XkbAllCompatMask, 3) != Success ||
         XkbAllocNames(xkb, XkbAllNamesMask, 0, 0) != Success ||
@@ -292,6 +461,18 @@ build_builtin(void)
     xkb->names->compat = MakeAtom("amberx", 6, TRUE);
     xkb->names->keycodes = MakeAtom("amberx", 6, TRUE);
     xkb->names->groups[0] = MakeAtom("English (US)", 12, TRUE);
+
+    /* the user's own layout, over the character keys only */
+    {
+        const struct amberwin_keymap *km = amberwin_get_keymap();
+        if (km && km->nkeys > 0) {
+            apply_layout(xkb, km);
+            xkb->names->symbols = MakeAtom("amberx(windows)", 15, TRUE);
+        }
+        else {
+            LogMessage(X_INFO, "AmberX: no Windows layout available, using the built-in US map\n");
+        }
+    }
 
     /* derive the per-key actions from the interpretations and the modmap */
     memset(&changes, 0, sizeof changes);

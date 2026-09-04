@@ -46,6 +46,7 @@ bool KnownType(uint16_t t)
     case MsgType::AuthProof:
     case MsgType::SetCookie:
     case MsgType::Shutdown:
+    case MsgType::ClipboardText:
     case MsgType::ChannelOpen:
     case MsgType::ChannelData:
     case MsgType::ChannelClose:
@@ -65,6 +66,7 @@ bool IsControlOnly(MsgType t)
     case MsgType::AuthProof:
     case MsgType::SetCookie:
     case MsgType::Shutdown:
+    case MsgType::ClipboardText:
     case MsgType::HostStatus:
     case MsgType::HostError:
         return true;

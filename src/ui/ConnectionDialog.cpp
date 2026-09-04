@@ -1199,6 +1199,9 @@ void ConnectionDialog::DefineFields()
     str(Page::SshX11, &P::x11Display, L"X display location (e.g. localhost:0)", 260);
     choice(Page::SshX11, Kind::RadioRow, &P::x11Trust, L"X11 trust",
            {L"Restricted (default)", L"Trusted — saved", L"Trusted — this session only"});
+    choice(Page::SshX11, Kind::Combo, &P::x11Clipboard, L"Clipboard (AmberX only)",
+           {L"Disabled", L"Ask each transfer", L"Remote → local text",
+            L"Local → remote text", L"Both directions, text"});
     note(Page::SshX11, L"Remote X clients are connected to the X server at that display\r\n"
                        L"(VcXsrv, Xming, WSLg). Start it before connecting.");
 

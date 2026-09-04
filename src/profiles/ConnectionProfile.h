@@ -265,6 +265,10 @@ struct ConnectionProfile
     // untrusted); 1 trusted, saved with the profile after a warning;
     // 2 trusted for this session only — never written to disk.
     int         x11Trust = 0;
+    // AmberX clipboard policy (AMBERWIN_CLIP_* in amberx/server/amberwin.h):
+    // 0 disabled, 1 ask each transfer, 2 remote to local, 3 local to remote,
+    // 4 both. Disabled by default, and text only in every mode.
+    int         x11Clipboard = 0;
     std::string manualHostKeys;      // accepted fingerprints, one per line
     // Tunnels: semicolon-separated forward specs —
     //   L<listenPort>:<host>:<port>   local forward

@@ -26,6 +26,7 @@
 #include <Windows.h>
 #include <bcrypt.h>
 #include <windowsx.h>
+#include <shellscalingapi.h>
 
 #include <atomic>
 #include <cstdio>
@@ -41,6 +42,7 @@
 #include "../server/amberwin.h"
 #include "../../ui/Chrome.h"
 #include "WinBackend.h"
+#include "WinKeymap.h"
 
 extern "C" {
 #include "../../../third_party/amberx/config-msvc/compat/dirent.h"
@@ -92,6 +94,9 @@ struct Backend
     std::mutex qmu;
     std::deque<amberwin_event> events;
     std::unordered_map<uint32_t, ChannelBuf> channels;
+    // clipboard text from AmberSSH, waiting for the server thread to pull it;
+    // at most one, because a clipboard has at most one current value
+    std::vector<uint8_t> clipPending;
     HANDLE wake = nullptr;
 
     // outbound frames: server thread (data, status) and pipe thread (errors)
@@ -217,6 +222,84 @@ void Button(int button, bool down)
     Push(ev);
 }
 
+// A wheel that reports finer than a notch (precision touchpads and most
+// modern mice do) sends deltas smaller than WHEEL_DELTA. Truncating each
+// message would throw those away and the surface would feel dead, so the
+// remainder is carried and a button click is emitted per notch accumulated.
+// The remainder is cleared when the direction reverses, which is what stops
+// a slow scroll one way from paying for a slow scroll the other.
+int g_wheelV, g_wheelH;
+
+void Wheel(int delta, bool horizontal)
+{
+    int& acc = horizontal ? g_wheelH : g_wheelV;
+    if ((acc > 0) != (delta > 0))
+        acc = 0;
+    acc += delta;
+    while (acc >= WHEEL_DELTA)
+    {
+        acc -= WHEEL_DELTA;
+        const int b = horizontal ? 7 : 4;
+        Button(b, true);
+        Button(b, false);
+    }
+    while (acc <= -WHEEL_DELTA)
+    {
+        acc += WHEEL_DELTA;
+        const int b = horizontal ? 6 : 5;
+        Button(b, true);
+        Button(b, false);
+    }
+}
+
+// Caps, Num and Scroll as Windows currently has them. Sent when a frame is
+// activated, because that is the moment the X side's idea of the locks can
+// be wrong: the user may have pressed Caps Lock in another application.
+void PushLocks()
+{
+    amberwin_event ev{};
+    ev.type = AMBERWIN_EV_LOCKS;
+    ev.x = (GetKeyState(VK_CAPITAL) & 1) ? 1 : 0;
+    ev.y = (GetKeyState(VK_NUMLOCK) & 1) ? 1 : 0;
+    ev.w = (GetKeyState(VK_SCROLL) & 1) ? 1 : 0;
+    Push(ev);
+}
+
+// Windows sends AltGr as a left-control press immediately followed by a
+// right-alt press, with nothing in the message to tell that control from a
+// real one except that it arrives in the same tick. The X side treats
+// right-alt as the level-three shift, so the phantom control has to go, and
+// its release with it — otherwise the X side would see a control key that
+// went up without ever going down, or worse, stay down forever.
+//
+// Returns true when the message should be dropped.
+bool g_phantomCtrlHeld;
+
+bool AltGrPhantom(WPARAM vk, bool ext, bool down)
+{
+    if (vk != VK_CONTROL || ext)
+        return false;
+    if (down)
+    {
+        MSG next;
+        if (PeekMessageW(&next, nullptr, WM_KEYFIRST, WM_KEYLAST, PM_NOREMOVE) &&
+            (next.message == WM_KEYDOWN || next.message == WM_SYSKEYDOWN) &&
+            next.wParam == VK_MENU && (next.lParam & (1 << 24)) != 0 &&
+            next.time == static_cast<DWORD>(GetMessageTime()))
+        {
+            g_phantomCtrlHeld = true;
+            return true;
+        }
+        return false;
+    }
+    if (g_phantomCtrlHeld)
+    {
+        g_phantomCtrlHeld = false;
+        return true;
+    }
+    return false;
+}
+
 // Returns true when the message was consumed. Client coordinates become X
 // screen coordinates through the window's screen position and the origin.
 bool InputMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, int originX, int originY)
@@ -245,25 +328,25 @@ bool InputMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, int originX, int or
         const bool down = (msg == WM_LBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_RBUTTONDOWN);
         const int b = (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP) ? 1
                     : (msg == WM_MBUTTONDOWN || msg == WM_MBUTTONUP) ? 2 : 3;
+        // Capture while any button is down, and only then: releasing on the
+        // first button up would drop a drag that started with two buttons,
+        // and holding capture with none down would steal the pointer from
+        // the rest of the desktop.
+        static int held = 0;
         if (down)
-            SetCapture(hwnd);
-        else
+        {
+            if (++held == 1)
+                SetCapture(hwnd);
+        }
+        else if (held > 0 && --held == 0)
             ReleaseCapture();
         Button(b, down);
         return true;
     }
     case WM_MOUSEWHEEL:
     case WM_MOUSEHWHEEL:
-    {
-        const int delta = GET_WHEEL_DELTA_WPARAM(wp);
-        const int b = (msg == WM_MOUSEWHEEL) ? (delta > 0 ? 4 : 5) : (delta > 0 ? 7 : 6);
-        for (int n = abs(delta) / WHEEL_DELTA; n > 0; --n)
-        {
-            Button(b, true);
-            Button(b, false);
-        }
+        Wheel(GET_WHEEL_DELTA_WPARAM(wp), msg == WM_MOUSEHWHEEL);
         return true;
-    }
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
     case WM_KEYUP:
@@ -276,6 +359,8 @@ bool InputMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, int originX, int or
             return true;
         const UINT scan = (lp >> 16) & 0xff;
         const bool ext = (lp & (1 << 24)) != 0;
+        if (AltGrPhantom(wp, ext, down))
+            return true;
         const uint32_t code = EvdevFromScan(scan, ext, wp);
         if (code)
         {
@@ -569,7 +654,12 @@ LRESULT CALLBACK FrameProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         {
             const bool active = LOWORD(wp) != WA_INACTIVE;
             if (active)
+            {
                 SetFocus(f->view);
+                // the locks may have been changed in another application
+                // while this frame was not the one receiving keys
+                PushLocks();
+            }
             amberwin_event ev{};
             ev.type = AMBERWIN_EV_FRAME_ACTIVATE;
             ev.xid = f->xid;
@@ -577,6 +667,23 @@ LRESULT CALLBACK FrameProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             Push(ev);
         }
         return 0;
+    case WM_INPUTLANGCHANGE:
+        // the user switched keyboard layout: re-read it and tell the X side,
+        // which rebuilds its map and notifies clients through XKB
+        if (ReadCurrentLayout())
+        {
+            amberwin_event ev{};
+            ev.type = AMBERWIN_EV_KEYMAP;
+            Push(ev);
+        }
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    case WM_DISPLAYCHANGE:
+    {
+        amberwin_event ev{};
+        ev.type = AMBERWIN_EV_MONITORS;
+        Push(ev);
+        return 0;
+    }
     case WM_SIZE:
         if (f)
         {
@@ -1062,6 +1169,19 @@ DWORD WINAPI PipeThread(LPVOID)
             Push(ev);
             break;
         }
+        case MsgType::ClipboardText:
+        {
+            // AmberSSH has already applied the session's clipboard policy to
+            // this text; the X side applies its own copy of it again.
+            {
+                std::lock_guard<std::mutex> lk(g.qmu);
+                g.clipPending.assign(f.payload.begin(), f.payload.end());
+            }
+            amberwin_event ev{};
+            ev.type = AMBERWIN_EV_CLIPBOARD;
+            Push(ev);
+            break;
+        }
         case MsgType::ChannelData:
         {
             bool ok = false;
@@ -1155,6 +1275,10 @@ bool BackendInit(FramedPipe& pipe, const HostOptions& opt, std::string& err)
     g.cfg.skin = opt.skin;
     g.cfg.trusted = opt.trusted ? 1 : 0;
     g.cfg.auth_timeout_seconds = opt.authTimeout;
+    g.cfg.clipboard_mode = opt.clipboard;
+    // read the layout before the server thread starts: XKB asks for the
+    // keymap while initialising the keyboard device, which is early
+    ReadCurrentLayout();
     g.wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!g.wake)
     {
@@ -1506,6 +1630,98 @@ int amberwin_channel_read(uint32_t ch, void* buf, size_t cap)
     memcpy(buf, b.data.data() + b.rd, n);
     b.rd += n;
     return static_cast<int>(n);
+}
+
+// The monitor topology, in X screen coordinates. A monitor to the left of
+// the primary one has a negative Windows x and a non-negative one here,
+// because the X screen's origin is the top-left of the virtual desktop.
+// Physical size comes from each monitor's own DPI, which is how a client
+// on a 150 % monitor and one on a 100 % monitor learn they differ.
+int amberwin_monitors(amberwin_monitor* out, int cap)
+{
+    struct Collect
+    {
+        amberwin_monitor* out;
+        int cap;
+        int n;
+    } c{ out, cap, 0 };
+
+    EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR mon, HDC, LPRECT, LPARAM lp) -> BOOL {
+        Collect& c = *reinterpret_cast<Collect*>(lp);
+        MONITORINFOEXW mi{};
+        mi.cbSize = sizeof mi;
+        if (!GetMonitorInfoW(mon, &mi))
+            return TRUE;
+        const int index = c.n++;
+        if (!c.out || index >= c.cap)
+            return TRUE;
+        amberwin_monitor& m = c.out[index];
+        m = {};
+        m.x = mi.rcMonitor.left - g.cfg.desktop_x;
+        m.y = mi.rcMonitor.top - g.cfg.desktop_y;
+        m.w = mi.rcMonitor.right - mi.rcMonitor.left;
+        m.h = mi.rcMonitor.bottom - mi.rcMonitor.top;
+        UINT dx = 96, dy = 96;
+        if (FAILED(GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &dx, &dy)) || dx == 0)
+            dx = dy = 96;
+        m.dpi = static_cast<int32_t>(dx);
+        // 25.4 mm to the inch; a client that divides pixels by millimetres
+        // gets the monitor's real scale back
+        m.mm_w = static_cast<int32_t>(m.w * 254 / (dx * 10));
+        m.mm_h = static_cast<int32_t>(m.h * 254 / ((dy ? dy : dx) * 10));
+        m.primary = (mi.dwFlags & MONITORINFOF_PRIMARY) ? 1 : 0;
+        WideCharToMultiByte(CP_UTF8, 0, mi.szDevice, -1, m.name,
+                            static_cast<int>(sizeof m.name), nullptr, nullptr);
+        m.name[sizeof m.name - 1] = '\0';
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&c));
+
+    if (c.n == 0)
+    {
+        // no monitor at all should be impossible; report the screen so the
+        // X side never has to handle a display with no outputs
+        if (out && cap > 0)
+        {
+            out[0] = {};
+            out[0].w = g.cfg.width;
+            out[0].h = g.cfg.height;
+            out[0].dpi = 96;
+            out[0].mm_w = g.cfg.width * 254 / 960;
+            out[0].mm_h = g.cfg.height * 254 / 960;
+            out[0].primary = 1;
+            strcpy_s(out[0].name, "AmberX");
+        }
+        return 1;
+    }
+    return c.n;
+}
+
+// ---- clipboard ----------------------------------------------------------------
+// The host never touches the Windows clipboard: at low integrity it could
+// not read it if it wanted to, and it should not want to. It is a relay
+// between the X side and AmberSSH, which owns the policy and the clipboard
+// itself. Text is held here only between arriving and being pulled.
+uint32_t amberwin_clipboard_pull(char* buf, uint32_t cap)
+{
+    std::lock_guard<std::mutex> lk(g.qmu);
+    if (g.clipPending.empty() || g.clipPending.size() > cap)
+    {
+        g.clipPending.clear();      // consumed either way: never a stale paste
+        return 0;
+    }
+    const uint32_t n = static_cast<uint32_t>(g.clipPending.size());
+    memcpy(buf, g.clipPending.data(), n);
+    buf[n] = '\0';
+    g.clipPending.clear();
+    return n;
+}
+
+void amberwin_clipboard_push(const char* utf8, uint32_t len)
+{
+    if (!utf8 || len == 0 || len > kMaxPayload)
+        return;
+    SendFrame(MsgType::ClipboardText, kControlChannel,
+              std::vector<uint8_t>(utf8, utf8 + len));
 }
 
 int amberwin_channel_write(uint32_t ch, const void* buf, size_t len)
