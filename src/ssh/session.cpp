@@ -1713,7 +1713,18 @@ void SshSession::ThreadMain(SshConfig cfg)
             {
                 libssh2_channel_close(xc);
                 libssh2_channel_free(xc);
-                PostEvent(SshEventType::Status, "X11: no X server at " + cfg.x11Display);
+                // Name the setting, not just the symptom. This is the failure
+                // a profile lands in when X11 forwarding is enabled on the
+                // X11 page while the backend is still "external": the remote
+                // application opens a window, the channel arrives, and there
+                // is no X server on this machine to give it to. Saying so
+                // saves the user reading two sets of logs to find out that a
+                // dropdown is on the wrong entry.
+                PostEvent(SshEventType::Status,
+                          "X11: no X server at " + cfg.x11Display +
+                              " — this profile forwards to an external X server. "
+                              "Set Connection > SSH > Remote GUI to X11 Restricted "
+                              "to use AmberSSH's own display instead.");
                 continue;
             }
             FwdTunnel t;
