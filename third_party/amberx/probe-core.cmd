@@ -31,15 +31,16 @@ for %%d in (dix mi fb render randr xfixes damageext composite present xkb Xi mie
     if /i "%%~nf"=="misyncshm" (
       echo SKIP %%f
     ) else (
-      cl /nologo /c /w /TC /std:c11 %DEFS% %INC% /Fo"%OUT%\nul.obj" "%%f" > "%OUT%\!L!__%%~nf.log" 2>&1
+      cl /nologo /c /w /TC /std:c11 %DEFS% %INC% /Fo"%OUT%\!L!__%%~nf.obj" "%%f" > "%OUT%\!L!__%%~nf.log" 2>&1
       if !errorlevel! equ 0 (echo PASS %%f) else (echo FAIL %%f)
     )
   )
 )
 rem Xext: only the approved subset (LICENSE-MATRIX.md). The rest of the
 rem directory is out of scope and is not measured.
-for %%f in (Xext\bigreq.c Xext\shape.c Xext\sync.c Xext\xcmisc.c Xext\xtest.c Xext\security.c Xext\hashtable.c Xext\geext.c) do (
-  cl /nologo /c /w /TC /std:c11 %DEFS% %INC% /Fo"%OUT%\nul.obj" "%%f" > "%OUT%\Xext__%%~nf.log" 2>&1
+set L=Xext
+for %%f in (Xext\bigreq.c Xext\shape.c Xext\sync.c Xext\xcmisc.c Xext\xtest.c Xext\security.c Xext\hashtable.c Xext\geext.c Xext\xace.c) do (
+  cl /nologo /c /w /TC /std:c11 %DEFS% %INC% /Fo"%OUT%\!L!__%%~nf.obj" "%%f" > "%OUT%\Xext__%%~nf.log" 2>&1
   if !errorlevel! equ 0 (echo PASS %%f) else (echo FAIL %%f)
 )
 endlocal

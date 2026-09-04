@@ -15,6 +15,7 @@ sed -e 's/@PIXMAN_VERSION_MAJOR@/0/' -e 's/@PIXMAN_VERSION_MINOR@/46/' \
 
 rm -f probe-out/*.log
 cmd //c "$(cygpath -w "$PWD/probe-core.cmd")" > probe-out/results.txt 2>&1
+bash ./gen-sources.sh
 pass=$(grep -c '^PASS' probe-out/results.txt); fail=$(grep -c '^FAIL' probe-out/results.txt)
 echo "=== allowlisted core + extensions under MSVC: $pass compile, $fail do not (of $((pass+fail))) ==="
 # Per-directory counts, derived from the result lines themselves so a new

@@ -206,3 +206,10 @@ endif()
 target_link_libraries(AmberXHost PRIVATE bcrypt advapi32)
 # Built alongside AmberSSH.exe so the controller finds it next to itself.
 add_dependencies(AmberSSH AmberXHost)
+
+# ---- AmberXCore: the audited X.Org core, opt-in (docs/amberx/PHASE-1-GATE.md)
+# OFF by default: it compiles 228 upstream files and needs the pinned trees
+# fetched by third_party/amberx/fetch-upstream.sh. Its own CMakeLists runs
+# the provenance and licence-allowlist gates at configure time.
+option(AMBERX_CORE "Build the audited X.Org core as AmberXCore (requires fetch-upstream.sh)" OFF)
+add_subdirectory(third_party/amberx)

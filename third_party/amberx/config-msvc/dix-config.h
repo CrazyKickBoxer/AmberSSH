@@ -34,6 +34,13 @@ typedef unsigned long sigset_t;
 typedef int pid_t;
 #endif
 
+/* ffs(): POSIX puts it in <strings.h>, but mi/mibitblt.c calls it without
+ * including that header (it expects __builtin_ffs under GCC). Declared here,
+ * where every translation unit sees it, so MSVC does not fall back to an
+ * implicit int-returning declaration (C4013). AmberWinOS defines it over
+ * _BitScanForward. Declaration only, like every other shim. */
+int ffs(int i);
+
 #define HAVE_STDLIB_H 1
 #define HAVE_STRING_H 1
 #define HAVE_INTTYPES_H 1
@@ -41,6 +48,17 @@ typedef int pid_t;
 #define HAVE_SYS_STAT_H 1
 #define HAVE_FCNTL_H 1
 /* No unistd.h, no strings.h, no dirent.h, no dlfcn.h on MSVC. */
+
+/* The UCRT has had cbrt() since VS2015 and MSVC treats it as an intrinsic
+ * under /O2: mi/miarc.c's fallback definition then collides with math.h's
+ * dllimport declaration (C2491). The probe missed this because it compiled
+ * at /Od, where cbrt is an ordinary function. */
+#define HAVE_CBRT 1
+
+/* SHA-1 for authorization ids: upstream already supports the Windows
+ * CryptoAPI backend in os/xsha1.c, so no third-party hash library is needed
+ * and no new licence enters the tree. */
+#define HAVE_SHA1_IN_CRYPTOAPI 1
 
 /* MSVC lacks these; upstream ships os/ replacements, which the probe
  * excludes, so leaving them undefined tells the truth at link time. */
