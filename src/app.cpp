@@ -5909,7 +5909,10 @@ void App::BuildMenus()
         // or an RDP client that is already installed and hands off to it.
         HMENU rd = CreatePopupMenu();
         AppendMenuW(rd, MF_STRING, IdmXServerReport, L"&Find X Servers");
-        AppendMenuW(rd, MF_STRING, IdmXServerStart, L"&Start the X Server");
+        // "Installed", because AmberSSH has no X server of its own to start
+        // — this launches VcXsrv/Xming/Cygwin-X if one is on disk. The
+        // built-in path is AmberX, chosen per profile under SSH → X11.
+        AppendMenuW(rd, MF_STRING, IdmXServerStart, L"&Start Installed X Server");
         AppendMenuW(rd, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(rd, MF_STRING, IdmRemoteApp,
                     L"&Wayland RemoteApp (start Weston)...");
@@ -10982,11 +10985,23 @@ void App::BuildSshConfig(const amber::ConnectionProfile& p, SshConfig& cfg) cons
         // compromised therefore never holds a credential that opens this
         // display, during the session or after it.
         cfg.x11FakeCookieHex = amber::MakeCookieHex();
-        const amber::XDisplay d = amber::ParseDisplay(cfg.x11Display);
-        const std::vector<amber::XAuthEntry> entries =
-            amber::ParseXAuthority(amber::LoadXAuthorityFile());
-        cfg.x11RealCookieHex =
-            amber::BytesToHex(amber::CookieForDisplay(entries, d));
+        cfg.x11Backend = p.x11Backend;
+        if (cfg.x11Backend == 1)
+        {
+            // AmberX is the display, and it is told to accept exactly the
+            // cookie the remote host was given — so the real cookie is the
+            // fake one. The setup-packet check still runs; the substitution
+            // it performs is an identity.
+            cfg.x11RealCookieHex = cfg.x11FakeCookieHex;
+        }
+        else
+        {
+            const amber::XDisplay d = amber::ParseDisplay(cfg.x11Display);
+            const std::vector<amber::XAuthEntry> entries =
+                amber::ParseXAuthority(amber::LoadXAuthorityFile());
+            cfg.x11RealCookieHex =
+                amber::BytesToHex(amber::CookieForDisplay(entries, d));
+        }
     }
     // Telnet / Rlogin / Serial
     cfg.telnetPassive = p.telnetPassive;

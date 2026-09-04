@@ -10,6 +10,7 @@
 
 #include "transport.h"
 #include "../remote/XAuth.h"
+#include "../amberx/AmberXController.h"
 
 #include <cstdio>
 #include <cstring>
@@ -144,7 +145,58 @@ struct FwdTunnel
     bool x11 = false;
     bool x11Ready = false;           // the setup packet has been dealt with
     std::vector<uint8_t> x11Setup;   // buffered until the whole packet is in
+    // Non-zero when this X11 channel goes to the session's AmberXHost over
+    // the control pipe instead of to a TCP socket. `sock` is then unused and
+    // the tunnel is pumped by PumpAmberX, not PumpTunnels.
+    uint32_t amberxChannel = 0;
 };
+
+// Feeds bytes read from an X11 channel toward the display. Until the setup
+// packet has been verified and rewritten, bytes are buffered; after that they
+// pass straight through to `toSock`. Returns false when the tunnel must be
+// dropped.
+//
+// Shared by the TCP path and the AmberX path so the cookie check cannot
+// differ between them: the display being a process we own changes nothing
+// about what is verified before a byte reaches it.
+bool X11Intake(FwdTunnel& t, const uint8_t* buf, size_t n,
+               const std::vector<uint8_t>& x11Fake,
+               const std::vector<uint8_t>& x11Real, std::string* x11Error)
+{
+    if (!t.x11 || t.x11Ready)
+    {
+        t.toSock.insert(t.toSock.end(), buf, buf + n);
+        return true;
+    }
+    // The setup packet carries the cookie the remote host was handed. It is
+    // checked here, and the real local cookie put in its place, before one
+    // byte reaches the display. A channel that fails the check is closed —
+    // never forwarded unauthenticated.
+    t.x11Setup.insert(t.x11Setup.end(), buf, buf + n);
+    if (t.x11Setup.size() > amber::kMaxSetupBytes)
+    {
+        if (x11Error)
+            *x11Error = "X11: oversized setup packet refused";
+        return false;
+    }
+    std::vector<uint8_t> rewritten;
+    switch (amber::RewriteSetup(t.x11Setup, x11Fake, x11Real, rewritten))
+    {
+    case amber::XAuthVerdict::NeedMore:
+        return true;                // keep buffering
+    case amber::XAuthVerdict::Rejected:
+        if (x11Error)
+            *x11Error = "X11: connection refused — the cookie did not match";
+        return false;
+    case amber::XAuthVerdict::Rewritten:
+        t.toSock.insert(t.toSock.end(), rewritten.begin(), rewritten.end());
+        t.x11Setup.clear();
+        t.x11Setup.shrink_to_fit();
+        t.x11Ready = true;
+        return true;
+    }
+    return false;
+}
 
 void SetNonblock(SOCKET s)
 {
@@ -365,6 +417,12 @@ void PumpTunnels(std::vector<FwdTunnel>& tunnels, LIBSSH2_SESSION* session,
         FwdTunnel& t = *it;
         SOCKET s = static_cast<SOCKET>(t.sock);
         bool drop = false;
+        // AmberX tunnels have no socket; PumpAmberX owns them.
+        if (t.amberxChannel)
+        {
+            ++it;
+            continue;
+        }
 
         // SOCKS5 handshake bytes from the client.
         if (t.socksState < 2 && !t.chanEof)
@@ -455,46 +513,9 @@ void PumpTunnels(std::vector<FwdTunnel>& tunnels, LIBSSH2_SESSION* session,
                 t.ch, reinterpret_cast<char*>(buf), sizeof(buf));
             if (n > 0)
             {
-                // An X11 channel opens with the setup packet carrying the
-                // cookie the remote host was handed. It is checked here, and
-                // the real local cookie put in its place, before one byte
-                // reaches the display. A channel that fails the check is
-                // closed — never forwarded unauthenticated.
-                if (t.x11 && !t.x11Ready)
-                {
-                    t.x11Setup.insert(t.x11Setup.end(), buf, buf + n);
-                    std::vector<uint8_t> rewritten;
-                    if (t.x11Setup.size() > amber::kMaxSetupBytes)
-                    {
-                        if (x11Error)
-                            *x11Error = "X11: oversized setup packet refused";
-                        drop = true;
-                    }
-                    else
-                    {
-                        switch (amber::RewriteSetup(t.x11Setup, x11Fake,
-                                                    x11Real, rewritten))
-                        {
-                        case amber::XAuthVerdict::NeedMore:
-                            break;      // keep buffering
-                        case amber::XAuthVerdict::Rejected:
-                            if (x11Error)
-                                *x11Error = "X11: connection refused — the "
-                                            "cookie did not match";
-                            drop = true;
-                            break;
-                        case amber::XAuthVerdict::Rewritten:
-                            t.toSock.insert(t.toSock.end(), rewritten.begin(),
-                                            rewritten.end());
-                            t.x11Setup.clear();
-                            t.x11Setup.shrink_to_fit();
-                            t.x11Ready = true;
-                            break;
-                        }
-                    }
-                }
-                else
-                    t.toSock.insert(t.toSock.end(), buf, buf + n);
+                if (!X11Intake(t, buf, static_cast<size_t>(n), x11Fake, x11Real,
+                               x11Error))
+                    drop = true;
                 activity = true;
             }
             else if (n == 0 && libssh2_channel_eof(t.ch))
@@ -527,6 +548,157 @@ void PumpTunnels(std::vector<FwdTunnel>& tunnels, LIBSSH2_SESSION* session,
         }
         else
             ++it;
+    }
+}
+
+// The AmberX counterpart of PumpTunnels. Every tunnel with an amberxChannel is
+// pumped between its libssh2 channel and the ONE pipe to the host, which
+// multiplexes them by channel id. Same high-water rule in both directions,
+// same X11Intake cookie check, same drop semantics.
+//
+// Frames from the host are routed by channel id to a tunnel this side
+// already opened. A frame for a channel that is not open is a protocol error
+// from the host: it is reported and dropped, never used to create a tunnel.
+void PumpAmberX(std::vector<FwdTunnel>& tunnels, amber::amberx::AmberXController& host,
+                bool& activity, const std::vector<uint8_t>& x11Fake,
+                const std::vector<uint8_t>& x11Real, std::string* x11Error)
+{
+    using namespace amber::amberx;
+    uint8_t buf[32768];
+    bool any = false;
+    bool backlogged = false;
+    for (auto it = tunnels.begin(); it != tunnels.end();)
+    {
+        FwdTunnel& t = *it;
+        if (!t.amberxChannel)
+        {
+            ++it;
+            continue;
+        }
+        any = true;
+        bool drop = false;
+
+        // channel → host, gated on the outbound backlog exactly as the TCP
+        // path is: declining to read is the backpressure.
+        if (t.ch && !t.chanEof && t.toSock.size() < kTunnelHighWater)
+        {
+            ssize_t n = libssh2_channel_read(t.ch, reinterpret_cast<char*>(buf), sizeof(buf));
+            if (n > 0)
+            {
+                if (!X11Intake(t, buf, static_cast<size_t>(n), x11Fake, x11Real, x11Error))
+                    drop = true;
+                activity = true;
+            }
+            else if (n == 0 && libssh2_channel_eof(t.ch))
+                t.chanEof = true;
+            else if (n < 0 && n != LIBSSH2_ERROR_EAGAIN)
+                drop = true;
+        }
+        // Verified bytes go to the host one frame at a time.
+        while (!drop && !t.toSock.empty())
+        {
+            const size_t n = std::min(t.toSock.size(), static_cast<size_t>(kMaxPayload));
+            if (!host.SendData(t.amberxChannel, t.toSock.data(), n))
+            {
+                drop = true;
+                break;
+            }
+            t.toSock.erase(t.toSock.begin(), t.toSock.begin() + static_cast<ptrdiff_t>(n));
+            activity = true;
+        }
+        // host → channel
+        if (!drop && t.ch && !t.toChannel.empty())
+        {
+            ssize_t w = libssh2_channel_write(t.ch, reinterpret_cast<char*>(t.toChannel.data()),
+                                              t.toChannel.size());
+            if (w > 0)
+            {
+                t.toChannel.erase(t.toChannel.begin(), t.toChannel.begin() + w);
+                activity = true;
+            }
+            else if (w < 0 && w != LIBSSH2_ERROR_EAGAIN)
+                drop = true;
+        }
+        if (t.toChannel.size() >= kTunnelHighWater)
+            backlogged = true;
+
+        if (drop || (t.chanEof && t.toSock.empty()))
+        {
+            host.CloseChannel(t.amberxChannel);
+            if (t.ch)
+            {
+                libssh2_channel_close(t.ch);
+                libssh2_channel_free(t.ch);
+            }
+            it = tunnels.erase(it);
+        }
+        else
+            ++it;
+    }
+    // Nothing to route to, or nowhere to put it: frames stay in the pipe and
+    // the host feels the backpressure.
+    if (!any || backlogged)
+        return;
+
+    for (int budget = 0; budget < 64; ++budget)
+    {
+        Frame f;
+        const PipeRead r = host.Poll(f, 0);
+        if (r == PipeRead::Timeout)
+            break;
+        if (r != PipeRead::Ok)
+        {
+            // The host went away. Every AmberX channel drains and drops on
+            // the next pass; the remote clients see EOF, not a hang.
+            if (x11Error)
+                *x11Error = "AmberX: host connection lost — X11 channels closed";
+            for (FwdTunnel& t : tunnels)
+                if (t.amberxChannel)
+                {
+                    t.toSock.clear();
+                    t.chanEof = true;
+                }
+            break;
+        }
+        switch (f.type)
+        {
+        case MsgType::ChannelData:
+        case MsgType::ChannelClose:
+        {
+            auto tt = std::find_if(tunnels.begin(), tunnels.end(),
+                                   [&](const FwdTunnel& t) { return t.amberxChannel == f.channel; });
+            if (tt == tunnels.end())
+            {
+                if (x11Error)
+                    *x11Error = "AmberX: frame for a channel that is not open";
+                break;
+            }
+            if (f.type == MsgType::ChannelData)
+            {
+                tt->toChannel.insert(tt->toChannel.end(), f.payload.begin(), f.payload.end());
+                activity = true;
+            }
+            else
+            {
+                tt->toSock.clear();
+                tt->chanEof = true;
+            }
+            break;
+        }
+        case MsgType::HostError:
+        {
+            std::string text;
+            if (ParseHostError(f.payload, text) && x11Error)
+                *x11Error = "AmberX: " + text;
+            break;
+        }
+        case MsgType::HostStatus:
+            break;                      // diagnostics overlay, later
+        default:
+            if (x11Error)
+                *x11Error = "AmberX: unexpected frame from the host";
+            break;
+        }
     }
 }
 
@@ -582,6 +754,8 @@ SOCKET ConnectX11Display(const std::string& display)
 }
 
 } // anonymous namespace
+
+SshSession::SshSession() = default;
 
 SshSession::~SshSession()
 {
@@ -726,6 +900,7 @@ void SshSession::ThreadMain(SshConfig cfg)
     LIBSSH2_KNOWNHOSTS* kh = nullptr;
     std::string closeReason = "connection closed";
     std::vector<LIBSSH2_CHANNEL*> x11Pending;   // opened by the server (X11)
+    uint32_t nextAmberxId = 1;                  // channel ids given to the host
     // Decoded once, so no hex parsing happens per forwarded connection.
     const std::vector<uint8_t> x11FakeCookie =
         amber::HexToBytes(cfg.x11FakeCookieHex);
@@ -1133,6 +1308,35 @@ void SshSession::ThreadMain(SshConfig cfg)
                          cfg.x11FakeCookieHex.c_str(), 0) != 0)
                 PostEvent(SshEventType::Status,
                           "X11 forwarding refused by the server");
+            else if (cfg.x11Backend == 1)
+            {
+                // AmberX: the display is a host process this session owns.
+                // Started here, in the blocking phase, so its synchronous
+                // handshake costs nothing the connection was not already
+                // paying for. If it cannot start, forwarding has already
+                // been requested from the server, so every channel that
+                // arrives is refused — never silently redirected to an
+                // external display the user did not choose.
+                m_amberx = std::make_unique<amber::amberx::AmberXController>();
+                std::string aerr;
+                if (!m_amberx->Start(aerr))
+                {
+                    PostEvent(SshEventType::Status,
+                              "AmberX could not start: " + aerr +
+                                  " — X11 channels will be refused");
+                    m_amberx.reset();
+                }
+                else if (!m_amberx->SetCookie(x11FakeCookie, 0))
+                {
+                    PostEvent(SshEventType::Status,
+                              "AmberX: could not install the cookie — X11 "
+                              "channels will be refused");
+                    m_amberx.reset();
+                }
+                else
+                    PostEvent(SshEventType::Status,
+                              "AmberX host ready (" + m_amberx->Security() + ")");
+            }
             else if (x11RealCookie.empty())
                 PostEvent(SshEventType::Status,
                           "X11: no local cookie found — the X server's own "
@@ -1230,6 +1434,9 @@ void SshSession::ThreadMain(SshConfig cfg)
             std::string x11Err;
             PumpTunnels(tunnels, session, activity, x11FakeCookie, x11RealCookie,
                         &x11Err);
+            if (m_amberx)
+                PumpAmberX(tunnels, *m_amberx, activity, x11FakeCookie, x11RealCookie,
+                           &x11Err);
             if (!x11Err.empty())
                 PostEvent(SshEventType::Status, x11Err);
         }
@@ -1239,6 +1446,30 @@ void SshSession::ThreadMain(SshConfig cfg)
         {
             LIBSSH2_CHANNEL* xc = x11Pending.back();
             x11Pending.pop_back();
+            if (cfg.x11Backend == 1)
+            {
+                // AmberX: the channel is handed to the host under a fresh
+                // id. No host, or a host at its channel cap, means the
+                // channel is refused — the remote client sees a closed
+                // connection, not a redirect.
+                if (!m_amberx || !m_amberx->OpenChannel(nextAmberxId))
+                {
+                    libssh2_channel_close(xc);
+                    libssh2_channel_free(xc);
+                    PostEvent(SshEventType::Status,
+                              m_amberx ? "AmberX: channel refused (limit reached)"
+                                       : "AmberX: no host — X11 channel refused");
+                    continue;
+                }
+                FwdTunnel t;
+                t.ch = xc;
+                libssh2_channel_set_blocking(xc, 0);
+                t.socksState = 3;
+                t.x11 = true;
+                t.amberxChannel = nextAmberxId++;
+                tunnels.push_back(std::move(t));
+                continue;
+            }
             SOCKET xs = ConnectX11Display(cfg.x11Display);
             if (xs == INVALID_SOCKET)
             {
@@ -1397,6 +1628,13 @@ closed:
     {
         libssh2_knownhost_free(kh);
         kh = nullptr;
+    }
+    // The host goes before the transport: a Shutdown frame, a moment for a
+    // clean exit, then the Job Object takes whatever is left.
+    if (m_amberx)
+    {
+        m_amberx->Stop();
+        m_amberx.reset();
     }
     if (session)
     {

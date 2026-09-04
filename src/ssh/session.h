@@ -15,6 +15,8 @@
 
 #include "ring.h"
 
+namespace amber::amberx { class AmberXController; }
+
 struct SshConfig
 {
     // 0 SSH, 1 Telnet, 2 Rlogin, 3 Raw, 4 Serial, 5 Local (amber::Protocol).
@@ -82,6 +84,12 @@ struct SshConfig
     // server's own access control decides. Weaker, and reported to the user.
     std::string x11FakeCookieHex;
     std::string x11RealCookieHex;
+    // 0 = connect each X11 channel to the X server at x11Display over TCP;
+    // 1 = hand each channel to an AmberXHost process (src/amberx/) owned by
+    // this session. With AmberX the host IS the display, so the real cookie
+    // is the fake one and the substitution is an identity — the check still
+    // runs.
+    int x11Backend = 0;
 
     // ---- Telnet / Rlogin ---------------------------------------------------
     bool telnetPassive = false;
@@ -123,6 +131,11 @@ struct SshEvent
 class SshSession
 {
 public:
+    // Both defined in session.cpp, where AmberXController is a complete type.
+    // Left implicit, the constructor's unwind path would delete the
+    // unique_ptr in every TU that constructs a session and fail to compile
+    // against the forward declaration above.
+    SshSession();
     ~SshSession();
 
     bool Start(const SshConfig& cfg);     // spawns the network thread
@@ -197,6 +210,10 @@ private:
     // worker; the mutex is held only long enough to move the strings out.
     std::mutex m_fwdMutex;
     std::vector<std::string> m_pendingForwards;
+    // The AmberX host for this session, when x11Backend == 1. Owned by the
+    // worker thread: created after the x11-req succeeds, stopped as the
+    // thread exits. Its Job Object ends the host if this process dies first.
+    std::unique_ptr<amber::amberx::AmberXController> m_amberx;
 
     std::atomic<uintptr_t> m_socket{ ~0ull };   // for abortive close on cancel
     std::atomic<uintptr_t> m_serial{ 0 };       // COM handle for abort

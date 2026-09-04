@@ -258,6 +258,9 @@ struct ConnectionProfile
     bool        agentForward = false;
     bool        x11Forward = false;
     std::string x11Display = "localhost:0";
+    // 0 = an external X server at x11Display (VcXsrv, X410, ...);
+    // 1 = AmberX, the built-in host process (docs/amberx/). Experimental.
+    int         x11Backend = 0;
     std::string manualHostKeys;      // accepted fingerprints, one per line
     // Tunnels: semicolon-separated forward specs —
     //   L<listenPort>:<host>:<port>   local forward

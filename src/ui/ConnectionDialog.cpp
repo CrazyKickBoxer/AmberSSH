@@ -1193,6 +1193,8 @@ void ConnectionDialog::DefineFields()
 
     // ---- SSH > X11 -------------------------------------------------------
     chk(Page::SshX11, &P::x11Forward, L"Enable X11 forwarding");
+    choice(Page::SshX11, Kind::RadioRow, &P::x11Backend, L"X server",
+           { L"External (VcXsrv, X410, ...)", L"AmberX built-in (experimental)" });
     str(Page::SshX11, &P::x11Display, L"X display location (e.g. localhost:0)", 260);
     note(Page::SshX11, L"Remote X clients are connected to the X server at that display\r\n"
                        L"(VcXsrv, Xming, WSLg). Start it before connecting.");
