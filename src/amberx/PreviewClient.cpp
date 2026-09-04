@@ -54,6 +54,10 @@ struct XClient
     std::string* clipboardIn = nullptr;   // where ClipboardText frames land
     HostReport* reportIn = nullptr;       // where HostReport frames land
     uint32_t root = 0, ridBase = 0, rootW = 0, rootH = 0, rootDepth = 0;
+    // every depth the setup advertised for the screen, and how many visuals
+    // it offered at depth 32 — a visual the BGRX buffer cannot honestly draw
+    std::vector<uint8_t> depthsAdvertised;
+    uint32_t visualsAt32 = 0;
 
     XClient(AmberXController& ctl, Line l, uint32_t channel) : c(ctl), line(std::move(l)), ch(channel) {}
 
@@ -298,6 +302,22 @@ struct XClient
             rootW = u16(q + 20);
             rootH = u16(q + 22);
             rootDepth = q[38];
+            // the depth list follows the screen header: depth, pad, nVisuals,
+            // pad(4), then 24 bytes per visual
+            depthsAdvertised.clear();
+            visualsAt32 = 0;
+            const uint8_t numDepths = q[39];
+            const uint8_t* d = q + 40;
+            const uint8_t* end = inbuf.data() + 8 + extra;
+            for (uint8_t i = 0; i < numDepths && d + 8 <= end; ++i)
+            {
+                const uint8_t depth = d[0];
+                const uint32_t nVisuals = u16(d + 2);
+                depthsAdvertised.push_back(depth);
+                if (depth == 32)
+                    visualsAt32 += nVisuals;
+                d += 8 + nVisuals * 24;
+            }
             line(step, true, "root=0x" + std::to_string(root) + " depth=" + std::to_string(rootDepth) +
                              " " + std::to_string(rootW) + "x" + std::to_string(rootH));
         }
@@ -585,6 +605,24 @@ int RunPreviewClient(AmberXController& c, const Line& line)
 
     if (!x.setup("setup accepted") || x.rootDepth != 24)
         return failures + 1;
+
+    // ---- what the server promises it can draw --------------------------------
+    // Composite's alternate ARGB visual implicitly redirects every window that
+    // takes it, and under miext/rootless that stamps a screen offset onto the
+    // frame pixmap the blitter then subtracts twice: GTK 4 wrote 66 rows and 9
+    // pixels before the start of its buffer on its first frame. So the server
+    // must advertise neither the extension nor a depth-32 visual — the one
+    // visual a BGRX buffer could not honestly draw anyway.
+    {
+        std::string depths;
+        for (uint8_t d : x.depthsAdvertised)
+            depths += (depths.empty() ? "" : ",") + std::to_string(d);
+        check("no depth-32 visual is advertised", x.visualsAt32 == 0,
+              "depths " + depths + ", visuals at 32: " + std::to_string(x.visualsAt32));
+        const uint32_t composite = x.queryExtension("Composite");
+        check("Composite is not advertised", composite == 0,
+              composite ? "present, major opcode " + std::to_string(composite) : "absent");
+    }
 
     // ---- atoms ----------------------------------------------------------------
     const uint32_t aNetWmName = x.internAtom("_NET_WM_NAME");

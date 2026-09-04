@@ -84,12 +84,43 @@ where the user's mouse goes across the whole desktop. That is a security
 trade-off to decide deliberately, not a bug to fix quietly, and it is written
 up here so the decision is visible either way.
 
+### Finding 3 — Composite's implicit redirection corrupts the frame origin (GTK 4)
+
+`gnome-text-editor` (GTK 4, `GSK_RENDERER=cairo GDK_BACKEND=x11`) killed
+the host on its first `PutImage`: an access violation in `fbBlt`, writing
+**184 836 bytes before the start** of the window's buffer. The window was at
+(9, 66) with a 2 800-byte stride, and 66 × 2 800 + 9 × 4 = 184 836 — the
+window's screen position, subtracted twice.
+
+The two subtractions come from two layers that were never meant to share a
+window pixmap. miext/rootless bases the frame's scratch pixmap to screen
+coordinates so that clip-list coordinates index the buffer directly. The
+Composite extension, when a window takes its alternate ARGB (depth 32)
+visual under a depth-24 root, *implicitly* redirects that window and stamps
+`screen_x/screen_y` onto whatever pixmap the window currently has — which,
+under rootless, is that same scratch header — and fb subtracts the stamp
+from every coordinate. GTK 4 asks for the ARGB visual for its client-side
+shadows; `xeyes` is depth 24 and never touched any of this.
+
+AmberX now withdraws Composite (`noCompositeExtension`, `os_misc.c`). The
+justification is structural rather than a policy preference: there is no
+compositing manager for the extension to serve, no layered-window path for
+the alpha its visual would promise, and rootless cannot carry a redirected
+window at all. Withdrawing it also removes the only visual the BGRX buffer
+could not honestly draw. Toolkits detect the absence and fall back, exactly
+as they do on any X server without a compositing manager. Composite had
+never been on the restricted allowlist; this makes the trusted case match.
+
+The crash handler, the `PutImage` probe and the `address is BEFORE/inside/
+PAST` describer that found this stay in the host: they are bounded, log
+geometry only, and are what turned three theories into one measurement.
+
 ## Toolkits
 
 | toolkit | application | backend | distro + version | result | notes |
 |---|---|---|---|---|---|
 | GTK 3 *(both modes)* | `gedit` or `gnome-text-editor` | X11 | | NOT RUN | |
-| GTK 4 | any, `GDK_BACKEND=x11` | X11 | | NOT RUN | GTK 4 prefers Wayland; the variable forces X11 |
+| GTK 4 | `gnome-text-editor`, `GSK_RENDERER=cairo GDK_BACKEND=x11` | X11 | Fedora 44 (Server) | **CRASHED THE HOST** — fixed (Finding 3), rerun pending | restricted mode; the crash was on the first frame handed over |
 | Qt 5 | `qt5ct` or `dolphin` | xcb | | NOT RUN | |
 | Qt 6 | any, `QT_QPA_PLATFORM=xcb` | xcb | | NOT RUN | |
 | Tk | `wish` with a small script | X11 | | NOT RUN | |
@@ -143,5 +174,7 @@ The point of the form is that a failure is actionable. For each:
 against AmberX that day — `xeyes`, over SSH to a Fedora 44 Server guest, in
 restricted mode, drawn as a native window. That closes the Phase 4 live gate
 on the narrow question of "does anything work at all". The suite itself is
-barely begun: two applications tried, one passed, one found a real gap (no
-core font path), and every toolkit row is still untouched.
+barely begun: three applications tried, one passed, one found a real gap (no
+core font path), and the first toolkit row — GTK 4 — crashed the host and
+exposed a structural conflict between Composite and rootless (Finding 3),
+now fixed and awaiting its rerun.

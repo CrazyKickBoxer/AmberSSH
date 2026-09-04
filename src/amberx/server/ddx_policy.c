@@ -77,9 +77,12 @@
  *                  authorizations, least of all its own.
  *   DAMAGE         reports what changed in a drawable — including one it
  *                  does not own. Screen scraping with a subscription.
- *   Composite      redirects other clients' windows into pixmaps it can
- *                  read. Screen scraping with a rendering pipeline.
  *   MIT-SHM        not advertised at all, by policy (os_misc.c).
+ *   Composite      not advertised either, and not only by policy: it would
+ *                  redirect other clients' windows into pixmaps it can read
+ *                  (screen scraping with a rendering pipeline), and under
+ *                  miext/rootless its implicit redirection of ARGB windows
+ *                  corrupts the frame pixmap's origin — see os_misc.c.
  *
  * A name not in either list is denied, because the list is an allowlist. */
 static const char *const restricted_extensions[] = {

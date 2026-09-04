@@ -22,7 +22,20 @@
 #include "amberlimits.h"
 
 /* ---- extension globals (normally os/utils.c) -------------------------- */
-Bool noCompositeExtension = FALSE;
+/* Composite is not advertised, and the reason is structural before it is
+ * policy. Its alternate (ARGB, depth 32) visual makes every window that
+ * takes it implicitly redirected, and a redirected window's pixmap carries
+ * a screen offset that fb subtracts from every drawing coordinate. Under
+ * miext/rootless a window's pixmap is the frame's scratch header, already
+ * based to screen coordinates; Composite stamps its offset onto that same
+ * header on the next move (compwindow.c), and the first PutImage into the
+ * window then lands before the start of the buffer by exactly the window's
+ * position — 66 rows and 9 pixels, the first time it was seen. GTK 4 asks
+ * for that visual for its shadows and killed the host with it on startup.
+ * There is no compositing manager here for the extension to serve and no
+ * layered-window path for the alpha it would promise, so withdrawing it
+ * costs nothing real and leaves one visual: the one the DIB can draw. */
+Bool noCompositeExtension = TRUE;
 Bool noDamageExtension = FALSE;
 Bool noGEExtension = FALSE;
 Bool noMITShmExtension = TRUE;      /* not advertised, by policy */
