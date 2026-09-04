@@ -1149,11 +1149,6 @@ void SshSession::ThreadMain(SshConfig cfg)
         fail(std::string("SSH handshake failed: ") + (msg ? msg : "unknown"));
         return;
     }
-    // Protocol-level keepalive (Connection page): libssh2 sends
-    // keepalive@openssh.com requests from keepalive_send() in the loop.
-    if (cfg.keepaliveSeconds > 0)
-        libssh2_keepalive_config(session, 1, static_cast<unsigned>(cfg.keepaliveSeconds));
-
     // ---- known_hosts ----------------------------------------------------
     size_t keyLen = 0;
     int keyType = 0;
@@ -1372,6 +1367,18 @@ void SshSession::ThreadMain(SshConfig cfg)
         }
     }
     zeroSecrets();   // never keep credentials in memory post-auth
+
+    // Protocol-level keepalive (Connection page): libssh2 sends
+    // keepalive@openssh.com requests from keepalive_send() in the loop.
+    //
+    // Configured HERE, after authentication, and not straight after the
+    // handshake as it was. A keepalive is a global request, and a global
+    // request before authentication is a protocol violation: OpenSSH logs
+    // "dispatch_protocol_error: type 80 seq 2 [preauth]" and may drop the
+    // connection outright. Seen doing exactly that against a Fedora server
+    // while the user was typing a password.
+    if (cfg.keepaliveSeconds > 0)
+        libssh2_keepalive_config(session, 1, static_cast<unsigned>(cfg.keepaliveSeconds));
 
     // ---- pty + shell / command (or no channel at all: tunnels only) ----
     if (!cfg.noShell)
