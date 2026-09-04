@@ -1,29 +1,35 @@
-# capture-amberx.ps1 — photographs the AmberX display window from the desktop.
-# Used by the Phase 2 gate: GetImage proves the framebuffer, this proves the
-# native window shows it. Usage: capture-amberx.ps1 <out.png> [waitMs]
-param([string]$Out = "$env:TEMP\amberx-window.png", [int]$WaitMs = 2500)
+# capture-amberx.ps1 — photographs an AmberX window from the desktop.
+# Used by the gates: GetImage proves the framebuffer, this proves the native
+# window shows it. Usage: capture-amberx.ps1 <out.png> [waitMs] [frameTitle]
+# With no title the rootful display window is captured; with one, the
+# rootless frame carrying that title (window rectangle, strip included).
+param([string]$Out = "$env:TEMP\amberx-window.png", [int]$WaitMs = 2500, [string]$Title = "")
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System; using System.Runtime.InteropServices;
-public class W {
+public class AXCap {
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string title);
-  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out R r);
-  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref P p);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out R r);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [StructLayout(LayoutKind.Sequential)] public struct R { public int L, T, Rt, B; }
-  [StructLayout(LayoutKind.Sequential)] public struct P { public int X, Y; }
 }
 "@
 Start-Sleep -Milliseconds $WaitMs
-$h = [W]::FindWindowW("AmberXDisplay", [NullString]::Value)
-if ($h -eq [IntPtr]::Zero) { Write-Output "no AmberXDisplay window"; exit 1 }
-[W]::SetForegroundWindow($h) | Out-Null
+if ($Title -ne "") {
+  $h = [AXCap]::FindWindowW("AmberXFrame", $Title)
+} else {
+  $h = [AXCap]::FindWindowW("AmberXDisplay", [NullString]::Value)
+}
+if ($h -eq [IntPtr]::Zero) { Write-Output "no AmberX window"; exit 1 }
+[AXCap]::SetForegroundWindow($h) | Out-Null
 Start-Sleep -Milliseconds 300
-$r = New-Object W+R; [W]::GetClientRect($h, [ref]$r) | Out-Null
-$p = New-Object W+P; $p.X = 0; $p.Y = 0; [W]::ClientToScreen($h, [ref]$p) | Out-Null
-$w = $r.Rt - $r.L; $ht = $r.B - $r.T
-$bmp = New-Object System.Drawing.Bitmap $w, $ht
+$r = New-Object AXCap+R
+$ok = [AXCap]::GetWindowRect($h, [ref]$r)
+$w = $r.Rt - $r.L
+$ht = $r.B - $r.T
+if (-not $ok -or $w -le 0 -or $ht -le 0) { Write-Output "bad rectangle $($r.L),$($r.T),$($r.Rt),$($r.B)"; exit 1 }
+$bmp = New-Object System.Drawing.Bitmap($w, $ht)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.CopyFromScreen($p.X, $p.Y, 0, 0, (New-Object System.Drawing.Size $w, $ht))
+$g.CopyFromScreen($r.L, $r.T, 0, 0, (New-Object System.Drawing.Size($w, $ht)))
 $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
-Write-Output "captured ${w}x${ht} to $Out"
+Write-Output "captured ${w}x${ht} at $($r.L),$($r.T) to $Out"

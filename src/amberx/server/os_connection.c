@@ -920,6 +920,12 @@ drain_backend(void)
             dispatchException |= DE_TERMINATE;
             isItTimeToYield = TRUE;
             break;
+        case AMBERWIN_EV_FRAME_CLOSE:
+        case AMBERWIN_EV_FRAME_CONFIGURE:
+        case AMBERWIN_EV_FRAME_ACTIVATE:
+        case AMBERWIN_EV_FRAME_STATE:
+            amber_wm_event(&ev);
+            break;
         default:
             amber_ddx_input_event(&ev);
             break;

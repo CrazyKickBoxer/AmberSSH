@@ -1,6 +1,6 @@
 # AmberXCore — the audited X.Org device-independent core as a static library.
 #
-# OPT-IN (-DAMBERX_CORE=ON). It compiles 228 upstream files and needs the
+# OPT-IN (-DAMBERX_CORE=ON). It compiles the allowlisted upstream files and needs the
 # pinned trees fetched first, so it is not part of the ordinary AmberSSH
 # build. Building it is the Phase 1 "reproducible build"; linking anything
 # against it is Phase 2.
@@ -56,7 +56,7 @@ endforeach()
 
 # ---- gate 2: the allowlist ---------------------------------------------------
 include(${AMBERX_ROOT}/AmberXCore-sources.cmake)
-set(AMBERX_APPROVED_DIRS dix mi fb miext/damage miext/sync render randr xfixes
+set(AMBERX_APPROVED_DIRS dix mi fb miext/damage miext/sync miext/rootless render randr xfixes
                          damageext composite present xkb Xi Xext)
 set(AMBERX_EXCLUDED_FILES miext/sync/misyncshm.c xkb/ddxLoad.c)
 set(AMBERX_XEXT_SUBSET Xext/bigreq.c Xext/shape.c Xext/sync.c Xext/xcmisc.c
@@ -96,6 +96,7 @@ target_include_directories(AmberXCore PRIVATE
     ${AMBERX_UPSTREAM}/xserver/include
     ${AMBERX_UPSTREAM}/xserver/Xext
     ${AMBERX_UPSTREAM}/xserver/miext/damage
+    ${AMBERX_UPSTREAM}/xserver/miext/rootless
     ${AMBERX_UPSTREAM}/xserver/miext/sync
     ${AMBERX_UPSTREAM}/xserver/render
     ${AMBERX_UPSTREAM}/xserver/xkb
@@ -217,6 +218,8 @@ add_library(AmberXServer STATIC
     ${AMBERX_SERVER_DIR}/ddx_screen.c
     ${AMBERX_SERVER_DIR}/ddx_input.c
     ${AMBERX_SERVER_DIR}/ddx_keymap.c
+    ${AMBERX_SERVER_DIR}/ddx_frames.c
+    ${AMBERX_SERVER_DIR}/ddx_wm.c
     ${AMBERX_SERVER_DIR}/server_main.c
     ${AMBERX_OS_RETAINED})
 target_include_directories(AmberXServer PRIVATE

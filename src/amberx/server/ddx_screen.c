@@ -1,14 +1,17 @@
-/* ddx_screen.c — AmberWinDDX: the one screen. Original AmberSSH file.
+/* ddx_screen.c — AmberWinDDX: the screen. Original AmberSSH file.
  *
- * The screen is a system-memory framebuffer the Windows side allocates
- * (32 bpp BGRX) and shows in a window. fb renders into it; a DAMAGE record
- * on the screen pixmap accumulates what changed; the block handler — which
- * runs once per dispatch round, right before the server waits — hands the
- * dirty extents to the Windows side to present. That is the whole output
- * path: no GPU, no compositor, nothing copied twice.
+ * Two modes, chosen by the host:
  *
- * Rootful for now: one window is the root window. Rootless (per-toplevel
- * native windows) is Phase 3 and layers on top of this without replacing it. */
+ *   rootless (default, Phase 3): the X screen is the Windows virtual
+ *   desktop and has no framebuffer of its own. miext/rootless keeps each
+ *   top-level window's pixels in a per-frame buffer that the Windows side
+ *   owns (ddx_frames.c), and every top-level window is a native window.
+ *   The root is never drawn; the native desktop is the root.
+ *
+ *   rootful (--rootful, Phase 2): one native window shows one system-memory
+ *   framebuffer (32 bpp BGRX); fb renders into it, a DAMAGE record on the
+ *   screen pixmap accumulates what changed, and the block handler presents
+ *   the dirty extents. Kept for the gate tests and for debugging. */
 #include <dix-config.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,11 +25,14 @@
 #include "pixmapstr.h"
 #include "windowstr.h"
 #include "colormapst.h"
+#include "cursorstr.h"
 #include "fb.h"
 #include "mi.h"
 #include "micmap.h"
 #include "mipointer.h"
 #include "damage.h"
+#include "rootless.h"
+#include "amberos.h"
 #include "amberwin.h"
 
 typedef struct {
@@ -72,7 +78,57 @@ static miPointerScreenFuncRec amberPointerScreenFuncs = {
     amberWarpCursor,
 };
 
-/* ---- presenting ---------------------------------------------------------- */
+/* Rootless: the native cursor is the cursor. mi still tracks the sprite
+ * position; it just never draws one. X cursor images are Phase 6. */
+static Bool
+amberRealizeCursor(DeviceIntPtr pDev, ScreenPtr pScreen, CursorPtr pCursor)
+{
+    (void) pDev; (void) pScreen; (void) pCursor;
+    return TRUE;
+}
+
+static Bool
+amberUnrealizeCursor(DeviceIntPtr pDev, ScreenPtr pScreen, CursorPtr pCursor)
+{
+    (void) pDev; (void) pScreen; (void) pCursor;
+    return TRUE;
+}
+
+static void
+amberSetCursor(DeviceIntPtr pDev, ScreenPtr pScreen, CursorPtr pCursor, int x, int y)
+{
+    (void) pDev; (void) pScreen; (void) pCursor; (void) x; (void) y;
+}
+
+static void
+amberMoveCursor(DeviceIntPtr pDev, ScreenPtr pScreen, int x, int y)
+{
+    (void) pDev; (void) pScreen; (void) x; (void) y;
+}
+
+static Bool
+amberDeviceCursorInitialize(DeviceIntPtr pDev, ScreenPtr pScreen)
+{
+    (void) pDev; (void) pScreen;
+    return TRUE;
+}
+
+static void
+amberDeviceCursorCleanup(DeviceIntPtr pDev, ScreenPtr pScreen)
+{
+    (void) pDev; (void) pScreen;
+}
+
+static miPointerSpriteFuncRec amberNativeSpriteFuncs = {
+    amberRealizeCursor,
+    amberUnrealizeCursor,
+    amberSetCursor,
+    amberMoveCursor,
+    amberDeviceCursorInitialize,
+    amberDeviceCursorCleanup,
+};
+
+/* ---- rootful presenting --------------------------------------------------- */
 static void
 amberBlockHandler(void *blockData, void *timeout)
 {
@@ -116,7 +172,6 @@ amberCreateScreenResources(ScreenPtr pScreen)
     if (!as->damage)
         return FALSE;
     DamageRegister(&(*pScreen->GetScreenPixmap) (pScreen)->drawable, as->damage);
-    /* first frame: everything */
     amberwin_screen_present(0, 0, as->width, as->height);
     return TRUE;
 }
@@ -139,7 +194,7 @@ amberCloseScreen(ScreenPtr pScreen)
             DamageDestroy(as->damage);
             as->damage = NULL;
         }
-        pScreen->CloseScreen = as->CloseScreen;   /* fb's, installed by fbScreenInit */
+        pScreen->CloseScreen = as->CloseScreen;
         if (pScreen->CloseScreen)
             ret = (*pScreen->CloseScreen) (pScreen);
         dixSetPrivate(&pScreen->devPrivates, amberScreenKey, NULL);
@@ -168,15 +223,17 @@ amberScreenInit(ScreenPtr pScreen, int argc, char **argv)
     as->width = cfg->width;
     as->height = cfg->height;
 
-    if (!amberwin_screen_create(as->width, as->height, &bits, &stride))
-        return FALSE;
-    as->bits = bits;
-    as->stride = stride;
+    if (!cfg->rootless) {
+        if (!amberwin_screen_create(as->width, as->height, &bits, &stride))
+            return FALSE;
+        as->bits = bits;
+        as->stride = stride;
+    }
 
-    /* One visual: 24-bit TrueColor over a 32 bpp BGRX framebuffer. The
-     * masks say where each channel sits in the 32-bit pixel; with pixman's
-     * x8r8g8b8 that is red in bits 16-23, which is what a Windows DIB
-     * expects, so the framebuffer is presented without a swizzle. */
+    /* One visual: 24-bit TrueColor over 32 bpp BGRX buffers. The masks say
+     * where each channel sits; with pixman's x8r8g8b8 that is red in bits
+     * 16-23, which is what a Windows DIB expects, so buffers are presented
+     * without a swizzle. */
     miClearVisualTypes();
     if (!miSetVisualTypesAndMasks(24, TrueColorMask, 8, TrueColor,
                                   0x00ff0000, 0x0000ff00, 0x000000ff))
@@ -184,25 +241,40 @@ amberScreenInit(ScreenPtr pScreen, int argc, char **argv)
     if (!miSetPixmapDepths())
         return FALSE;
 
+    /* Rootless: no framebuffer and a zero pitch, which makes mi give the
+     * screen pixmap a NULL base that RootlessUpdateScreenPixmap then
+     * replaces with a one-row dummy. Nothing ever draws to the root. */
     if (!fbScreenInit(pScreen, bits, as->width, as->height, dpi, dpi,
-                      stride / 4, 32))
+                      cfg->rootless ? 0 : stride / 4, 32))
         return FALSE;
     if (!fbPictureInit(pScreen, 0, 0))
         return FALSE;
 
     pScreen->SaveScreen = amberSaveScreen;
-    as->CreateScreenResources = pScreen->CreateScreenResources;
-    pScreen->CreateScreenResources = amberCreateScreenResources;
     as->CloseScreen = pScreen->CloseScreen;
     pScreen->CloseScreen = amberCloseScreen;
 
-    /* software cursor drawn into the framebuffer by mi */
-    if (!miDCInitialize(pScreen, &amberPointerScreenFuncs))
-        return FALSE;
+    if (cfg->rootless) {
+        /* DAMAGE must wrap beneath the rootless layer */
+        if (!DamageSetup(pScreen))
+            return FALSE;
+        if (!RootlessInit(pScreen, amber_frame_procs()))
+            return FALSE;
+        if (!miPointerInitialize(pScreen, &amberNativeSpriteFuncs, &amberPointerScreenFuncs, FALSE))
+            return FALSE;
+        if (!amber_wm_screen_init(pScreen))
+            return FALSE;
+    }
+    else {
+        as->CreateScreenResources = pScreen->CreateScreenResources;
+        pScreen->CreateScreenResources = amberCreateScreenResources;
+        /* software cursor drawn into the framebuffer by mi */
+        if (!miDCInitialize(pScreen, &amberPointerScreenFuncs))
+            return FALSE;
+        if (!RegisterBlockAndWakeupHandlers(amberBlockHandler, amberWakeupHandler, pScreen))
+            return FALSE;
+    }
     if (!miCreateDefColormap(pScreen))
-        return FALSE;
-
-    if (!RegisterBlockAndWakeupHandlers(amberBlockHandler, amberWakeupHandler, pScreen))
         return FALSE;
     return TRUE;
 }

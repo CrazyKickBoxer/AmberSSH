@@ -230,4 +230,9 @@ set(AMBERX_CORE_SOURCES
     ${AMBERX_UPSTREAM}/xserver/xkb/xkbout.c
     ${AMBERX_UPSTREAM}/xserver/xkb/xkbtext.c
     ${AMBERX_UPSTREAM}/xserver/xkb/xkmread.c
+    ${AMBERX_UPSTREAM}/xserver/miext/rootless/rootlessCommon.c
+    ${AMBERX_UPSTREAM}/xserver/miext/rootless/rootlessGC.c
+    ${AMBERX_UPSTREAM}/xserver/miext/rootless/rootlessScreen.c
+    ${AMBERX_UPSTREAM}/xserver/miext/rootless/rootlessValTree.c
+    ${AMBERX_UPSTREAM}/xserver/miext/rootless/rootlessWindow.c
 )

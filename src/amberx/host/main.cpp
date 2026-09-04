@@ -39,6 +39,10 @@ struct Args
     int height = 800;
     uint32_t display = 0;
     std::string keymap;     // an .xkm path, or empty for the built-in map
+    bool rootless = true;
+    std::string identity, sigil;
+    std::string mode = "RESTRICTED";
+    int skin = 0;
 };
 
 std::string Narrow(const std::wstring& w)
@@ -54,10 +58,10 @@ std::string Narrow(const std::wstring& w)
 
 bool ParseArgs(int argc, wchar_t** argv, Args& a)
 {
-    for (int i = 1; i + 1 < argc; i += 2)
+    for (int i = 1; i < argc; i += 2)
     {
         const std::wstring k = argv[i];
-        const std::wstring v = argv[i + 1];
+        const std::wstring v = (i + 1 < argc) ? argv[i + 1] : L"";
         if (k == L"--pipe")
             a.pipe = v;
         else if (k == L"--secret-handle")
@@ -73,6 +77,19 @@ bool ParseArgs(int argc, wchar_t** argv, Args& a)
             a.display = static_cast<uint32_t>(wcstoul(v.c_str(), nullptr, 10));
         else if (k == L"--keymap")
             a.keymap = Narrow(v);
+        else if (k == L"--rootful")
+        {
+            a.rootless = false;
+            --i;   // a flag, not a pair
+        }
+        else if (k == L"--identity")
+            a.identity = Narrow(v);
+        else if (k == L"--mode")
+            a.mode = (v == L"trusted") ? "TRUSTED" : "RESTRICTED";
+        else if (k == L"--sigil")
+            a.sigil = Narrow(v);
+        else if (k == L"--skin")
+            a.skin = static_cast<int>(wcstol(v.c_str(), nullptr, 10));
         else
             return false;
     }
@@ -213,7 +230,17 @@ int wmain(int argc, wchar_t** argv)
 
 #ifdef AMBERX_HAVE_SERVER
     // ---- the server -------------------------------------------------------
-    if (!BackendInit(pipe, a.width, a.height, a.display, a.keymap, err))
+    HostOptions opt;
+    opt.rootless = a.rootless;
+    opt.width = a.width;
+    opt.height = a.height;
+    opt.display = a.display;
+    opt.keymap = a.keymap;
+    opt.identity = a.identity.empty() ? "AmberSSH session" : a.identity;
+    opt.mode = a.mode;
+    opt.sigil = a.sigil;
+    opt.skin = a.skin;
+    if (!BackendInit(pipe, opt, err))
     {
         fprintf(stderr, "AmberXHost: %s\n", err.c_str());
         return 74;

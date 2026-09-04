@@ -2,7 +2,7 @@
 // asks for through amberwin.h, and nothing the X side can see.
 //
 // Three threads:
-//   * the UI thread (wmain) owns the window and its message pump;
+//   * the UI thread (wmain) owns every window and its message pump;
 //   * the pipe thread reads AmberXControl frames from AmberSSH and turns them
 //     into events and channel bytes;
 //   * the server thread runs the X.Org core (amberx_server_main) and pulls
@@ -10,8 +10,16 @@
 //
 // The X core is single-threaded by design, so every crossing is a queue plus
 // one wake event: the UI and pipe threads only ever push; the server thread
-// only ever pops. Channel writes and status frames go out under one mutex
-// because FramedPipe is not thread-safe and two frames must never interleave.
+// only ever pops. Frame operations the server thread requests are marshalled
+// to the UI thread with SendMessage to a message-only window, because a
+// window belongs to the thread that created it. Channel writes and status
+// frames go out under one mutex because FramedPipe is not thread-safe and
+// two frames must never interleave.
+//
+// Rootless frames (Phase 3): each top-level X window is an owner window
+// carrying the identity strip — painted here, from AmberSSH's own chrome
+// table, and never reachable by X drawing — and a view child that shows the
+// frame's DIB. The X side draws straight into that DIB.
 //
 // Rules kept here: no listener of any kind; nothing logged that came off a
 // channel; cookie bytes copied into the event and nowhere else.
@@ -31,6 +39,7 @@
 #include "../control/Pipe.h"
 #include "../control/Protocol.h"
 #include "../server/amberwin.h"
+#include "../../ui/Chrome.h"
 #include "WinBackend.h"
 
 extern "C" {
@@ -38,6 +47,30 @@ extern "C" {
 }
 
 using namespace amber::amberx;
+
+// ---- frames ------------------------------------------------------------------
+struct amberwin_frame
+{
+    uint32_t xid = 0;
+    HWND hwnd = nullptr;        // the owner window (caption, borders)
+    HWND view = nullptr;        // the X pixels
+    HWND strip = nullptr;       // the identity strip; null for override-redirect
+    HBITMAP dib = nullptr;
+    void* bits = nullptr;
+    int stride = 0;
+    int x = 0, y = 0, w = 1, h = 1;   // X screen coordinates / size of the view
+    bool overrideRedirect = false;
+    bool mapped = false;
+    bool resizable = true;
+    int minW = 0, minH = 0, maxW = 0, maxH = 0;
+    amberwin_frame* owner = nullptr;
+    bool modal = false;
+    bool minimized = false, maximized = false, fullscreen = false;
+    WINDOWPLACEMENT savedPlacement{};
+    int settingPos = 0;         // >0 while we move it ourselves: no echo
+    HICON icon = nullptr;
+    int stripH = 0;
+};
 
 namespace
 {
@@ -53,7 +86,7 @@ struct ChannelBuf
 struct Backend
 {
     amberwin_config cfg{};
-    std::string keymapPath;
+    std::string keymapPath, identity, mode, sigil;
 
     // events + channel bytes: pushed by UI/pipe threads, popped by the server
     std::mutex qmu;
@@ -66,7 +99,7 @@ struct Backend
     FramedPipe* pipe = nullptr;
     std::atomic<bool> pipeDown{false};
 
-    // the screen
+    // the rootful screen
     HWND hwnd = nullptr;
     HBITMAP dib = nullptr;
     void* bits = nullptr;
@@ -74,10 +107,18 @@ struct Backend
     int width = 0, height = 0;
     std::mutex presentMu;
 
+    // rootless
+    HWND ops = nullptr;         // message-only window: frame ops run here
+    DWORD uiThread = 0;
+    HFONT stripFont = nullptr;
+    int stripFontDpi = 0;
+
     std::atomic<bool> serverExited{false};
 };
 
 Backend g;
+constexpr UINT WM_AMBER_OP = WM_APP + 7;
+constexpr int kStripLogical = 22;
 
 void Wake()
 {
@@ -109,6 +150,17 @@ bool SendFrame(MsgType type, uint32_t channel, std::vector<uint8_t> payload)
         return false;
     }
     return true;
+}
+
+std::wstring Widen(const std::string& s)
+{
+    if (s.empty())
+        return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(static_cast<size_t>(n > 0 ? n - 1 : 0), L'\0');
+    if (n > 1)
+        MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    return w;
 }
 
 // ---- keycodes ----------------------------------------------------------------
@@ -146,8 +198,102 @@ uint32_t EvdevFromScan(UINT scan, bool extended, WPARAM vk)
     }
 }
 
-// ---- the window ---------------------------------------------------------------
-void Paint(HWND hwnd)
+// ---- input shared by the rootful window and the views ---------------------------
+void PushPointer(int sx, int sy)
+{
+    amberwin_event ev{};
+    ev.type = AMBERWIN_EV_POINTER_MOVE;
+    ev.x = sx;
+    ev.y = sy;
+    Push(ev);
+}
+
+void Button(int button, bool down)
+{
+    amberwin_event ev{};
+    ev.type = AMBERWIN_EV_BUTTON;
+    ev.button = button;
+    ev.pressed = down ? 1 : 0;
+    Push(ev);
+}
+
+// Returns true when the message was consumed. Client coordinates become X
+// screen coordinates through the window's screen position and the origin.
+bool InputMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, int originX, int originY)
+{
+    auto point = [&](int& sx, int& sy) {
+        POINT p{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        ClientToScreen(hwnd, &p);
+        sx = p.x - originX;
+        sy = p.y - originY;
+    };
+    switch (msg)
+    {
+    case WM_MOUSEMOVE:
+    {
+        int sx, sy;
+        point(sx, sy);
+        PushPointer(sx, sy);
+        return true;
+    }
+    case WM_LBUTTONDOWN: case WM_MBUTTONDOWN: case WM_RBUTTONDOWN:
+    case WM_LBUTTONUP:   case WM_MBUTTONUP:   case WM_RBUTTONUP:
+    {
+        int sx, sy;
+        point(sx, sy);
+        PushPointer(sx, sy);
+        const bool down = (msg == WM_LBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_RBUTTONDOWN);
+        const int b = (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP) ? 1
+                    : (msg == WM_MBUTTONDOWN || msg == WM_MBUTTONUP) ? 2 : 3;
+        if (down)
+            SetCapture(hwnd);
+        else
+            ReleaseCapture();
+        Button(b, down);
+        return true;
+    }
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL:
+    {
+        const int delta = GET_WHEEL_DELTA_WPARAM(wp);
+        const int b = (msg == WM_MOUSEWHEEL) ? (delta > 0 ? 4 : 5) : (delta > 0 ? 7 : 6);
+        for (int n = abs(delta) / WHEEL_DELTA; n > 0; --n)
+        {
+            Button(b, true);
+            Button(b, false);
+        }
+        return true;
+    }
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+    {
+        const bool down = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN);
+        // bit 30: the key was already down — Windows' own autorepeat. XKB
+        // repeats keys itself, so a repeated press is dropped here.
+        if (down && (lp & (1 << 30)))
+            return true;
+        const UINT scan = (lp >> 16) & 0xff;
+        const bool ext = (lp & (1 << 24)) != 0;
+        const uint32_t code = EvdevFromScan(scan, ext, wp);
+        if (code)
+        {
+            amberwin_event ev{};
+            ev.type = AMBERWIN_EV_KEY;
+            ev.keycode = code;
+            ev.pressed = down ? 1 : 0;
+            Push(ev);
+        }
+        // Alt/F10 would otherwise open the system menu; Alt+F4 stays native
+        return !((msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP) && wp == VK_F4);
+    }
+    }
+    return false;
+}
+
+// ---- the rootful window -------------------------------------------------------
+void PaintRootful(HWND hwnd)
 {
     PAINTSTRUCT ps;
     HDC dc = BeginPaint(hwnd, &ps);
@@ -164,86 +310,15 @@ void Paint(HWND hwnd)
     EndPaint(hwnd, &ps);
 }
 
-void Button(int button, bool down)
-{
-    amberwin_event ev{};
-    ev.type = AMBERWIN_EV_BUTTON;
-    ev.button = button;
-    ev.pressed = down ? 1 : 0;
-    Push(ev);
-}
-
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+LRESULT CALLBACK RootfulProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg)
     {
     case WM_PAINT:
-        Paint(hwnd);
+        PaintRootful(hwnd);
         return 0;
     case WM_ERASEBKGND:
         return 1;
-    case WM_MOUSEMOVE:
-    {
-        amberwin_event ev{};
-        ev.type = AMBERWIN_EV_POINTER_MOVE;
-        ev.x = GET_X_LPARAM(lp);
-        ev.y = GET_Y_LPARAM(lp);
-        Push(ev);
-        return 0;
-    }
-    case WM_LBUTTONDOWN: SetCapture(hwnd); Button(1, true);  return 0;
-    case WM_LBUTTONUP:   ReleaseCapture(); Button(1, false); return 0;
-    case WM_MBUTTONDOWN: SetCapture(hwnd); Button(2, true);  return 0;
-    case WM_MBUTTONUP:   ReleaseCapture(); Button(2, false); return 0;
-    case WM_RBUTTONDOWN: SetCapture(hwnd); Button(3, true);  return 0;
-    case WM_RBUTTONUP:   ReleaseCapture(); Button(3, false); return 0;
-    case WM_MOUSEWHEEL:
-    {
-        const int delta = GET_WHEEL_DELTA_WPARAM(wp);
-        const int b = delta > 0 ? 4 : 5;
-        for (int n = abs(delta) / WHEEL_DELTA; n > 0; --n)
-        {
-            Button(b, true);
-            Button(b, false);
-        }
-        return 0;
-    }
-    case WM_MOUSEHWHEEL:
-    {
-        const int delta = GET_WHEEL_DELTA_WPARAM(wp);
-        const int b = delta > 0 ? 7 : 6;
-        for (int n = abs(delta) / WHEEL_DELTA; n > 0; --n)
-        {
-            Button(b, true);
-            Button(b, false);
-        }
-        return 0;
-    }
-    case WM_KEYDOWN:
-    case WM_SYSKEYDOWN:
-    case WM_KEYUP:
-    case WM_SYSKEYUP:
-    {
-        const bool down = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN);
-        // bit 30: the key was already down — Windows' own autorepeat. XKB
-        // repeats keys itself, so a repeated press is dropped here.
-        if (down && (lp & (1 << 30)))
-            return 0;
-        const UINT scan = (lp >> 16) & 0xff;
-        const bool ext = (lp & (1 << 24)) != 0;
-        const uint32_t code = EvdevFromScan(scan, ext, wp);
-        if (code)
-        {
-            amberwin_event ev{};
-            ev.type = AMBERWIN_EV_KEY;
-            ev.keycode = code;
-            ev.pressed = down ? 1 : 0;
-            Push(ev);
-        }
-        // Alt/F10 would otherwise open the (absent) system menu
-        return (msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP) && wp != VK_F4 ? 0
-               : DefWindowProcW(hwnd, msg, wp, lp);
-    }
     case WM_SETFOCUS:
     case WM_KILLFOCUS:
     {
@@ -255,8 +330,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_CLOSE:
     {
-        // closing the window ends the display: tell the server, which
-        // finishes its generation and returns; the pump exits when it has.
         amberwin_event ev{};
         ev.type = AMBERWIN_EV_SHUTDOWN;
         Push(ev);
@@ -266,7 +339,665 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         PostQuitMessage(0);
         return 0;
     }
+    {
+        // rootful: the window's client area is the root, origin (0,0)
+        POINT o{ 0, 0 };
+        ClientToScreen(hwnd, &o);
+        if (InputMessage(hwnd, msg, wp, lp, o.x, o.y))
+            return 0;
+    }
     return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// ---- the identity strip -----------------------------------------------------------
+// Painted from AmberSSH's chrome table so it follows the user's skin, and
+// painted only here: it is a separate window, so no X drawing can reach it.
+const amber::ChromeSpec& Spec()
+{
+    return amber::ChromeAt(g.cfg.skin);
+}
+
+COLORREF Rgb(uint32_t srgb)
+{
+    return RGB((srgb >> 16) & 0xff, (srgb >> 8) & 0xff, srgb & 0xff);
+}
+
+HFONT StripFont(int dpi)
+{
+    if (g.stripFont && g.stripFontDpi == dpi)
+        return g.stripFont;
+    if (g.stripFont)
+        DeleteObject(g.stripFont);
+    const amber::ChromeSpec& s = Spec();
+    const wchar_t* face = s.uiFont ? s.uiFont : L"Segoe UI";
+    const int px = -MulDiv(11, dpi, 72);
+    g.stripFont = CreateFontW(px, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                              OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                              DEFAULT_PITCH, face);
+    g.stripFontDpi = dpi;
+    return g.stripFont;
+}
+
+int StripHeight(HWND hwnd)
+{
+    return MulDiv(kStripLogical, static_cast<int>(GetDpiForWindow(hwnd)), 96);
+}
+
+void PaintStrip(HWND hwnd)
+{
+    PAINTSTRUCT ps;
+    HDC dc = BeginPaint(hwnd, &ps);
+    RECT r;
+    GetClientRect(hwnd, &r);
+    const amber::ChromeSpec& s = Spec();
+    // Classic derives its colours from the terminal theme, which the host
+    // does not have: a fixed dark ground with an amber accent stands in.
+    const bool themed = !s.useThemeAccent;
+    const COLORREF bg = themed ? Rgb(s.bg) : RGB(28, 28, 30);
+    const COLORREF text = themed ? Rgb(s.text) : RGB(235, 235, 235);
+    const COLORREF dim = themed ? Rgb(s.textDim) : RGB(160, 160, 160);
+    const COLORREF accent = themed ? Rgb(s.neonA) : RGB(255, 136, 0);
+    const COLORREF warn = themed ? Rgb(s.danger) : RGB(220, 60, 60);
+    HBRUSH b = CreateSolidBrush(bg);
+    FillRect(dc, &r, b);
+    DeleteObject(b);
+    const int dpi = static_cast<int>(GetDpiForWindow(hwnd));
+    RECT line{ r.left, r.bottom - MulDiv(2, dpi, 96), r.right, r.bottom };
+    HBRUSH a = CreateSolidBrush(accent);
+    FillRect(dc, &line, a);
+    DeleteObject(a);
+
+    HGDIOBJ oldFont = SelectObject(dc, StripFont(dpi));
+    SetBkMode(dc, TRANSPARENT);
+    std::wstring identity = Widen(g.identity), mode = Widen(g.mode), sigil = Widen(g.sigil);
+    if (s.uppercase)
+    {
+        CharUpperW(identity.data());
+        CharUpperW(mode.data());
+    }
+    const bool restricted = (g.mode == "RESTRICTED");
+    const std::wstring dot = L"  ·  ";
+    RECT tr = r;
+    tr.left += MulDiv(10, dpi, 96);
+    tr.bottom = line.top;
+    auto draw = [&](const std::wstring& t, COLORREF c) {
+        SetTextColor(dc, c);
+        RECT calc = tr;
+        DrawTextW(dc, t.c_str(), -1, &calc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_CALCRECT);
+        DrawTextW(dc, t.c_str(), -1, &tr, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+        tr.left += calc.right - calc.left;
+    };
+    draw(identity, text);
+    draw(dot, dim);
+    draw(L"X11 " + mode, restricted ? accent : warn);
+    if (!sigil.empty())
+    {
+        draw(dot, dim);
+        draw(sigil, text);
+    }
+    SelectObject(dc, oldFont);
+    EndPaint(hwnd, &ps);
+}
+
+LRESULT CALLBACK StripProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg)
+    {
+    case WM_PAINT:
+        PaintStrip(hwnd);
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_LBUTTONDOWN:
+        // dragging the strip moves the frame, as a caption would
+        SendMessageW(GetParent(hwnd), WM_NCLBUTTONDOWN, HTCAPTION, lp);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// ---- frame windows ----------------------------------------------------------------
+amberwin_frame* FrameOf(HWND hwnd)
+{
+    return reinterpret_cast<amberwin_frame*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+}
+
+DWORD FrameStyle(const amberwin_frame* f)
+{
+    if (f->overrideRedirect || f->fullscreen)
+        return WS_POPUP;
+    DWORD s = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    if (f->resizable)
+        s |= WS_THICKFRAME | WS_MAXIMIZEBOX;
+    return s;
+}
+
+DWORD FrameExStyle(const amberwin_frame* f)
+{
+    return f->overrideRedirect ? (WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE) : 0;
+}
+
+// The frame's window rectangle on the desktop for a given view rectangle
+// (X screen coordinates), accounting for the strip and the native borders.
+RECT FrameRectFor(const amberwin_frame* f, int x, int y, int w, int h)
+{
+    RECT r{ x + g.cfg.desktop_x, y + g.cfg.desktop_y - f->stripH,
+            x + g.cfg.desktop_x + w, y + g.cfg.desktop_y + h };
+    AdjustWindowRectExForDpi(&r, FrameStyle(f), FALSE, FrameExStyle(f),
+                             f->hwnd ? GetDpiForWindow(f->hwnd) : GetDpiForSystem());
+    return r;
+}
+
+void LayoutChildren(amberwin_frame* f)
+{
+    RECT c;
+    GetClientRect(f->hwnd, &c);
+    const int cw = c.right - c.left, ch = c.bottom - c.top;
+    if (f->strip)
+        SetWindowPos(f->strip, nullptr, 0, 0, cw, f->stripH, SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(f->view, nullptr, 0, f->stripH, cw, ch - f->stripH > 0 ? ch - f->stripH : 1,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void AllocDib(amberwin_frame* f, int w, int h)
+{
+    if (f->dib)
+    {
+        DeleteObject(f->dib);
+        f->dib = nullptr;
+        f->bits = nullptr;
+    }
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* p = nullptr;
+    HDC dc = GetDC(nullptr);
+    f->dib = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &p, nullptr, 0);
+    ReleaseDC(nullptr, dc);
+    if (f->dib && p)
+    {
+        memset(p, 0, static_cast<size_t>(w) * 4u * static_cast<size_t>(h));
+        f->bits = p;
+        f->stride = w * 4;
+    }
+}
+
+void ReportConfigure(amberwin_frame* f)
+{
+    if (f->settingPos || !f->mapped || f->minimized)
+        return;
+    RECT vr;
+    GetWindowRect(f->view, &vr);
+    amberwin_event ev{};
+    ev.type = AMBERWIN_EV_FRAME_CONFIGURE;
+    ev.xid = f->xid;
+    ev.x = vr.left - g.cfg.desktop_x;
+    ev.y = vr.top - g.cfg.desktop_y;
+    ev.w = vr.right - vr.left;
+    ev.h = vr.bottom - vr.top;
+    if (ev.x == f->x && ev.y == f->y && ev.w == f->w && ev.h == f->h)
+        return;
+    f->x = ev.x; f->y = ev.y;   // what the X side is about to be told
+    Push(ev);
+}
+
+LRESULT CALLBACK FrameProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    amberwin_frame* f = FrameOf(hwnd);
+    switch (msg)
+    {
+    case WM_NCCREATE:
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                          reinterpret_cast<LONG_PTR>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams));
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    case WM_CLOSE:
+        if (f)
+        {
+            amberwin_event ev{};
+            ev.type = AMBERWIN_EV_FRAME_CLOSE;
+            ev.xid = f->xid;
+            Push(ev);
+        }
+        return 0;   // the X side decides; the window never closes on its own
+    case WM_ACTIVATE:
+        if (f)
+        {
+            const bool active = LOWORD(wp) != WA_INACTIVE;
+            if (active)
+                SetFocus(f->view);
+            amberwin_event ev{};
+            ev.type = AMBERWIN_EV_FRAME_ACTIVATE;
+            ev.xid = f->xid;
+            ev.pressed = active ? 1 : 0;
+            Push(ev);
+        }
+        return 0;
+    case WM_SIZE:
+        if (f)
+        {
+            LayoutChildren(f);
+            const bool mn = IsIconic(hwnd) != 0, mx = IsZoomed(hwnd) != 0;
+            if (mn != f->minimized || mx != f->maximized)
+            {
+                f->minimized = mn;
+                f->maximized = mx;
+                amberwin_event ev{};
+                ev.type = AMBERWIN_EV_FRAME_STATE;
+                ev.xid = f->xid;
+                ev.x = mn ? 1 : 0;
+                ev.y = mx ? 1 : 0;
+                Push(ev);
+            }
+        }
+        return 0;
+    case WM_WINDOWPOSCHANGED:
+        if (f)
+        {
+            LayoutChildren(f);
+            ReportConfigure(f);
+        }
+        return 0;
+    case WM_GETMINMAXINFO:
+        if (f)
+        {
+            auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
+            RECT z{ 0, 0, 0, 0 };
+            AdjustWindowRectExForDpi(&z, FrameStyle(f), FALSE, FrameExStyle(f), GetDpiForWindow(hwnd));
+            const int fw = z.right - z.left, fh = z.bottom - z.top + f->stripH;
+            if (f->minW > 0) mmi->ptMinTrackSize.x = f->minW + fw;
+            if (f->minH > 0) mmi->ptMinTrackSize.y = f->minH + fh;
+            if (f->maxW > 0) mmi->ptMaxTrackSize.x = f->maxW + fw;
+            if (f->maxH > 0) mmi->ptMaxTrackSize.y = f->maxH + fh;
+        }
+        return 0;
+    case WM_DPICHANGED:
+        if (f)
+        {
+            // keep the pixel size — X clients do not scale — accept the
+            // position; the strip re-measures itself for the new DPI
+            const RECT* sug = reinterpret_cast<const RECT*>(lp);
+            f->stripH = f->strip ? StripHeight(hwnd) : 0;
+            RECT r = FrameRectFor(f, f->x, f->y, f->w, f->h);
+            f->settingPos++;
+            SetWindowPos(hwnd, nullptr, sug->left, sug->top, r.right - r.left, r.bottom - r.top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+            f->settingPos--;
+            if (f->strip)
+                InvalidateRect(f->strip, nullptr, TRUE);
+            ReportConfigure(f);
+        }
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+LRESULT CALLBACK ViewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    amberwin_frame* f = FrameOf(hwnd);
+    switch (msg)
+    {
+    case WM_NCCREATE:
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                          reinterpret_cast<LONG_PTR>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams));
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        if (f && f->dib)
+        {
+            HDC mem = CreateCompatibleDC(dc);
+            HGDIOBJ old = SelectObject(mem, f->dib);
+            const RECT& r = ps.rcPaint;
+            BitBlt(dc, r.left, r.top, r.right - r.left, r.bottom - r.top, mem, r.left, r.top, SRCCOPY);
+            SelectObject(mem, old);
+            DeleteDC(mem);
+        }
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_MOUSEACTIVATE:
+        return MA_ACTIVATE;
+    }
+    if (InputMessage(hwnd, msg, wp, lp, g.cfg.desktop_x, g.cfg.desktop_y))
+        return 0;
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// ---- frame operations, executed on the UI thread ------------------------------------
+enum class Op { Create, Destroy, Move, Resize, Restack, Unmap, Shape, Title, Icon, Hints,
+                Transient, State, Activate, SetXid };
+
+struct FrameOp
+{
+    Op op;
+    amberwin_frame* f = nullptr;
+    amberwin_frame* other = nullptr;
+    int x = 0, y = 0, w = 0, h = 0;
+    int a = 0, b = 0, c = 0, d = 0;
+    uint32_t xid = 0;
+    const char* text = nullptr;
+    const int16_t* boxes = nullptr;
+    const uint32_t* argb = nullptr;
+    bool ok = false;
+};
+
+void ApplyStyle(amberwin_frame* f)
+{
+    SetWindowLongPtrW(f->hwnd, GWL_STYLE, static_cast<LONG_PTR>(FrameStyle(f)));
+    SetWindowLongPtrW(f->hwnd, GWL_EXSTYLE, static_cast<LONG_PTR>(FrameExStyle(f)));
+    f->settingPos++;
+    SetWindowPos(f->hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    f->settingPos--;
+}
+
+void PlaceFrame(amberwin_frame* f, int x, int y, int w, int h)
+{
+    RECT r = FrameRectFor(f, x, y, w, h);
+    f->settingPos++;
+    SetWindowPos(f->hwnd, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    f->settingPos--;
+}
+
+void DoCreate(FrameOp& o)
+{
+    amberwin_frame* f = new amberwin_frame;
+    f->xid = o.xid;
+    f->x = o.x; f->y = o.y; f->w = o.w > 0 ? o.w : 1; f->h = o.h > 0 ? o.h : 1;
+    f->overrideRedirect = o.a != 0;
+    f->stripH = f->overrideRedirect ? 0 : MulDiv(kStripLogical, static_cast<int>(GetDpiForSystem()), 96);
+    RECT r = FrameRectFor(f, f->x, f->y, f->w, f->h);
+    // Placement: a client asks for its window at (x, y) with no idea that a
+    // caption and the strip sit above it. A managed frame is kept inside the
+    // work area of the monitor it lands on, as any window manager would; the
+    // X side learns the settled position through the configure report.
+    // Override-redirect windows (menus, tooltips) go exactly where asked.
+    if (!f->overrideRedirect)
+    {
+        HMONITOR mon = MonitorFromRect(&r, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi{ sizeof mi };
+        if (GetMonitorInfoW(mon, &mi))
+        {
+            const int fw = r.right - r.left, fh = r.bottom - r.top;
+            if (r.left < mi.rcWork.left) { r.left = mi.rcWork.left; r.right = r.left + fw; }
+            if (r.top < mi.rcWork.top) { r.top = mi.rcWork.top; r.bottom = r.top + fh; }
+            if (r.right > mi.rcWork.right) { r.left = mi.rcWork.right - fw; r.right = mi.rcWork.right; }
+            if (r.bottom > mi.rcWork.bottom) { r.top = mi.rcWork.bottom - fh; r.bottom = mi.rcWork.bottom; }
+        }
+    }
+    f->settingPos++;
+    f->hwnd = CreateWindowExW(FrameExStyle(f), L"AmberXFrame", L"X11 window", FrameStyle(f),
+                              r.left, r.top, r.right - r.left, r.bottom - r.top,
+                              nullptr, nullptr, GetModuleHandleW(nullptr), f);
+    if (!f->hwnd)
+    {
+        delete f;
+        return;
+    }
+    if (!f->overrideRedirect)
+    {
+        f->stripH = StripHeight(f->hwnd);
+        f->strip = CreateWindowExW(0, L"AmberXStrip", L"", WS_CHILD | WS_VISIBLE, 0, 0, 10, f->stripH,
+                                   f->hwnd, nullptr, GetModuleHandleW(nullptr), f);
+    }
+    f->view = CreateWindowExW(0, L"AmberXView", L"", WS_CHILD | WS_VISIBLE, 0, f->stripH, f->w, f->h,
+                              f->hwnd, nullptr, GetModuleHandleW(nullptr), f);
+    AllocDib(f, f->w, f->h);
+    f->settingPos--;
+    LayoutChildren(f);
+    // where the view actually landed, in X screen coordinates; if placement
+    // moved it, the X side is told once the frame is shown
+    {
+        RECT vr;
+        GetWindowRect(f->view, &vr);
+        f->x = vr.left - g.cfg.desktop_x;
+        f->y = vr.top - g.cfg.desktop_y;
+        if (f->x != o.x || f->y != o.y)
+        {
+            amberwin_event ev{};
+            ev.type = AMBERWIN_EV_FRAME_CONFIGURE;
+            ev.xid = f->xid;
+            ev.x = f->x; ev.y = f->y; ev.w = f->w; ev.h = f->h;
+            Push(ev);
+        }
+    }
+    o.f = f;
+    o.ok = f->view && f->bits;
+}
+
+void DoDestroy(amberwin_frame* f)
+{
+    if (f->owner && f->modal)
+        EnableWindow(f->owner->hwnd, TRUE);
+    f->settingPos++;
+    if (f->hwnd)
+        DestroyWindow(f->hwnd);
+    if (f->dib)
+        DeleteObject(f->dib);
+    if (f->icon)
+        DestroyIcon(f->icon);
+    delete f;
+}
+
+void DoState(amberwin_frame* f, int minimized, int maximized, int fullscreen, int urgent)
+{
+    if ((fullscreen != 0) != f->fullscreen)
+    {
+        f->fullscreen = fullscreen != 0;
+        if (f->fullscreen)
+        {
+            f->savedPlacement.length = sizeof f->savedPlacement;
+            GetWindowPlacement(f->hwnd, &f->savedPlacement);
+            f->stripH = 0;
+            ApplyStyle(f);
+            HMONITOR mon = MonitorFromWindow(f->hwnd, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO mi{ sizeof mi };
+            GetMonitorInfoW(mon, &mi);
+            f->settingPos++;
+            SetWindowPos(f->hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+                         mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
+                         SWP_NOACTIVATE | SWP_FRAMECHANGED);
+            f->settingPos--;
+            if (f->strip)
+                ShowWindow(f->strip, SW_HIDE);
+        }
+        else
+        {
+            f->stripH = f->strip ? StripHeight(f->hwnd) : 0;
+            ApplyStyle(f);
+            if (f->strip)
+                ShowWindow(f->strip, SW_SHOW);
+            f->settingPos++;
+            SetWindowPlacement(f->hwnd, &f->savedPlacement);
+            f->settingPos--;
+        }
+        LayoutChildren(f);
+        ReportConfigure(f);
+    }
+    if (f->mapped && !f->fullscreen)
+    {
+        if (minimized && !IsIconic(f->hwnd))
+            ShowWindow(f->hwnd, SW_MINIMIZE);
+        else if (!minimized && IsIconic(f->hwnd))
+            ShowWindow(f->hwnd, SW_RESTORE);
+        if (maximized && !IsZoomed(f->hwnd) && !minimized)
+            ShowWindow(f->hwnd, SW_MAXIMIZE);
+        else if (!maximized && IsZoomed(f->hwnd))
+            ShowWindow(f->hwnd, SW_RESTORE);
+    }
+    if (urgent)
+    {
+        FLASHWINFO fi{ sizeof fi, f->hwnd, FLASHW_TRAY | FLASHW_TIMERNOFG, 0, 0 };
+        FlashWindowEx(&fi);
+    }
+}
+
+void RunOp(FrameOp& o)
+{
+    amberwin_frame* f = o.f;
+    switch (o.op)
+    {
+    case Op::Create:
+        DoCreate(o);
+        return;
+    case Op::Destroy:
+        DoDestroy(f);
+        break;
+    case Op::Move:
+        f->x = o.x; f->y = o.y;
+        PlaceFrame(f, f->x, f->y, f->w, f->h);
+        break;
+    case Op::Resize:
+        f->x = o.x; f->y = o.y; f->w = o.w > 0 ? o.w : 1; f->h = o.h > 0 ? o.h : 1;
+        AllocDib(f, f->w, f->h);
+        PlaceFrame(f, f->x, f->y, f->w, f->h);
+        LayoutChildren(f);
+        InvalidateRect(f->view, nullptr, FALSE);
+        break;
+    case Op::Restack:
+    {
+        const bool wasMapped = f->mapped;
+        f->mapped = true;
+        HWND after = o.other && o.other->hwnd ? o.other->hwnd : HWND_TOP;
+        UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW;
+        if (f->overrideRedirect || wasMapped)
+            flags |= SWP_NOACTIVATE;
+        f->settingPos++;
+        SetWindowPos(f->hwnd, after, 0, 0, 0, 0, flags);
+        f->settingPos--;
+        if (f->owner && f->modal)
+            EnableWindow(f->owner->hwnd, FALSE);
+        break;
+    }
+    case Op::Unmap:
+        f->mapped = false;
+        f->settingPos++;
+        ShowWindow(f->hwnd, SW_HIDE);
+        f->settingPos--;
+        if (f->owner && f->modal)
+            EnableWindow(f->owner->hwnd, TRUE);
+        break;
+    case Op::Shape:
+        if (o.a == 0)
+            SetWindowRgn(f->view, nullptr, TRUE);
+        else
+        {
+            HRGN rgn = CreateRectRgn(0, 0, 0, 0);
+            for (int i = 0; i < o.a; ++i)
+            {
+                HRGN r = CreateRectRgn(o.boxes[i * 4], o.boxes[i * 4 + 1], o.boxes[i * 4 + 2], o.boxes[i * 4 + 3]);
+                CombineRgn(rgn, rgn, r, RGN_OR);
+                DeleteObject(r);
+            }
+            SetWindowRgn(f->view, rgn, TRUE);   // the window owns rgn now
+        }
+        break;
+    case Op::Title:
+        SetWindowTextW(f->hwnd, Widen(o.text ? o.text : "").c_str());
+        break;
+    case Op::Icon:
+    {
+        if (f->icon)
+        {
+            DestroyIcon(f->icon);
+            f->icon = nullptr;
+        }
+        if (o.w > 0 && o.h > 0 && o.argb)
+        {
+            BITMAPINFO bi{};
+            bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+            bi.bmiHeader.biWidth = o.w;
+            bi.bmiHeader.biHeight = -o.h;
+            bi.bmiHeader.biPlanes = 1;
+            bi.bmiHeader.biBitCount = 32;
+            bi.bmiHeader.biCompression = BI_RGB;
+            void* p = nullptr;
+            HDC dc = GetDC(nullptr);
+            HBITMAP color = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &p, nullptr, 0);
+            ReleaseDC(nullptr, dc);
+            if (color && p)
+            {
+                memcpy(p, o.argb, static_cast<size_t>(o.w) * 4u * static_cast<size_t>(o.h));
+                HBITMAP mask = CreateBitmap(o.w, o.h, 1, 1, nullptr);
+                ICONINFO ii{ TRUE, 0, 0, mask, color };
+                f->icon = CreateIconIndirect(&ii);
+                DeleteObject(mask);
+            }
+            if (color)
+                DeleteObject(color);
+        }
+        SendMessageW(f->hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(f->icon));
+        SendMessageW(f->hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(f->icon));
+        break;
+    }
+    case Op::Hints:
+    {
+        f->minW = o.a; f->minH = o.b; f->maxW = o.c; f->maxH = o.d;
+        const bool resizable = o.x != 0;
+        if (resizable != f->resizable)
+        {
+            f->resizable = resizable;
+            ApplyStyle(f);
+            PlaceFrame(f, f->x, f->y, f->w, f->h);
+        }
+        break;
+    }
+    case Op::Transient:
+        if (f->owner && f->modal && f->owner != o.other)
+            EnableWindow(f->owner->hwnd, TRUE);
+        f->owner = o.other;
+        f->modal = o.a != 0;
+        SetWindowLongPtrW(f->hwnd, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(f->owner ? f->owner->hwnd : nullptr));
+        if (f->owner && f->modal && f->mapped)
+            EnableWindow(f->owner->hwnd, FALSE);
+        break;
+    case Op::State:
+        DoState(f, o.a, o.b, o.c, o.d);
+        break;
+    case Op::Activate:
+        if (f->mapped)
+        {
+            if (IsIconic(f->hwnd))
+                ShowWindow(f->hwnd, SW_RESTORE);
+            SetForegroundWindow(f->hwnd);
+        }
+        break;
+    case Op::SetXid:
+        f->xid = o.xid;
+        break;
+    }
+    o.ok = true;
+}
+
+LRESULT CALLBACK OpsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_AMBER_OP)
+    {
+        RunOp(*reinterpret_cast<FrameOp*>(lp));
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// Runs a frame op on the UI thread and waits for it. Safe to call from the
+// UI thread itself (runs inline) and from the server thread (SendMessage
+// blocks until the UI thread has executed it).
+void Marshal(FrameOp& o)
+{
+    if (GetCurrentThreadId() == g.uiThread)
+        RunOp(o);
+    else if (g.ops)
+        SendMessageW(g.ops, WM_AMBER_OP, 0, reinterpret_cast<LPARAM>(&o));
 }
 
 // ---- the pipe thread ----------------------------------------------------------
@@ -339,7 +1070,6 @@ DWORD WINAPI PipeThread(LPVOID)
                 if (it != g.channels.end() && !it->second.closedByPeer)
                 {
                     ChannelBuf& b = it->second;
-                    // compact once the read cursor has passed the halfway mark
                     if (b.rd > 0 && b.rd >= b.data.size() / 2)
                     {
                         b.data.erase(b.data.begin(), b.data.begin() + static_cast<std::ptrdiff_t>(b.rd));
@@ -397,8 +1127,7 @@ DWORD WINAPI ServerThread(LPVOID)
     const char* argv[] = { "AmberXHost", nullptr };
     const int rc = amberx_server_main(1, const_cast<char**>(argv));
     g.serverExited = true;
-    if (g.hwnd)
-        PostMessageW(g.hwnd, WM_DESTROY, 0, 0);
+    PostThreadMessageW(g.uiThread, WM_QUIT, static_cast<WPARAM>(rc), 0);
     return static_cast<DWORD>(rc);
 }
 
@@ -408,16 +1137,21 @@ DWORD WINAPI ServerThread(LPVOID)
 namespace amber::amberx
 {
 
-bool BackendInit(FramedPipe& pipe, int width, int height, uint32_t display,
-                 const std::string& keymapPath, std::string& err)
+bool BackendInit(FramedPipe& pipe, const HostOptions& opt, std::string& err)
 {
     g.pipe = &pipe;
-    g.keymapPath = keymapPath;
-    g.cfg.width = width;
-    g.cfg.height = height;
+    g.keymapPath = opt.keymap;
+    g.identity = opt.identity;
+    g.mode = opt.mode;
+    g.sigil = opt.sigil;
+    g.uiThread = GetCurrentThreadId();
+    g.cfg.rootless = opt.rootless ? 1 : 0;
     g.cfg.depth = 24;
-    g.cfg.display = display;
+    g.cfg.display = opt.display;
     g.cfg.keymap_path = g.keymapPath.empty() ? nullptr : g.keymapPath.c_str();
+    g.cfg.identity = g.identity.c_str();
+    g.cfg.mode = g.mode.c_str();
+    g.cfg.skin = opt.skin;
     g.wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!g.wake)
     {
@@ -425,24 +1159,57 @@ bool BackendInit(FramedPipe& pipe, int width, int height, uint32_t display,
         return false;
     }
 
-    WNDCLASSW wc{};
-    wc.lpfnWndProc = WndProc;
-    wc.hInstance = GetModuleHandleW(nullptr);
-    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.lpszClassName = L"AmberXDisplay";
-    wc.style = CS_OWNDC;
-    if (!RegisterClassW(&wc))
+    HINSTANCE inst = GetModuleHandleW(nullptr);
+    auto reg = [&](const wchar_t* cls, WNDPROC proc, UINT style, HCURSOR cur) {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = proc;
+        wc.hInstance = inst;
+        wc.hCursor = cur;
+        wc.lpszClassName = cls;
+        wc.style = style;
+        return RegisterClassW(&wc) != 0;
+    };
+    HCURSOR arrow = LoadCursorW(nullptr, IDC_ARROW);
+    if (!reg(L"AmberXDisplay", RootfulProc, CS_OWNDC, arrow) ||
+        !reg(L"AmberXFrame", FrameProc, 0, arrow) ||
+        !reg(L"AmberXView", ViewProc, CS_OWNDC, arrow) ||
+        !reg(L"AmberXStrip", StripProc, 0, arrow) ||
+        !reg(L"AmberXOps", OpsProc, 0, nullptr))
     {
         err = "RegisterClass failed";
         return false;
     }
-    RECT r{ 0, 0, width, height };
+
+    if (opt.rootless)
+    {
+        // the X screen is the virtual desktop; its origin may be negative
+        g.cfg.desktop_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        g.cfg.desktop_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        g.cfg.width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        g.cfg.height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        if (g.cfg.width < 64 || g.cfg.height < 64)
+        {
+            g.cfg.width = 1280;
+            g.cfg.height = 800;
+        }
+        g.ops = CreateWindowExW(0, L"AmberXOps", L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, inst, nullptr);
+        if (!g.ops)
+        {
+            err = "could not create the ops window";
+            return false;
+        }
+        return true;
+    }
+
+    g.cfg.width = opt.width;
+    g.cfg.height = opt.height;
+    RECT r{ 0, 0, opt.width, opt.height };
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     AdjustWindowRect(&r, style, FALSE);
     wchar_t title[64];
-    swprintf_s(title, L"AmberX :%u", display);
-    g.hwnd = CreateWindowExW(0, wc.lpszClassName, title, style, CW_USEDEFAULT, CW_USEDEFAULT,
-                             r.right - r.left, r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
+    swprintf_s(title, L"AmberX :%u", opt.display);
+    g.hwnd = CreateWindowExW(0, L"AmberXDisplay", title, style, CW_USEDEFAULT, CW_USEDEFAULT,
+                             r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
     if (!g.hwnd)
     {
         err = "CreateWindow failed";
@@ -457,7 +1224,8 @@ int BackendRun()
     HANDLE serverThread = CreateThread(nullptr, 0, ServerThread, nullptr, 0, nullptr);
     if (!pipeThread || !serverThread)
         return 73;
-    ShowWindow(g.hwnd, SW_SHOWNORMAL);
+    if (g.hwnd)
+        ShowWindow(g.hwnd, SW_SHOWNORMAL);
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0)
@@ -465,14 +1233,21 @@ int BackendRun()
         TranslateMessage(&m);
         DispatchMessageW(&m);
     }
-    // the server has returned (it posted WM_DESTROY) or the window was
-    // torn down; give the server a moment to finish its generation
     if (!g.serverExited)
     {
         amberwin_event ev{};
         ev.type = AMBERWIN_EV_SHUTDOWN;
         Push(ev);
-        WaitForSingleObject(serverThread, 5000);
+        // the server may be inside a SendMessage to this thread; keep
+        // pumping while it winds down
+        const ULONGLONG until = GetTickCount64() + 5000;
+        while (!g.serverExited && GetTickCount64() < until)
+        {
+            if (MsgWaitForMultipleObjects(1, &serverThread, FALSE, 100, QS_ALLINPUT) == WAIT_OBJECT_0)
+                break;
+            while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE))
+                DispatchMessageW(&m);
+        }
     }
     DWORD rc = 0;
     GetExitCodeThread(serverThread, &rc);
@@ -567,6 +1342,115 @@ void amberwin_bell(int percent)
         MessageBeep(MB_OK);
 }
 
+// ---- frames ----------------------------------------------------------------------
+amberwin_frame* amberwin_frame_create(uint32_t xid, int x, int y, int w, int h, int override_redirect)
+{
+    FrameOp o{ Op::Create };
+    o.xid = xid; o.x = x; o.y = y; o.w = w; o.h = h; o.a = override_redirect;
+    Marshal(o);
+    return o.ok ? o.f : nullptr;
+}
+
+void amberwin_frame_destroy(amberwin_frame* f)
+{
+    if (!f) return;
+    FrameOp o{ Op::Destroy }; o.f = f; Marshal(o);
+}
+
+void amberwin_frame_move(amberwin_frame* f, int x, int y)
+{
+    if (!f) return;
+    FrameOp o{ Op::Move }; o.f = f; o.x = x; o.y = y; Marshal(o);
+}
+
+void amberwin_frame_resize(amberwin_frame* f, int x, int y, int w, int h)
+{
+    if (!f) return;
+    FrameOp o{ Op::Resize }; o.f = f; o.x = x; o.y = y; o.w = w; o.h = h; Marshal(o);
+}
+
+void amberwin_frame_restack(amberwin_frame* f, amberwin_frame* above)
+{
+    if (!f) return;
+    FrameOp o{ Op::Restack }; o.f = f; o.other = above; Marshal(o);
+}
+
+void amberwin_frame_unmap(amberwin_frame* f)
+{
+    if (!f) return;
+    FrameOp o{ Op::Unmap }; o.f = f; Marshal(o);
+}
+
+void amberwin_frame_set_shape(amberwin_frame* f, int nboxes, const int16_t* boxes)
+{
+    if (!f) return;
+    FrameOp o{ Op::Shape }; o.f = f; o.a = nboxes; o.boxes = boxes; Marshal(o);
+}
+
+void* amberwin_frame_bits(amberwin_frame* f, int* stride_bytes)
+{
+    if (!f) return nullptr;
+    *stride_bytes = f->stride;
+    return f->bits;
+}
+
+void amberwin_frame_present(amberwin_frame* f, int x, int y, int w, int h)
+{
+    if (!f || !f->view) return;
+    if (w < 0 || h < 0)
+        InvalidateRect(f->view, nullptr, FALSE);
+    else
+    {
+        RECT r{ x, y, x + w, y + h };
+        InvalidateRect(f->view, &r, FALSE);
+    }
+}
+
+void amberwin_frame_set_title(amberwin_frame* f, const char* utf8)
+{
+    if (!f) return;
+    FrameOp o{ Op::Title }; o.f = f; o.text = utf8; Marshal(o);
+}
+
+void amberwin_frame_set_icon(amberwin_frame* f, int w, int h, const uint32_t* argb)
+{
+    if (!f) return;
+    FrameOp o{ Op::Icon }; o.f = f; o.w = w; o.h = h; o.argb = argb; Marshal(o);
+}
+
+void amberwin_frame_set_hints(amberwin_frame* f, int min_w, int min_h, int max_w, int max_h, int resizable)
+{
+    if (!f) return;
+    FrameOp o{ Op::Hints }; o.f = f; o.a = min_w; o.b = min_h; o.c = max_w; o.d = max_h; o.x = resizable;
+    Marshal(o);
+}
+
+void amberwin_frame_set_transient(amberwin_frame* f, amberwin_frame* owner, int modal)
+{
+    if (!f) return;
+    FrameOp o{ Op::Transient }; o.f = f; o.other = owner; o.a = modal; Marshal(o);
+}
+
+void amberwin_frame_set_state(amberwin_frame* f, int minimized, int maximized, int fullscreen, int urgent)
+{
+    if (!f) return;
+    FrameOp o{ Op::State }; o.f = f; o.a = minimized; o.b = maximized; o.c = fullscreen; o.d = urgent;
+    Marshal(o);
+}
+
+void amberwin_frame_activate(amberwin_frame* f)
+{
+    if (!f) return;
+    FrameOp o{ Op::Activate }; o.f = f; Marshal(o);
+}
+
+void amberwin_frame_set_xid(amberwin_frame* f, uint32_t xid)
+{
+    if (!f) return;
+    FrameOp o{ Op::SetXid }; o.f = f; o.xid = xid; Marshal(o);
+}
+
+// ---- events and channels ------------------------------------------------------------
 int amberwin_wait(int timeout_ms)
 {
     {
@@ -749,14 +1633,13 @@ int closedir(DIR* dir)
     return 0;
 }
 
-} // extern "C"
-
 // ---- libXfont2's POSIX leftovers -----------------------------------------------
-// libXfont2 calls strcasecmp by its POSIX name. Inside X translation units os.h maps both to x-prefixed versions;
-// this unit has no os.h, so it can carry the plain names.
-extern "C" {
+// libXfont2 calls strcasecmp by its POSIX name. Inside X translation units
+// os.h maps it to xstrcasecmp; this unit has no os.h, so it carries the
+// plain name.
 int strcasecmp(const char* a, const char* b)
 {
     return _stricmp(a, b);
 }
-}
+
+} // extern "C"

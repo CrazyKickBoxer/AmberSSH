@@ -40,6 +40,7 @@ outside `hw/`**, and `hw/` is not a candidate.
 | xserver `present/` | 21.1.24 | MIT (Keith Packard form) | preserve headers; attribute | no | **approved** |
 | xserver `os/` | 21.1.24 | MIT / X11 | preserve headers; attribute | no | **approved — subset**: `mitauth.c oscolor.c xprintf.c strlcpy.c strlcat.c strndup.c reallocarray.c timingsafe_memcmp.c` (pure C, compiled unmodified into AmberXServer). Everything else in `os/` is replaced by `src/amberx/server/` — see REJECTED-COMPONENTS.md |
 | xserver `miext/damage`, `miext/sync` | 21.1.24 | MIT | preserve headers; attribute | no | **approved** |
+| xserver `miext/rootless` | 21.1.24 | MIT (Apple form) | preserve headers; attribute | no | **approved — compiled** (Phase 3): the per-window backing layer behind native frames; its `__APPLE__` sections compile out |
 | **xorgproto** `include/` | 2025.1 | MIT variants, per-proto `COPYING-*` | preserve; attribute | no | **approved — subset**: every proto used must have its `COPYING-*` in the notice bundle |
 | xorgproto `glxproto` | 2025.1 | SGI Free Software License B 2.0 | preserve | no | **rejected — out of scope** (GLX is not a first-milestone feature; see REJECTED-COMPONENTS.md) |
 | **pixman** | 0.46.4 | MIT | preserve `COPYING`; attribute | no | **approved — compiled**: the portable C paths (28 files) as `AmberXPixman`; the SIMD files are not compiled (see REJECTED-COMPONENTS.md) |

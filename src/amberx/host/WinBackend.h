@@ -10,12 +10,27 @@ namespace amber::amberx
 
 class FramedPipe;
 
-// Registers the display window and the queues. The pipe must already be
-// handshaken; the backend owns nothing about its security, only its bytes.
-bool BackendInit(FramedPipe& pipe, int width, int height, uint32_t display,
-                 const std::string& keymapPath, std::string& err);
+// Everything the host was launched with that the backend needs. The
+// identity fields are AmberSSH's, never the remote's: they are painted on
+// the strip no X drawing can reach.
+struct HostOptions
+{
+    bool rootless = true;       // --rootful turns it off
+    int width = 1280, height = 800;   // rootful only
+    uint32_t display = 0;
+    std::string keymap;         // an .xkm path, or empty for the built-in map
+    std::string identity;       // "host · user"
+    std::string mode = "RESTRICTED";
+    std::string sigil;          // the host-key sigil mnemonic
+    int skin = 0;               // AmberSSH chrome style index
+};
 
-// Starts the pipe and server threads, pumps the window until the server has
+// Registers the window classes and, rootful, the display window. The pipe
+// must already be handshaken; the backend owns nothing about its security,
+// only its bytes.
+bool BackendInit(FramedPipe& pipe, const HostOptions& opt, std::string& err);
+
+// Starts the pipe and server threads, pumps windows until the server has
 // returned, and returns the server's exit code.
 int BackendRun();
 

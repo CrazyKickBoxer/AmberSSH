@@ -1,9 +1,10 @@
-/* amberos.h — private to AmberX's os layer (the X side). Original AmberSSH
- * file.
+/* amberos.h — private to AmberX's os and DDX layers (the X side). Original
+ * AmberSSH file.
  *
  * What upstream keeps in os/osdep.h as OsCommRec, with the socket removed
  * and a channel id in its place. One of these hangs off every
- * ClientRec.osPrivate. */
+ * ClientRec.osPrivate. Plus the handful of calls the DDX files make to each
+ * other. */
 #ifndef AMBEROS_H
 #define AMBEROS_H
 
@@ -12,6 +13,8 @@
 #include <X11/Xmd.h>
 #include "misc.h"
 #include "dixstruct.h"
+#include "scrnintstr.h"
+#include "windowstr.h"
 
 typedef struct amber_comm {
     CARD32 channel;         /* AmberXControl channel id; never 0 */
@@ -48,5 +51,19 @@ void amber_os_set_cookie(const unsigned char *cookie16);
 /* ddx_input.c: called from WaitForSomething when the backend has input */
 struct amberwin_event;
 void amber_ddx_input_event(const struct amberwin_event *ev);
+
+/* ddx_frames.c: the rootless frame procs, installed by ddx_screen.c */
+struct _RootlessFrameProcs;
+struct _RootlessFrameProcs *amber_frame_procs(void);
+struct amberwin_frame;
+/* the frame a top-level window currently has, or NULL */
+struct amberwin_frame *amber_frame_of(WindowPtr pWin);
+
+/* ddx_wm.c: the window manager inside the server */
+Bool amber_wm_screen_init(ScreenPtr pScreen);
+void amber_wm_frame_created(WindowPtr pWin, struct amberwin_frame *f);
+void amber_wm_frame_destroyed(WindowPtr pWin, struct amberwin_frame *f);
+void amber_wm_frame_switched(WindowPtr pNew, WindowPtr pOld, struct amberwin_frame *f);
+void amber_wm_event(const struct amberwin_event *ev);
 
 #endif

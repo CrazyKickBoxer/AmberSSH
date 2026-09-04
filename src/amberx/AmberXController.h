@@ -38,6 +38,19 @@ public:
 
     // Creates the pipe, launches AmberXHost.exe inside a Job Object, and
     // completes the handshake. On any failure the host is dead on return.
+    // What the host is launched with beyond the transport: the identity
+    // badge AmberSSH controls and the remote cannot touch. Set before Start.
+    struct Launch
+    {
+        std::string identity;       // "host · user"
+        bool trusted = false;
+        std::string sigil;          // host-key sigil mnemonic
+        int skin = 0;               // chrome style index
+        std::string keymap;         // .xkm path, or empty
+        bool rootful = false;
+    };
+    void Configure(const Launch& l) { m_launch = l; }
+
     bool Start(std::string& err);
     bool Alive() const;
     // The verified DACL summary from the pipe this host was reached over.
@@ -60,6 +73,7 @@ private:
     HANDLE m_proc = nullptr;
     ChannelTable m_channels;
     std::string m_security;
+    Launch m_launch;
     bool m_ready = false;
     void Kill();
 };

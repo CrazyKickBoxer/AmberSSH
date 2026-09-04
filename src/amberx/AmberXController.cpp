@@ -4,6 +4,7 @@
 #include <string>
 
 #include "control/Handshake.h"
+#include "PreviewClient.h"
 
 namespace amber::amberx
 {
@@ -156,9 +157,28 @@ bool AmberXController::Start(std::string& err)
         return false;
     }
 
+    // Quoted for CreateProcess: a double quote inside a value is dropped
+    // rather than escaped, so no value can break out of its argument.
+    auto quoted = [](const std::string& s) {
+        std::string t;
+        for (char ch : s) if (ch != '"') t += ch;
+        const int n = MultiByteToWideChar(CP_UTF8, 0, t.c_str(), -1, nullptr, 0);
+        std::wstring w(static_cast<size_t>(n > 0 ? n - 1 : 0), L' ');
+        if (n > 1) MultiByteToWideChar(CP_UTF8, 0, t.c_str(), -1, w.data(), n);
+        return L"\"" + w + L"\"";
+    };
     std::wstring cmd = L"\"" + HostExePath() + L"\" --pipe " + m_srv.name +
                        L" --secret-handle " + std::to_wstring(reinterpret_cast<uintptr_t>(rd)) +
-                       L" --parent " + std::to_wstring(GetCurrentProcessId());
+                       L" --parent " + std::to_wstring(GetCurrentProcessId()) +
+                       L" --identity " + quoted(m_launch.identity) +
+                       L" --mode " + (m_launch.trusted ? L"trusted" : L"restricted") +
+                       L" --skin " + std::to_wstring(m_launch.skin);
+    if (!m_launch.sigil.empty())
+        cmd += L" --sigil " + quoted(m_launch.sigil);
+    if (!m_launch.keymap.empty())
+        cmd += L" --keymap " + quoted(m_launch.keymap);
+    if (m_launch.rootful)
+        cmd += L" --rootful";
 
     STARTUPINFOEXW si = {};
     si.StartupInfo.cb = sizeof(si);
@@ -328,6 +348,12 @@ int RunPreview()
     };
 
     AmberXController c;
+    AmberXController::Launch launch;
+    launch.identity = "julie-prod.example · josh";
+    launch.trusted = false;
+    launch.sigil = "ember-fox-lantern";
+    launch.skin = 0;
+    c.Configure(launch);
     std::string err;
     const bool started = c.Start(err);
     line("start + handshake", started, err);
@@ -360,267 +386,17 @@ int RunPreview()
         st = statusUntil([&] { return open == 1; }, 5000);
         line("status after open", st, st ? "open=1" : "no status with open=1");
 
-        // ---- an X client, by hand ---------------------------------------
-        // Everything below is the X11 wire protocol, little-endian, written
-        // out so the gate depends on no X library. What the server sends
-        // back on the channel is read through `recv`, which sets aside the
-        // host's own status frames and remembers any HostError.
-        std::vector<uint8_t> inbuf;
-        std::string hostErrors;
-        auto recv = [&](size_t want, DWORD ms) -> bool
-        {
-            const ULONGLONG until = GetTickCount64() + ms;
-            while (inbuf.size() < want)
-            {
-                const ULONGLONG now = GetTickCount64();
-                if (now >= until)
-                    return false;
-                Frame r;
-                const PipeRead pr = c.Poll(r, static_cast<DWORD>(until - now));
-                if (pr != PipeRead::Ok)
-                    return false;
-                if (r.type == MsgType::ChannelData && r.channel == 1)
-                    inbuf.insert(inbuf.end(), r.payload.begin(), r.payload.end());
-                else if (r.type == MsgType::HostError)
-                {
-                    std::string t;
-                    ParseHostError(r.payload, t);
-                    hostErrors += t + "; ";
-                }
-                else if (r.type == MsgType::ChannelClose && r.channel == 1)
-                    return false;
-            }
-            return true;
-        };
-        auto take = [&](size_t n) { inbuf.erase(inbuf.begin(), inbuf.begin() + static_cast<std::ptrdiff_t>(n)); };
-        auto u16 = [](const uint8_t* p) { return static_cast<uint32_t>(p[0] | (p[1] << 8)); };
-        auto u32 = [](const uint8_t* p) { return static_cast<uint32_t>(p[0] | (p[1] << 8) | (p[2] << 16) | (static_cast<uint32_t>(p[3]) << 24)); };
-        auto put16 = [](std::vector<uint8_t>& v, uint32_t x) { v.push_back(x & 0xff); v.push_back((x >> 8) & 0xff); };
-        auto put32 = [](std::vector<uint8_t>& v, uint32_t x) { for (int i = 0; i < 4; ++i) v.push_back((x >> (8 * i)) & 0xff); };
-        auto send = [&](const std::vector<uint8_t>& req) { return c.SendData(1, req.data(), req.size()); };
-
-        // setup: 'l', pad, 11.0, auth name + cookie
-        {
-            std::vector<uint8_t> s;
-            s.push_back('l'); s.push_back(0);
-            put16(s, 11); put16(s, 0);
-            put16(s, 18); put16(s, 16); put16(s, 0);
-            const char* name = "MIT-MAGIC-COOKIE-1";
-            s.insert(s.end(), name, name + 18); s.push_back(0); s.push_back(0);
-            s.insert(s.end(), 16, 0x42);
-            line("send X11 setup", send(s));
-        }
-        uint32_t root = 0, ridBase = 0, whitePixel = 0, rootDepth = 0, rootW = 0, rootH = 0;
-        bool setupOk = recv(8, 5000);
-        if (setupOk)
-        {
-            const uint8_t status = inbuf[0];
-            const uint32_t extra = u16(&inbuf[6]) * 4;
-            setupOk = recv(8 + extra, 5000);
-            if (setupOk && status == 1)
-            {
-                const uint8_t* p = inbuf.data() + 8;   // xConnSetup
-                ridBase = u32(p + 4);
-                const uint32_t nVendor = u16(p + 16);
-                const uint8_t numFormats = p[21];
-                const uint8_t* q = p + 32 + ((nVendor + 3) & ~3u) + numFormats * 8;   // first root
-                root = u32(q);
-                whitePixel = u32(q + 8);
-                rootW = u16(q + 20);
-                rootH = u16(q + 22);
-                rootDepth = q[38];
-                line("setup accepted", true,
-                     "root=0x" + std::to_string(root) + " depth=" + std::to_string(rootDepth) +
-                     " " + std::to_string(rootW) + "x" + std::to_string(rootH));
-            }
-            else if (setupOk)
-            {
-                std::string reason(reinterpret_cast<const char*>(inbuf.data()) + 8, inbuf[1]);
-                line("setup accepted", false, "status=" + std::to_string(status) + " " + reason);
-            }
-            take(8 + extra);
-        }
-        if (!setupOk)
-            line("setup accepted", false, "no reply  " + hostErrors);
-
-        if (root && rootDepth == 24 && rootW == 1280 && rootH == 800)
-        {
-            const uint32_t wid = ridBase + 1, gc = ridBase + 2;
-            std::vector<uint8_t> r;
-            // CreateWindow: amber background, 200x120 at (10,10)
-            r = { 1, 0 }; put16(r, 8 + 2); put32(r, wid); put32(r, root);
-            put16(r, 10); put16(r, 10); put16(r, 200); put16(r, 120); put16(r, 0);
-            put16(r, 1); put32(r, 0); put32(r, 0x2 | 0x800);
-            put32(r, 0x00ff8800); put32(r, 0x8000 | 0x4 | 0x1);
-            line("CreateWindow", send(r));
-            // MapWindow
-            r = { 8, 0 }; put16(r, 2); put32(r, wid);
-            line("MapWindow", send(r));
-            // CreateGC with a dark foreground
-            r = { 55, 0 }; put16(r, 4 + 1); put32(r, gc); put32(r, wid); put32(r, 0x4); put32(r, 0x00203040);
-            line("CreateGC", send(r));
-            // PolyFillRectangle 80x50 at (20,20)
-            r = { 70, 0 }; put16(r, 3 + 2); put32(r, wid); put32(r, gc);
-            put16(r, 20); put16(r, 20); put16(r, 80); put16(r, 50);
-            line("PolyFillRectangle", send(r));
-            // GetGeometry: a reply proves the round trip
-            r = { 14, 0 }; put16(r, 2); put32(r, wid);
-            line("GetGeometry", send(r));
-            // GetImage of one pixel inside the rectangle: proves fb drew it
-            r = { 73, 2 }; put16(r, 5); put32(r, wid); put16(r, 25); put16(r, 25); put16(r, 1); put16(r, 1); put32(r, 0xffffffff);
-            line("GetImage", send(r));
-
-            // replies and events, in any order the server chooses
-            bool sawGeometry = false, sawExpose = false, sawPixel = false;
-            std::string pixel;
-            const ULONGLONG until = GetTickCount64() + 5000;
-            while ((!sawGeometry || !sawPixel) && GetTickCount64() < until)
-            {
-                if (!recv(32, 1000))
-                    break;
-                const uint8_t type = inbuf[0] & 0x7f;
-                if (type == 1)   // reply
-                {
-                    const uint32_t extraLen = u32(&inbuf[4]) * 4;
-                    if (!recv(32 + extraLen, 3000))
-                        break;
-                    const uint32_t seq = u16(&inbuf[2]);
-                    if (seq == 5)   // GetGeometry: root@8 x@12 y@14 w@16 h@18
-                    {
-                        sawGeometry = u16(&inbuf[16]) == 200 && u16(&inbuf[18]) == 120 && u32(&inbuf[8]) == root;
-                        line("GetGeometry reply", sawGeometry,
-                             std::to_string(u16(&inbuf[16])) + "x" + std::to_string(u16(&inbuf[18])) +
-                             " at " + std::to_string(u16(&inbuf[12])) + "," + std::to_string(u16(&inbuf[14])) +
-                             " depth=" + std::to_string(inbuf[1]));
-                    }
-                    else if (seq == 6)   // GetImage
-                    {
-                        const uint32_t px = extraLen >= 4 ? (u32(&inbuf[32]) & 0xffffff) : 0xdeadbeef;
-                        sawPixel = true;
-                        char hex[16];
-                        snprintf(hex, sizeof hex, "0x%06x", px);
-                        pixel = hex;
-                        line("GetImage pixel == foreground", px == 0x203040, pixel);
-                    }
-                    take(32 + extraLen);
-                }
-                else if (type == 0)   // error
-                {
-                    line("X error", false, "code=" + std::to_string(inbuf[1]) + " seq=" + std::to_string(u16(&inbuf[2])) +
-                                           " major=" + std::to_string(inbuf[10]));
-                    take(32);
-                }
-                else   // event
-                {
-                    if (type == 12)
-                        sawExpose = true;
-                    take(32);
-                }
-            }
-            line("Expose event", sawExpose);
-            if (!sawGeometry)
-                line("GetGeometry reply", false, "none  " + hostErrors);
-            if (!sawPixel)
-                line("GetImage pixel == foreground", false, "none  " + hostErrors);
-
-            // ---- input in: real window messages, X events out ----------
-            // The display window is on this desktop; post it the messages a
-            // user would generate. The client window at (10,10) 200x120
-            // selected ButtonPress and KeyPress, so a click at (50,50) and a
-            // press of the 'a' key (scan code 0x1E, evdev 30, X keycode 38)
-            // must come back on the channel as those events.
-            HWND disp = FindWindowW(L"AmberXDisplay", nullptr);
-            line("display window exists", disp != nullptr);
-            bool sawButton = false, sawKey = false;
-            if (disp)
-            {
-                PostMessageW(disp, WM_MOUSEMOVE, 0, MAKELPARAM(50, 50));
-                PostMessageW(disp, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(50, 50));
-                PostMessageW(disp, WM_LBUTTONUP, 0, MAKELPARAM(50, 50));
-                PostMessageW(disp, WM_MOUSEMOVE, 0, MAKELPARAM(150, 100));
-                PostMessageW(disp, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(150, 100));
-                PostMessageW(disp, WM_LBUTTONUP, 0, MAKELPARAM(150, 100));
-                PostMessageW(disp, WM_KEYDOWN, 'A', static_cast<LPARAM>((0x1E << 16) | 1));
-                PostMessageW(disp, WM_KEYUP, 'A', static_cast<LPARAM>((0x1E << 16) | 1 | (1u << 30) | (1u << 31)));
-                const ULONGLONG inUntil = GetTickCount64() + 5000;
-                while ((!sawButton || !sawKey) && GetTickCount64() < inUntil)
-                {
-                    if (!recv(32, 1000))
-                        break;
-                    const uint8_t type = inbuf[0] & 0x7f;
-                    if (type == 1)
-                    {
-                        const uint32_t extraLen = u32(&inbuf[4]) * 4;
-                        if (!recv(32 + extraLen, 3000))
-                            break;
-                        take(32 + extraLen);
-                        continue;
-                    }
-                    if (type == 4 && inbuf[1] == 1)   // ButtonPress, button 1
-                    {
-                        // root@20,22 event@24,26; the window is at (10,10)
-                        const int rx = u16(&inbuf[20]), ry = u16(&inbuf[22]);
-                        const int ex = u16(&inbuf[24]), ey = u16(&inbuf[26]);
-                        const bool first = !sawButton;
-                        const int wantX = first ? 50 : 150, wantY = first ? 50 : 100;
-                        sawButton = true;
-                        line(first ? "ButtonPress event #1" : "ButtonPress event #2",
-                             rx == wantX && ry == wantY && ex == wantX - 10 && ey == wantY - 10,
-                             "root " + std::to_string(rx) + "," + std::to_string(ry) +
-                             " window " + std::to_string(ex) + "," + std::to_string(ey) +
-                             " (posted " + std::to_string(wantX) + "," + std::to_string(wantY) + ")");
-                    }
-                    else if (type == 2 && inbuf[1] == 38)   // KeyPress, keycode 38
-                        sawKey = true;
-                    take(32);
-                }
-            }
-            if (!sawButton)
-                line("ButtonPress event", false, "none");
-            line("KeyPress event (keycode 38)", sawKey);
-
-            // QueryPointer: where does the server itself believe the pointer is?
-            {
-                std::vector<uint8_t> q = { 38, 0 }; put16(q, 2); put32(q, root);
-                send(q);
-                const ULONGLONG qUntil = GetTickCount64() + 3000;
-                bool sawQuery = false;
-                while (!sawQuery && GetTickCount64() < qUntil)
-                {
-                    if (!recv(32, 1000))
-                        break;
-                    const uint8_t type = inbuf[0] & 0x7f;
-                    const uint32_t extraLen = (type == 1) ? u32(&inbuf[4]) * 4 : 0;
-                    if (type == 1 && recv(32 + extraLen, 3000) && inbuf[1] <= 1 && u16(&inbuf[2]) == 7)
-                    {
-                        sawQuery = true;
-                        line("QueryPointer after clicks", u16(&inbuf[16]) == 150 && u16(&inbuf[18]) == 100,
-                             "root " + std::to_string(u16(&inbuf[16])) + "," + std::to_string(u16(&inbuf[18])) +
-                             " (last move posted 150,100)");
-                    }
-                    take(32 + extraLen);
-                }
-                if (!sawQuery)
-                    line("QueryPointer after clicks", false, "no reply");
-            }
-
-            // AMBERX_PREVIEW_HOLD_MS keeps the display window up so a capture
-            // script can photograph what the native window shows.
-            if (const char* hold = getenv("AMBERX_PREVIEW_HOLD_MS"))
-                Sleep(static_cast<DWORD>(atoi(hold)));
-        }
-        const uint8_t one = 0;
-        line("data on closed channel refused", !c.SendData(2, &one, 1));
+        failures += RunPreviewClient(c, [&](const char* step, bool ok, const std::string& detail) {
+            fprintf(out, "%-44s %s%s%s\n", step, ok ? "ok" : "FAIL", detail.empty() ? "" : "  ", detail.c_str());
+        });
 
         line("close channel 1", c.CloseChannel(1));
         st = false;
         for (int i = 0; i < 4 && !st; ++i)
             st = c.Poll(f, 3000) == PipeRead::Ok && f.type == MsgType::HostStatus &&
                  ParseHostStatus(f.payload, open, bytes, cookie);
-        line("status after close", st && open == 0,
-             st ? "open=" + std::to_string(open) + " bytesIn=" + std::to_string(bytes) : "no status");
+        line("status after close", st && open == 0, st ? "open=" + std::to_string(open) : "no status");
         line("double close refused", !c.CloseChannel(1));
-        line("no host errors", hostErrors.empty(), hostErrors);
 
         // A frame the host must refuse: data on channel 0 cannot even be
         // encoded, so the controller never sends it — prove that too.

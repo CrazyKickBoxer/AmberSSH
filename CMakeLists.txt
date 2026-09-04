@@ -65,7 +65,7 @@ set(AMBER_SOURCES
     src/amberx/control/Protocol.h src/amberx/control/Protocol.cpp
     src/amberx/control/Handshake.h src/amberx/control/Handshake.cpp
     src/amberx/control/Pipe.h     src/amberx/control/Pipe.cpp
-    src/amberx/AmberXController.h src/amberx/AmberXController.cpp
+    src/amberx/AmberXController.h src/amberx/AmberXController.cpp src/amberx/PreviewClient.cpp
     src/term/palette.h
     src/term/input.h       src/term/input.cpp
     src/ssh/ring.h
@@ -208,7 +208,7 @@ target_link_libraries(AmberXHost PRIVATE bcrypt advapi32)
 # the Windows backend joins the target and the four static libraries link in.
 # Without it, main.cpp compiles to the transport-only stub, as before.
 if(AMBERX_CORE)
-    target_sources(AmberXHost PRIVATE src/amberx/host/WinBackend.cpp)
+    target_sources(AmberXHost PRIVATE src/amberx/host/WinBackend.cpp src/ui/Chrome.cpp)
     target_compile_definitions(AmberXHost PRIVATE AMBERX_HAVE_SERVER)
     target_link_libraries(AmberXHost PRIVATE AmberXServer AmberXCore AmberXPixman AmberXFont gdi32 user32)
     # a linker map, so an exception offset in the host log resolves to a symbol

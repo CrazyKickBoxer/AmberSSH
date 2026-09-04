@@ -32,7 +32,7 @@
       "licenseConcluded": "MIT",
       "licenseDeclared": "MIT",
       "copyrightText": "See COPYING in the pinned tree; reproduced in THIRD-PARTY-NOTICES.md",
-      "comment": "Subtrees compiled: dix, mi, fb, miext/damage, miext/sync (excluding misyncshm.c), render, randr, xfixes, damageext, composite, present, xkb (excluding ddxLoad.c), Xi, the Xext subset in LICENSE-MATRIX.md, and the os/ subset mitauth oscolor xprintf strlcpy strlcat strndup reallocarray timingsafe_memcmp. hw/, glx/, glamor/, dri3/ and the os/ platform files are not compiled."
+      "comment": "Subtrees compiled: dix, mi, fb, miext/damage, miext/sync (excluding misyncshm.c), miext/rootless, render, randr, xfixes, damageext, composite, present, xkb (excluding ddxLoad.c), Xi, the Xext subset in LICENSE-MATRIX.md, and the os/ subset mitauth oscolor xprintf strlcpy strlcat strndup reallocarray timingsafe_memcmp. hw/, glx/, glamor/, dri3/ and the os/ platform files are not compiled."
     },
     {
       "SPDXID": "SPDXRef-xorgproto",
