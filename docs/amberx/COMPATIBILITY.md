@@ -2,24 +2,26 @@
 
 Which applications have been run against AmberX, and what happened.
 
-**Nothing has been run yet.** Every row below says NOT RUN, and that is the
-honest state: AmberX has been driven only by the hand-written X client inside
-`--preview-amberx`, which exercises the protocol but is not an application.
-This file is the plan and the form to fill in, published in advance so that
-the result cannot be quietly narrowed to whatever happened to work.
+**First results: 2026-09-04.** `xeyes` ran, over SSH to a Fedora 44 Server
+guest, in restricted mode, drawn as a native window — the first real X
+application AmberX has ever served. `xterm` did not, and the reason is a real
+gap rather than a misconfiguration (Finding 1 below). Everything else still
+says NOT RUN, and a blank row is not a pass.
 
-Running it needs two things this machine does not have: a Linux host to
-forward from, and a person at the keyboard. The steps are exact so that
-whoever does it does not have to invent them.
+This file was published as an empty form before any of it was run, so that
+the result could not be quietly narrowed to whatever happened to work.
 
 ## How to run the suite
 
-1. Build the AmberX tree — it is not in the default build:
+1. Build with the X server enabled — it is opt-in:
    ```
-   cmake -S . -B build-amberx -DAMBERX_CORE=ON
-   cmake --build build-amberx --config Release
+   cmake -S . -B build -DAMBERX_CORE=ON
+   cmake --build build --config Release
    ```
-2. Run `build-amberx\Release\AmberSSH.exe` — **not** the one in `build\`.
+   A build without it produces a 52 KB `AmberXHost.exe` that handshakes and
+   draws nothing. If windows never appear, check that size first: it cost an
+   hour the first time.
+2. Run `build\Release\AmberSSH.exe`.
 3. Open the profile for the Linux host. Under **SSH → Remote GUI** set
    *Remote GUI* to **X11 Restricted**, leave *Window mode* on native windows
    and *Clipboard* on **Ask each transfer**.
@@ -40,11 +42,47 @@ reproduce.
 
 | application | distro + version | result | visual | input | workaround |
 |---|---|---|---|---|---|
-| `xterm` *(both modes)* | | NOT RUN | | | |
-| `xeyes` | | NOT RUN | | | |
+| `xterm` *(both modes)* | Fedora 44 (Server) | **FAIL** | never opens a window | — | `xterm -fa Monospace -fs 12` — Xft instead of core fonts |
+| `xeyes` | Fedora 44 (Server) | **PASS** | window and drawing correct | pointer tracks only while the cursor is over a forwarded window | none |
 | `xclock` | | NOT RUN | | | |
 | `xmessage` | | NOT RUN | | | |
 | `xcalc` | | NOT RUN | | | |
+
+First run: 2026-09-04, over SSH to a Fedora 44 Server guest, restricted mode,
+native windows. Package versions still to be recorded.
+
+### Finding 1 — no core font path (xterm, and anything else asking for one)
+
+xterm exits with `cannot load font
+"-misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso10646-1"`. AmberX
+has **no font path at all**: it serves only the `fixed` and `cursor` fonts
+built into libXfont2, so every core-font request for anything else fails and
+the application never opens a window.
+
+A real X server ships the misc-fixed PCF set and a `fonts.dir` to go with it.
+AmberX needs the same — bundled, licence-checked and added to the font path —
+and until it has one, any application that uses core fonts rather than Xft
+will not start. Applications that use Xft (every modern toolkit, and xterm
+with `-fa`) are unaffected, because they render glyphs themselves and send
+them through the RENDER extension.
+
+This is the first thing the compatibility suite found, and it is a real gap
+rather than a misconfiguration.
+
+### Finding 2 — the pointer is only tracked over forwarded windows (xeyes)
+
+xeyes polls the server for the pointer position. AmberX learns that position
+from Windows messages delivered to its own frames, so it is current while the
+cursor is over a forwarded window and frozen as soon as it leaves — the eyes
+stop following. The window, its shape and its drawing are all correct.
+
+It is a deliberate consequence of how input reaches the server rather than an
+oversight: nothing polls the global cursor. Making `XQueryPointer` truthful
+everywhere would mean the host sampling the cursor position continuously,
+which hands the X server — and therefore every forwarded client — a record of
+where the user's mouse goes across the whole desktop. That is a security
+trade-off to decide deliberately, not a bug to fix quietly, and it is written
+up here so the decision is visible either way.
 
 ## Toolkits
 
@@ -101,7 +139,9 @@ The point of the form is that a failure is actionable. For each:
 
 ## Status
 
-**Compatibility suite: NOT RUN.** No application has been run against AmberX.
-The gate in PHASE-8-GATE.md records this as the open item it is, and it is
-also the Phase 4 live gate under a different name: the first real application
-closes both.
+**Compatibility suite: started 2026-09-04.** The first real X application ran
+against AmberX that day — `xeyes`, over SSH to a Fedora 44 Server guest, in
+restricted mode, drawn as a native window. That closes the Phase 4 live gate
+on the narrow question of "does anything work at all". The suite itself is
+barely begun: two applications tried, one passed, one found a real gap (no
+core font path), and every toolkit row is still untouched.
