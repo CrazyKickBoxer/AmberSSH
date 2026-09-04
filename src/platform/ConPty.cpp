@@ -289,15 +289,40 @@ std::wstring ShellIntegrationArgs(const std::string& shellKey)
     // so nothing on disk is touched and closing the tab ends the effect.
     if (shellKey == "pwsh" || shellKey == "powershell")
     {
-        // A prompt function wrapping whatever prompt the user already has.
+        // A prompt function wrapping whatever prompt the user already has
+        // emits D (previous exit status), OSC 7, A, then the prompt, then B.
+        //
+        // C — "command submitted, output begins" — cannot come from the prompt
+        // function, which runs before anything is typed. PowerShell has no
+        // PS0. The one moment that corresponds to it is Enter being pressed,
+        // so a PSReadLine key handler emits C and then accepts the line, the
+        // same way VS Code's and Windows Terminal's integrations do. Without
+        // C, pendingCmd is never lifted and PowerShell sessions produce no
+        // journal entries and no command text at all (finding P0-4).
+        //
+        // PSReadLine ships with every supported PowerShell but can be absent
+        // (-NoProfile hosts, stripped images), so the handler is installed
+        // only when the module is loaded and everything else still works
+        // without it.
+        //
+        // Every mark is RETURNED as part of the prompt string rather than
+        // Write-Host'ed. The host writes the returned string after the
+        // function exits, so anything Write-Host'ed lands on the wire before
+        // the prompt text — which put B at column 0 and made the lifted
+        // command "PS C:\...> rm -rf /", a command the risk analyser reads as
+        // the program "ps". Returning one string fixes the order (A, prompt,
+        // B) and is what starship and oh-my-posh do, so PSReadLine measures
+        // it correctly. $? is captured first because calling the old prompt
+        // resets it.
         return LR"(-NoExit -Command "$global:__amberOld=$function:prompt; )"
                LR"(function global:prompt { $c=$?; $e=if($c){0}else{1}; )"
-               LR"(Write-Host -NoNewline ([char]27 + ']133;D;' + $e + [char]7); )"
-               LR"(Write-Host -NoNewline ([char]27 + ']7;file://' + $env:COMPUTERNAME + '/' + )"
-               LR"(($PWD.Path -replace '\\','/') + [char]7); )"
-               LR"(Write-Host -NoNewline ([char]27 + ']133;A' + [char]7); )"
-               LR"($p = & $global:__amberOld; )"
-               LR"(Write-Host -NoNewline ([char]27 + ']133;B' + [char]7); $p }")";
+               LR"($p = & $global:__amberOld; $esc=[char]27; $bel=[char]7; )"
+               LR"(($esc + ']133;D;' + $e + $bel) + )"
+               LR"(($esc + ']7;file://' + $env:COMPUTERNAME + '/' + ($PWD.Path -replace '\\','/') + $bel) + )"
+               LR"(($esc + ']133;A' + $bel) + $p + ($esc + ']133;B' + $bel) }; )"
+               LR"(if (Get-Module PSReadLine) { Set-PSReadLineKeyHandler -Chord Enter -ScriptBlock { )"
+               LR"([Console]::Write([char]27 + ']133;C' + [char]7); )"
+               LR"([Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine() } }")";
     }
     if (shellKey == "gitbash" || shellKey.rfind("wsl:", 0) == 0)
     {
