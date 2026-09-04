@@ -1,5 +1,6 @@
 #include "AmberXController.h"
 
+#include <psapi.h>
 #include <sddl.h>
 
 #include <cstdio>
@@ -491,6 +492,24 @@ bool AmberXController::SendData(uint32_t id, const uint8_t* data, size_t len)
     return m_pipe.WriteFrame(f);
 }
 
+uint64_t AmberXController::HostPeakMemoryBytes() const
+{
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = {};
+    DWORD n = 0;
+    if (!m_job || !QueryInformationJobObject(m_job, JobObjectExtendedLimitInformation,
+                                             &info, sizeof info, &n))
+        return 0;
+    return info.PeakProcessMemoryUsed;
+}
+
+uint64_t AmberXController::HostMemoryBytes() const
+{
+    PROCESS_MEMORY_COUNTERS pmc = {};
+    if (!m_proc || !K32GetProcessMemoryInfo(m_proc, &pmc, sizeof pmc))
+        return 0;
+    return pmc.WorkingSetSize;
+}
+
 bool AmberXController::SendWindowAction(uint32_t xid, WindowAct act)
 {
     if (!m_ready || xid == 0)
@@ -551,12 +570,81 @@ void AmberXController::Stop()
 }
 
 // ------------------------------------------------------------------ preview
+// The report the release bundle carries. Everything in it is a fact about
+// this build: what it is, what it was built from, what it enforces and what
+// it does not do. No machine state, no session, nothing that changes between
+// runs — a report that varies is a report nobody can check a bundle against.
+int WriteReport()
+{
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    const std::wstring path = std::wstring(tmp) + L"amberx-report.txt";
+    FILE* out = _wfopen(path.c_str(), L"w");
+    if (!out)
+        return 1;
+
+    auto say = [&](const char* line) {
+        fprintf(out, "%s\n", line);
+        printf("%s\n", line);
+    };
+    char buf[256];
+
+    say("AmberX - the X server built into AmberSSH");
+    say("");
+    snprintf(buf, sizeof buf, "AmberX version        %s", kAmberXVersion);
+    say(buf);
+    snprintf(buf, sizeof buf, "Upstream X.Org        xserver %s", kUpstreamVersion);
+    say(buf);
+    say("Upstream components   xorgproto 2025.1, pixman 0.46.4, libXfont2 2.0.9,");
+    say("                      libxkbfile 1.1.3, zlib 1.3.2");
+    snprintf(buf, sizeof buf, "Control protocol      AmberXControl v%u, %u KiB maximum frame",
+             static_cast<unsigned>(kVersion), static_cast<unsigned>(kMaxPayload / 1024));
+    say(buf);
+    snprintf(buf, sizeof buf, "Built                 %s %s", __DATE__, __TIME__);
+    say(buf);
+    say("");
+    say("Provenance and licences");
+    say("  docs/amberx/SOURCE-PROVENANCE.md   what was fetched, and its hashes");
+    say("  docs/amberx/LICENSE-MATRIX.md      every component and its licence");
+    say("  third_party/amberx/THIRD-PARTY-NOTICES.md");
+    say("  third_party/amberx/amberx.spdx.json  SPDX 2.3 SBOM");
+    say("");
+    say("What it enforces");
+    say("  One AmberXHost process per session, restricted token, Low integrity,");
+    say("  process mitigations, and a Job Object that ends it with AmberSSH.");
+    say("  Restricted X11 by default: the session cookie is registered UNTRUSTED");
+    say("  with the X SECURITY extension. Trusted is an explicit, warned opt-in.");
+    say("  Clipboard off by default; text only when on.");
+    say("  Resource limits in src/amberx/server/amberlimits.h.");
+    say("");
+    say("What it does not do");
+    say("  No GLX, no OpenGL, no DRI, no Vulkan — 2D only.");
+    say("  No audio forwarding.");
+    say("  No tab or pane embedding: forwarded windows are native windows.");
+    say("  No clipboard formats beyond UTF-8 text.");
+    say("  Forwarded clients in one session are not isolated from each other");
+    say("  (X SECURITY semantics — see docs/amberx/THREAT-MODEL.md).");
+    say("  No external network listener: the display is reachable only through");
+    say("  the session that owns it.");
+    say("");
+    say("It is not VcXsrv, Cygwin/X, Xming or X410, shares no code with them,");
+    say("and is not endorsed by them. It is built from upstream X.Org sources");
+    say("with an original Windows layer; see the provenance manifest.");
+
+    fclose(out);
+    return 0;
+}
+
 int RunPreview()
 {
     wchar_t tmp[MAX_PATH];
     GetTempPathW(MAX_PATH, tmp);
     const std::wstring path = std::wstring(tmp) + L"amberx-preview.txt";
     FILE* out = _wfopen(path.c_str(), L"w");
+    // Line buffered: if a check crashes the process, the transcript still
+    // names the last check that ran, which is the only clue there is.
+    if (out)
+        setvbuf(out, nullptr, _IONBF, 0);   // _IOLBF is not honoured by the CRT
     if (!out)
         return 2;
     int failures = 0;
@@ -715,6 +803,43 @@ int RunPreview()
             });
             u.Stop();
         }
+    }
+    {
+        // Phase 8: protocol conformance — the other byte order, split and
+        // over-long requests, bad ids, destruction order, a client that
+        // vanishes, and a burst of noise into the dispatcher.
+        AmberXController cf;
+        const ULONGLONG startAt = GetTickCount64();
+        if (startWithCookie(cf, launch, "conformance host started"))
+        {
+            // Startup: profile open to a display that answers. Measured from
+            // the launch to the cookie being live, which is the moment a
+            // forwarded client could connect.
+            {
+                char d[64];
+                const unsigned long long ms = GetTickCount64() - startAt;
+                snprintf(d, sizeof d, "%llu ms to a display that answers", ms);
+                line("host startup time", ms < 5000, d);
+            }
+            failures += RunPreviewConformance(cf, [&](const char* step, bool ok, const std::string& detail) {
+                fprintf(out, "%-44s %s%s%s\n", step, ok ? "ok" : "FAIL", detail.empty() ? "" : "  ", detail.c_str());
+            });
+            cf.Stop();
+        }
+    }
+    {
+        // Phase 8: two sessions at once.
+        AmberXController a, b;
+        if (startWithCookie(a, launch, "session A host started") &&
+            startWithCookie(b, launch, "session B host started"))
+        {
+            failures += RunPreviewIsolation(a, b, [&](const char* step, bool ok, const std::string& detail) {
+                fprintf(out, "%-44s %s%s%s\n", step, ok ? "ok" : "FAIL",
+                        detail.empty() ? "" : "  ", detail.c_str());
+            });
+        }
+        a.Stop();
+        b.Stop();
     }
     {
         // Phase 6: the clipboard bridge, once with both directions enabled and

@@ -89,6 +89,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int nCmdSho
     // so it runs and exits before anything else is set up.
     if (lpCmdLine && wcsstr(lpCmdLine, L"--preview-amberx"))
         return amber::amberx::RunPreview();
+    // --amberx-report: the version and capability report the release bundle
+    // is required to carry, written to %TEMP%\amberx-report.txt and to the
+    // console when there is one. Answers "what is this, what is it built
+    // from, and what does it not do" without starting anything.
+    if (lpCmdLine && wcsstr(lpCmdLine, L"--amberx-report"))
+        return amber::amberx::WriteReport();
     amber::InitAppUserModelId();
 
     WNDCLASSEXW wc = {};

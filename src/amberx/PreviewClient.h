@@ -22,6 +22,15 @@ int RunPreviewTrustChecks(AmberXController& c, bool trusted,
 int RunPreviewTimeoutCheck(AmberXController& c,
                            const std::function<void(const char*, bool, const std::string&)>& line);
 
+// Phase 8: the protocol conformance and noise checks, on a started host.
+int RunPreviewConformance(AmberXController& c,
+                          const std::function<void(const char*, bool, const std::string&)>& line);
+
+// Phase 8: two hosts at once — session isolation is structural, so it is
+// tested rather than assumed.
+int RunPreviewIsolation(AmberXController& a, AmberXController& b,
+                        const std::function<void(const char*, bool, const std::string&)>& line);
+
 // Phase 6: the clipboard bridge, on a host launched with `mode`
 // (AMBERWIN_CLIP_* in server/amberwin.h). Checks both directions against
 // what that mode is supposed to allow, so a mode that lets text through in a

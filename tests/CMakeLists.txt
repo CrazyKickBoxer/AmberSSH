@@ -27,6 +27,7 @@ add_executable(AmberTests
     XAuthTests.cpp
     RemoteDisplayTests.cpp
     AmberXProtocolTests.cpp
+    AmberXFuzzTests.cpp
     AmberXHandshakeTests.cpp
 
     ${CMAKE_SOURCE_DIR}/src/term/vtparser.cpp
@@ -62,6 +63,8 @@ target_include_directories(AmberTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_definitions(AmberTests PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS
     AMBER_SHADER_DIR="${CMAKE_SOURCE_DIR}/shaders"
+    # so the fuzz corpus is found whatever directory the tests run from
+    AMBER_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
 )
 if(MSVC)
     target_compile_options(AmberTests PRIVATE /W3 /utf-8 /EHsc /MP)

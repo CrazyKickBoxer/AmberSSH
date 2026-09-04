@@ -76,6 +76,10 @@ public:
     const std::string& Confinement() const { return m_confinement; }
     // Test hook: ends the host abruptly, as a crash would.
     void KillHostForTest();
+    // What the host has used, from the job object that owns it — measured
+    // rather than asked for, and 0 when there is no job. Peak and current.
+    uint64_t HostPeakMemoryBytes() const;
+    uint64_t HostMemoryBytes() const;
 
     bool Start(std::string& err);
     bool Alive() const;
@@ -117,5 +121,10 @@ private:
 // and returns 0 on success. Needs no window and no GPU, so it runs before
 // App::Init and exits.
 int RunPreview();
+
+// --amberx-report: writes the version and capability report the release
+// bundle must contain to %TEMP%\amberx-report.txt (and stdout when attached).
+// Starts nothing: it reports what this build is, not what it is doing.
+int WriteReport();
 
 } // namespace amber::amberx

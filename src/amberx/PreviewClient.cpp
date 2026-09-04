@@ -29,6 +29,17 @@ namespace
 
 using Line = std::function<void(const char*, bool, const std::string&)>;
 
+// Milliseconds with sub-tick resolution: GetTickCount64 moves in 15 ms steps,
+// which reads as "0 ms" for anything AmberX does quickly and is how a
+// measurement turns into a fiction.
+double NowMs()
+{
+    LARGE_INTEGER f, t;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&t);
+    return f.QuadPart ? (1000.0 * static_cast<double>(t.QuadPart) / static_cast<double>(f.QuadPart)) : 0.0;
+}
+
 struct XClient
 {
     AmberXController& c;
@@ -1111,6 +1122,486 @@ int RunPreviewTrustChecks(AmberXController& c, bool trusted, const Line& line)
 }
 
 // ---- Phase 5: an untrusted authorization that expires ------------------------
+// ---- Phase 8: protocol conformance ------------------------------------------
+// The awkward cases the prompt lists: the other byte order, packets that stop
+// half way, lengths at and past their boundaries, ids that were never valid,
+// clients that vanish mid-sentence, and a burst of noise. Every one of them
+// ends the same way — the server answers correctly or refuses correctly, and
+// it is still there afterwards, which the check after each one proves.
+int RunPreviewConformance(AmberXController& c, const Line& line)
+{
+    int failures = 0;
+    auto check = [&](const char* step, bool ok, const std::string& detail = {}) {
+        line(step, ok, detail);
+        if (!ok)
+            ++failures;
+    };
+    auto be16 = [](std::vector<uint8_t>& v, uint32_t x) {
+        v.push_back(static_cast<uint8_t>((x >> 8) & 0xff));
+        v.push_back(static_cast<uint8_t>(x & 0xff));
+    };
+    auto rd16be = [](const uint8_t* p) { return static_cast<uint32_t>((p[0] << 8) | p[1]); };
+    auto rd32be = [](const uint8_t* p) {
+        return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+               (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+    };
+
+    // A little-endian client that stays connected throughout, so every check
+    // can end with "and the server still answers".
+    c.OpenChannel(1);
+    XClient x(c, line, 1);
+    if (!x.setup("conformance client setup"))
+    {
+        c.CloseChannel(1);
+        return failures + 1;
+    }
+    auto stillAlive = [&](const char* what) {
+        std::vector<uint8_t> probe = { 14, 0, 0, 0 };
+        XClient::put32(probe, x.root);
+        x.send(probe);
+        std::vector<uint8_t> rep;
+        check(what, x.reply(x.seq, rep, 4000) && rep.size() >= 32);
+    };
+
+    // ---- 1. the other byte order -------------------------------------------
+    // A big-endian client is not a hypothetical: it is every SPARC, s390 and
+    // PowerPC host someone might forward from, and it exercises the whole
+    // swapped request vector, including the wrappers Phase 5 put on it.
+    {
+        c.OpenChannel(2);
+        XClient b(c, line, 2);
+        std::vector<uint8_t> s;
+        s.push_back('B');
+        s.push_back(0);
+        be16(s, 11); be16(s, 0);
+        be16(s, 18); be16(s, 16);
+        be16(s, 0);
+        const char* name = "MIT-MAGIC-COOKIE-1";
+        s.insert(s.end(), name, name + 18);
+        s.push_back(0); s.push_back(0);
+        s.insert(s.end(), 16, 0x42);
+        b.sendRaw(s);
+
+        bool ok = b.recv(8, 5000);
+        uint32_t beRoot = 0, beW = 0, beH = 0;
+        if (ok)
+        {
+            const uint8_t status = b.inbuf[0];
+            const uint32_t extra = rd16be(&b.inbuf[6]) * 4;
+            ok = status == 1 && b.recv(8 + extra, 5000);
+            if (ok)
+            {
+                const uint8_t* p = b.inbuf.data() + 8;
+                const uint32_t nVendor = rd16be(p + 16);
+                const uint8_t numFormats = p[21];
+                const uint8_t* q = p + 32 + ((nVendor + 3) & ~3u) + numFormats * 8;
+                beRoot = rd32be(q);
+                beW = rd16be(q + 20);
+                beH = rd16be(q + 22);
+                b.take(8 + extra);
+            }
+        }
+        check("a big-endian client completes setup", ok && beRoot != 0,
+              ok ? std::to_string(beW) + "x" + std::to_string(beH) : "no reply");
+
+        // GetGeometry, big-endian, and the reply read the same way.
+        if (ok && beRoot)
+        {
+            std::vector<uint8_t> q = { 14, 0 };
+            be16(q, 2);
+            q.push_back(static_cast<uint8_t>((beRoot >> 24) & 0xff));
+            q.push_back(static_cast<uint8_t>((beRoot >> 16) & 0xff));
+            q.push_back(static_cast<uint8_t>((beRoot >> 8) & 0xff));
+            q.push_back(static_cast<uint8_t>(beRoot & 0xff));
+            b.sendRaw(q);
+            // GetGeometry's reply: root at 8, x at 12, y at 14, width at 16,
+            // height at 18 — all in the client's byte order, which is the
+            // point of the test.
+            const bool got = b.recv(32, 4000);
+            const bool right = got && b.inbuf[0] == 1 &&
+                               rd16be(&b.inbuf[16]) == beW && rd16be(&b.inbuf[18]) == beH;
+            check("a big-endian request gets a big-endian reply", right,
+                  got ? std::to_string(rd16be(&b.inbuf[16])) + "x" +
+                            std::to_string(rd16be(&b.inbuf[18]))
+                      : "no reply");
+        }
+        c.CloseChannel(2);
+    }
+
+    // ---- 2. a request that arrives in two pieces ---------------------------
+    {
+        std::vector<uint8_t> q = { 14, 0, 2, 0 };
+        XClient::put32(q, x.root);
+        ++x.seq;
+        const uint32_t half = x.seq;
+        c.SendData(1, q.data(), 3);          // three bytes, then a pause
+        Sleep(120);
+        c.SendData(1, q.data() + 3, q.size() - 3);
+        std::vector<uint8_t> rep;
+        check("a request split across two arrivals still completes",
+              x.reply(half, rep, 4000) && rep.size() >= 32);
+    }
+
+    // ---- 3. length boundaries ---------------------------------------------
+    // Both of these leave the sender's stream desynchronised on purpose —
+    // that is what a malformed length does to a byte stream — so each gets a
+    // throwaway client of its own, and the check that matters is the one
+    // after: the server, and everyone else on it, carried on.
+    {
+        // Length 0 is illegal for a client that has not enabled BIG-REQUESTS.
+        c.OpenChannel(6);
+        XClient z(c, line, 6);
+        if (z.setup("zero-length client setup"))
+        {
+            std::vector<uint8_t> q = { 14, 0, 0, 0 };
+            XClient::put32(q, z.root);
+            ++z.seq;
+            c.SendData(6, q.data(), q.size());
+            const int e = z.errorFor(z.seq);
+            check("a zero-length request is refused", e == 16 /*BadLength*/,
+                  "error " + std::to_string(e));
+        }
+        c.CloseChannel(6);
+        stillAlive("the server survives a zero-length request");
+    }
+    {
+        // A length far past what will ever arrive: the server must wait for
+        // bytes rather than allocate for them, and must not stop serving
+        // anyone else while it waits.
+        c.OpenChannel(7);
+        XClient z(c, line, 7);
+        if (z.setup("over-long client setup"))
+        {
+            std::vector<uint8_t> q = { 14, 0 };
+            XClient::put16(q, 0xFFFF);       // 65535 units claimed, 8 bytes sent
+            XClient::put32(q, z.root);
+            c.SendData(7, q.data(), q.size());
+            Sleep(200);
+        }
+        stillAlive("an over-long request does not wedge the server");
+        c.CloseChannel(7);
+    }
+    c.CloseChannel(1);
+
+    // A fresh client for the rest.
+    c.OpenChannel(3);
+    XClient y(c, line, 3);
+    if (!y.setup("conformance client reconnects"))
+    {
+        c.CloseChannel(3);
+        return failures + 1;
+    }
+    auto yAlive = [&](const char* what) {
+        std::vector<uint8_t> probe = { 14, 0, 0, 0 };
+        XClient::put32(probe, y.root);
+        y.send(probe);
+        std::vector<uint8_t> rep;
+        check(what, y.reply(y.seq, rep, 4000) && rep.size() >= 32);
+    };
+
+    // ---- 4. an id that was never this client's ------------------------------
+    {
+        std::vector<uint8_t> q = { 1, 24, 0, 0 };      // CreateWindow, depth 24
+        XClient::put32(q, 0x00000001);                 // an id outside any range
+        XClient::put32(q, y.root);
+        XClient::put16(q, 0); XClient::put16(q, 0);
+        XClient::put16(q, 10); XClient::put16(q, 10);
+        XClient::put16(q, 0); XClient::put16(q, 1);
+        XClient::put32(q, 0);
+        XClient::put32(q, 0);
+        y.send(q);
+        const int e = y.errorFor(y.seq);
+        check("a resource id outside the client's range is refused",
+              e == 14 /*BadIDChoice*/, "error " + std::to_string(e));
+    }
+
+    // ---- 5. destruction order ----------------------------------------------
+    // A window with a child, a property and a pixmap, destroyed parent first
+    // and then abandoned by its client: dix has to unwind that in the right
+    // order, and the free-list is where a use-after-free would show.
+    {
+        const uint32_t win = y.ridBase + 10, kid = y.ridBase + 11, pix = y.ridBase + 12;
+        const uint32_t prop = y.internAtom("AMBERX_CONFORMANCE");
+        y.createToplevel(win, 5, 5, 60, 40, 0x00204060, 0,
+                         y.internAtom("_NET_WM_NAME"), y.internAtom("UTF8_STRING"),
+                         "AmberX conformance");
+        std::vector<uint8_t> q = { 1, 24, 0, 0 };
+        XClient::put32(q, kid);
+        XClient::put32(q, win);
+        XClient::put16(q, 1); XClient::put16(q, 1);
+        XClient::put16(q, 10); XClient::put16(q, 10);
+        XClient::put16(q, 0); XClient::put16(q, 1);
+        XClient::put32(q, 0);
+        XClient::put32(q, 0);
+        y.send(q);
+        const uint32_t value = 0x1234;
+        y.changeProperty(win, prop, 6 /*CARDINAL*/, 32, &value, 1);
+        q = { 53, 24, 0, 0 };                          // CreatePixmap
+        XClient::put32(q, pix);
+        XClient::put32(q, win);
+        XClient::put16(q, 32); XClient::put16(q, 32);
+        y.send(q);
+        q = { 4, 0, 0, 0 };                            // DestroyWindow (the parent)
+        XClient::put32(q, win);
+        y.send(q);
+        const int e = y.errorFor(y.seq);
+        check("destroying a parent takes its children and properties",
+              e == 0, e == 0 ? "" : "error " + std::to_string(e));
+        yAlive("the server survives that destruction");
+    }
+
+    // ---- 6. a client that vanishes mid-sentence -----------------------------
+    {
+        c.OpenChannel(4);
+        const uint8_t partial[4] = { 'l', 0, 11, 0 };  // four bytes of a setup
+        c.SendData(4, partial, sizeof partial);
+        Sleep(100);
+        c.CloseChannel(4);                             // and gone
+        yAlive("a client that disappears mid-setup takes nothing with it");
+    }
+
+    // ---- 7. a burst of noise ------------------------------------------------
+    // The end-to-end fuzz: 64 KiB of deterministic pseudo-random bytes into
+    // the request dispatcher. The client that sent it may well be closed —
+    // that is a correct answer to nonsense — but the server and every other
+    // client must be untouched.
+    {
+        c.OpenChannel(5);
+        XClient g(c, line, 5);
+        // A valid setup first, so the noise reaches the dispatcher rather than
+        // the connection handshake.
+        const bool up = g.setup("noise client setup");
+        uint64_t s = 0x12345678ABCDEF01ull;
+        std::vector<uint8_t> noise(65536);
+        for (size_t i = 0; i < noise.size(); ++i)
+        {
+            s ^= s >> 12; s ^= s << 25; s ^= s >> 27;
+            noise[i] = static_cast<uint8_t>((s * 0x2545F4914F6CDD1Dull) >> 33);
+        }
+        if (up)
+            for (size_t off = 0; off < noise.size(); off += kMaxPayload)
+                c.SendData(5, noise.data() + off,
+                           std::min<size_t>(kMaxPayload, noise.size() - off));
+        Sleep(400);
+        c.CloseChannel(5);
+        check("64 KiB of noise does not take the server with it", up);
+        yAlive("the server answers a good client after the noise");
+    }
+
+    // ---- 8. memory under churn ---------------------------------------------
+    // Five hundred windows and pixmaps made and destroyed. What is being
+    // tested is not speed: it is that the host's memory comes back down,
+    // because a server that leaks a window is a server that dies overnight.
+    {
+        const uint64_t before = c.HostMemoryBytes();
+        const double t0 = NowMs();
+        for (int i = 0; i < 500; ++i)
+        {
+            const uint32_t w = y.ridBase + 100 + (i % 8);
+            const uint32_t p = y.ridBase + 200 + (i % 8);
+            std::vector<uint8_t> q = { 1, 24, 0, 0 };
+            XClient::put32(q, w);
+            XClient::put32(q, y.root);
+            XClient::put16(q, 0); XClient::put16(q, 0);
+            XClient::put16(q, 32); XClient::put16(q, 32);
+            XClient::put16(q, 0); XClient::put16(q, 1);
+            XClient::put32(q, 0);
+            XClient::put32(q, 0);
+            y.send(q);
+            q = { 53, 24, 0, 0 };
+            XClient::put32(q, p);
+            XClient::put32(q, y.root);
+            XClient::put16(q, 64); XClient::put16(q, 64);
+            y.send(q);
+            q = { 54, 0, 0, 0 };                       // FreePixmap
+            XClient::put32(q, p);
+            y.send(q);
+            q = { 4, 0, 0, 0 };                        // DestroyWindow
+            XClient::put32(q, w);
+            y.send(q);
+        }
+        std::vector<uint8_t> probe = { 14, 0, 0, 0 };
+        XClient::put32(probe, y.root);
+        y.send(probe);
+        std::vector<uint8_t> rep;
+        const bool done = y.reply(y.seq, rep, 15000);
+        const double ms = NowMs() - t0;
+        Sleep(300);
+        const uint64_t after = c.HostMemoryBytes();
+        const double grewMiB = (after > before)
+                                   ? static_cast<double>(after - before) / 1048576.0
+                                   : 0.0;
+        char detail[160];
+        snprintf(detail, sizeof detail, "%.0f ms, working set %.1f -> %.1f MiB (+%.1f)", ms,
+                 static_cast<double>(before) / 1048576.0,
+                 static_cast<double>(after) / 1048576.0, grewMiB);
+        // 32 MiB of growth across 2000 resources would be a leak; anything
+        // near zero is the allocator holding on to freed blocks, which is
+        // not one.
+        check("memory is bounded under window and pixmap churn",
+              done && grewMiB < 32.0, detail);
+    }
+
+    // ---- 9. what it costs ---------------------------------------------------
+    // Numbers, not adjectives. These are measurements rather than pass/fail
+    // gates except where a ceiling would mean something is badly wrong: they
+    // are what docs/amberx/PERFORMANCE.md is written from, and what a future
+    // change would be compared against.
+    {
+        // Round trip: a request with a reply, which is the latency a toolkit
+        // feels on every query it makes.
+        const int trips = 200;
+        const double t0 = NowMs();
+        bool allOk = true;
+        for (int i = 0; i < trips && allOk; ++i)
+        {
+            std::vector<uint8_t> q = { 14, 0, 0, 0 };
+            XClient::put32(q, y.root);
+            y.send(q);
+            std::vector<uint8_t> rep;
+            allOk = y.reply(y.seq, rep, 3000);
+        }
+        const double perTrip = (NowMs() - t0) * 1000.0 / static_cast<double>(trips);
+        char d[96];
+        snprintf(d, sizeof d, "%.0f us per round trip over %d", perTrip, trips);
+        // 5 ms a round trip on a local pipe would mean something is sleeping.
+        check("request round trips are not slow", allOk && perTrip < 5000.0, d);
+    }
+    {
+        // Drawing: fill a rectangle and present it, over and over, which is
+        // what an application redrawing at speed does to the host.
+        const uint32_t win = y.ridBase + 20, gc = y.ridBase + 21;
+        y.createToplevel(win, 30, 30, 300, 200, 0x00101010, 0,
+                         y.internAtom("_NET_WM_NAME"), y.internAtom("UTF8_STRING"),
+                         "AmberX throughput");
+        y.mapWindow(win);
+        std::vector<uint8_t> r = { 55, 0, 0, 0 };
+        XClient::put32(r, gc); XClient::put32(r, win);
+        XClient::put32(r, 0x4); XClient::put32(r, 0x00808080);
+        y.send(r);
+        const int frames = 300;
+        const double t0 = NowMs();
+        for (int i = 0; i < frames; ++i)
+        {
+            std::vector<uint8_t> q = { 70, 0, 0, 0 };
+            XClient::put32(q, win);
+            XClient::put32(q, gc);
+            XClient::put16(q, i % 200); XClient::put16(q, i % 100);
+            XClient::put16(q, 64); XClient::put16(q, 64);
+            y.send(q);
+        }
+        std::vector<uint8_t> probe = { 14, 0, 0, 0 };
+        XClient::put32(probe, y.root);
+        y.send(probe);
+        std::vector<uint8_t> rep;
+        const bool drained = y.reply(y.seq, rep, 15000);
+        const double ms = NowMs() - t0;
+        char d[128];
+        snprintf(d, sizeof d, "%d fills in %.1f ms (%.0f/s)", frames, ms,
+                 ms > 0 ? frames * 1000.0 / ms : 0.0);
+        check("drawing keeps up with a client that never stops", drained, d);
+        std::vector<uint8_t> q = { 4, 0, 0, 0 };
+        XClient::put32(q, win);
+        y.send(q);
+    }
+
+    check("no host errors during conformance", y.hostErrors.empty(), y.hostErrors);
+    c.CloseChannel(3);
+    return failures;
+}
+
+// ---- Phase 8: two sessions at once -------------------------------------------
+// Each session is its own host process and its own X server, so isolation is
+// structural rather than enforced. Structural claims are the ones worth
+// testing, because nothing in the code will fail if they stop being true.
+int RunPreviewIsolation(AmberXController& a, AmberXController& b, const Line& line)
+{
+    int failures = 0;
+    auto check = [&](const char* step, bool ok, const std::string& detail = {}) {
+        line(step, ok, detail);
+        if (!ok)
+            ++failures;
+    };
+
+    a.OpenChannel(1);
+    b.OpenChannel(1);
+    XClient x(a, line, 1), y(b, line, 1);
+    HostReport ra, rb;
+    x.reportIn = &ra;
+    y.reportIn = &rb;
+    const bool up = x.setup("session A setup") && y.setup("session B setup");
+    check("two sessions run at once", up);
+    if (!up)
+        return failures + 1;
+
+    // Different servers: the resource id bases are independent, and a window
+    // made in one is not a window in the other.
+    const uint32_t wa = x.ridBase + 1, wb = y.ridBase + 1;
+    x.createToplevel(wa, 10, 10, 80, 60, 0x00ff0000, 0,
+                     x.internAtom("_NET_WM_NAME"), x.internAtom("UTF8_STRING"), "session A window");
+    x.mapWindow(wa);
+    y.createToplevel(wb, 10, 10, 80, 60, 0x000000ff, 0,
+                     y.internAtom("_NET_WM_NAME"), y.internAtom("UTF8_STRING"), "session B window");
+    y.mapWindow(wb);
+
+    // Each host's report must list its own window and only its own.
+    const ULONGLONG until = GetTickCount64() + 5000;
+    while ((ra.windowList.empty() || rb.windowList.empty()) && GetTickCount64() < until)
+    {
+        std::vector<uint8_t> probe = { 14, 0, 0, 0 };
+        XClient::put32(probe, x.root);
+        x.send(probe);
+        std::vector<uint8_t> rep;
+        x.reply(x.seq, rep, 300);
+        probe = { 14, 0, 0, 0 };
+        XClient::put32(probe, y.root);
+        y.send(probe);
+        y.reply(y.seq, rep, 300);
+    }
+    auto has = [](const HostReport& r, const char* title) {
+        return std::any_of(r.windowList.begin(), r.windowList.end(),
+                           [&](const ReportWindow& w) { return w.title == title; });
+    };
+    check("each session sees only its own windows",
+          has(ra, "session A window") && !has(ra, "session B window") &&
+              has(rb, "session B window") && !has(rb, "session A window"),
+          std::to_string(ra.windowList.size()) + " and " +
+              std::to_string(rb.windowList.size()) + " windows reported");
+
+    // Resource ids are per-server, so two fresh sessions hand out the same
+    // numbers — that is the point rather than a problem: the same number
+    // means a different thing in each, and neither server can reach the
+    // other's. Demonstrated with an id session A has and session B does not:
+    // B must answer BadWindow, not another session's window.
+    {
+        const uint32_t extra = x.ridBase + 2;
+        x.createToplevel(extra, 20, 20, 40, 30, 0x0000ff00, 0,
+                         x.internAtom("_NET_WM_NAME"), x.internAtom("UTF8_STRING"),
+                         "session A second window");
+        std::vector<uint8_t> mine = { 14, 0, 0, 0 };
+        XClient::put32(mine, extra);
+        x.send(mine);
+        std::vector<uint8_t> rep;
+        const bool visibleHere = x.reply(x.seq, rep, 3000);
+
+        std::vector<uint8_t> q = { 14, 0, 0, 0 };
+        XClient::put32(q, extra);
+        y.send(q);
+        const int e = y.errorFor(y.seq);
+        // GetGeometry takes a drawable, so an unknown id is BadDrawable; a
+        // server that answered BadWindow instead would be equally correct.
+        check("an id that exists in one session does not exist in the other",
+              visibleHere && (e == 9 /*BadDrawable*/ || e == 3 /*BadWindow*/),
+              std::string(visibleHere ? "" : "not visible in A; ") + "B says error " +
+                  std::to_string(e));
+    }
+    x.reportIn = nullptr;
+    y.reportIn = nullptr;
+    a.CloseChannel(1);
+    b.CloseChannel(1);
+    return failures;
+}
+
 // ---- Phase 6: the clipboard bridge ------------------------------------------
 // `mode` is what the host was launched with. Both directions are exercised
 // either way: a mode is only proven by what it refuses as well as by what it
