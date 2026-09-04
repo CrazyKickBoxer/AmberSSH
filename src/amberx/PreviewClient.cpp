@@ -183,14 +183,17 @@ struct XClient
         if (!recv(32, ms))
             return -1;
         const uint8_t type = inbuf[0] & 0x7f;
-        if (type == 1)
+        // a reply, and a GenericEvent (which is what every XI2 event is),
+        // both carry extra 4-byte units after the fixed 32 — read them or
+        // the next message is read from the middle of this one
+        if (type == 1 || type == 35)
         {
             const uint32_t extra = u32(&inbuf[4]) * 4;
             if (!recv(32 + extra, 3000))
                 return -1;
             msg.assign(inbuf.begin(), inbuf.begin() + 32 + extra);
             take(32 + extra);
-            return 1;
+            return type == 1 ? 1 : 2;
         }
         msg.assign(inbuf.begin(), inbuf.begin() + 32);
         take(32);
@@ -704,6 +707,106 @@ int RunPreviewClient(AmberXController& c, const Line& line)
                  : "none");
         ok = x.event(2, wid, ev);
         check("KeyPress keycode 38", ok && ev[1] == 38);
+    }
+
+    // ---- the same input, the way GTK 4 asks for it ------------------------------
+    // GTK 4 selects no core events at all: pointer and keyboard alike arrive as
+    // XInput 2 GenericEvents, or not at all. xeyes tracks the pointer through
+    // core requests and the checks above are core too, so until now nothing
+    // had ever asked AmberX for an XI2 event. A window that draws perfectly
+    // and takes no input is what that gap looks like from the outside.
+    if (view)
+    {
+        const uint32_t xi = x.queryExtension("XInputExtension");
+        check("XInputExtension advertised", xi != 0);
+        if (xi)
+        {
+            // XIQueryVersion: we ask for 2.4, the server answers with its own
+            std::vector<uint8_t> qv = { static_cast<uint8_t>(xi), 47, 0, 0 };
+            XClient::put16(qv, 2); XClient::put16(qv, 4);
+            x.send(qv);
+            std::vector<uint8_t> vrep;
+            const bool versioned = x.reply(x.seq, vrep) && vrep.size() >= 12;
+            const uint32_t major = versioned ? XClient::u16(&vrep[8]) : 0;
+            const uint32_t minor = versioned ? XClient::u16(&vrep[10]) : 0;
+            check("XI2 version is at least 2.2 (what GTK 4 requires)", versioned && (major > 2 || (major == 2 && minor >= 2)),
+                  versioned ? std::to_string(major) + "." + std::to_string(minor) : "no reply");
+
+            // XISelectEvents on the window for XIAllMasterDevices (1):
+            // KeyPress (2), ButtonPress (4), Motion (6) → mask 0x54
+            std::vector<uint8_t> sel = { static_cast<uint8_t>(xi), 46, 0, 0 };
+            XClient::put32(sel, wid);
+            XClient::put16(sel, 1);         // one mask
+            XClient::put16(sel, 0);
+            XClient::put16(sel, 1);         // deviceid XIAllMasterDevices
+            XClient::put16(sel, 1);         // mask length, 4-byte units
+            XClient::put32(sel, (1u << 2) | (1u << 4) | (1u << 6));
+            x.send(sel);
+            const int selErr = x.errorFor(x.seq);
+            check("XISelectEvents accepted", selErr == 0, "error " + std::to_string(selErr));
+
+            // a GenericEvent from XInputExtension with this evtype, for this
+            // window, from the backlog or the wire. XIDeviceEvent layout:
+            // evtype at 8, deviceid 10, time 12, detail 16, root 20, event 24,
+            // child 28, then root_x/y and event_x/y as FP16.16 at 32/36/40/44
+            auto xiEvent = [&](uint16_t evtype, std::vector<uint8_t>& out) -> bool {
+                auto matches = [&](const std::vector<uint8_t>& e) {
+                    return (e[0] & 0x7f) == 35 && e[1] == xi && e.size() >= 48 &&
+                           XClient::u16(&e[8]) == evtype && XClient::u32(&e[24]) == wid;
+                };
+                for (size_t i = 0; i < x.events.size(); ++i)
+                    if (matches(x.events[i]))
+                    {
+                        out = x.events[i];
+                        x.events.erase(x.events.begin() + static_cast<std::ptrdiff_t>(i));
+                        return true;
+                    }
+                const ULONGLONG until = GetTickCount64() + 5000;
+                while (GetTickCount64() < until)
+                {
+                    std::vector<uint8_t> m;
+                    if (x.next(m, 1000) != 2)
+                        continue;
+                    if (matches(m)) { out = m; return true; }
+                    x.events.push_back(m);
+                }
+                return false;
+            };
+
+            PostMessageW(view, WM_MOUSEMOVE, 0, MAKELPARAM(50, 30));
+            PostMessageW(view, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(50, 30));
+            PostMessageW(view, WM_LBUTTONUP, 0, MAKELPARAM(50, 30));
+            PostMessageW(view, WM_KEYDOWN, 'A', static_cast<LPARAM>((0x1E << 16) | 1));
+            PostMessageW(view, WM_KEYUP, 'A', static_cast<LPARAM>((0x1E << 16) | 1 | (1u << 30) | (1u << 31)));
+
+            std::vector<uint8_t> xe;
+            ok = xiEvent(4 /*XI_ButtonPress*/, xe);
+            // detail at 16 is the button; event_x/y are FP16.16 at 40/44, so
+            // their integer parts are the u16 at 42/46
+            check("XI2 ButtonPress reaches the window", ok && XClient::u32(&xe[16]) == 1 &&
+                  XClient::u16(&xe[42]) == 50 && XClient::u16(&xe[46]) == 30,
+                  ok ? "button " + std::to_string(XClient::u32(&xe[16])) + " at " +
+                       std::to_string(XClient::u16(&xe[42])) + "," + std::to_string(XClient::u16(&xe[46]))
+                     : "none");
+            ok = xiEvent(2 /*XI_KeyPress*/, xe);
+            check("XI2 KeyPress reaches the window", ok && XClient::u32(&xe[16]) == 38,
+                  ok ? "keycode " + std::to_string(XClient::u32(&xe[16])) : "none");
+
+            // Deselect again. While a client holds an XI2 selection for a
+            // device on a window, the server delivers it no core events of
+            // the same type there — XI2 wins, per client — and the checks
+            // that follow are core.
+            std::vector<uint8_t> off = { static_cast<uint8_t>(xi), 46, 0, 0 };
+            XClient::put32(off, wid);
+            XClient::put16(off, 1);
+            XClient::put16(off, 0);
+            XClient::put16(off, 1);         // XIAllMasterDevices
+            XClient::put16(off, 1);
+            XClient::put32(off, 0);         // no events
+            x.send(off);
+            const int offErr = x.errorFor(x.seq);
+            check("XI2 selection cleared", offErr == 0, "error " + std::to_string(offErr));
+        }
     }
 
     // ---- Phase 6: the keyboard is the user's own layout -------------------------

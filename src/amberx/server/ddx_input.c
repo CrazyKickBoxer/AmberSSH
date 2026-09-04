@@ -217,6 +217,24 @@ amber_ddx_input_event(const struct amberwin_event *ev)
 {
     if (!amberPointer || !amberKeyboard)
         return;
+
+    /* Arrival, bounded to the start of a session. When an application takes
+     * no input, the first question is whether a real click or a real key even
+     * reached the X side, and nothing downstream can answer it. Ids and
+     * coordinates only: which key, never what it spelled. */
+    {
+        static int seen;
+        if (seen < 48 && (ev->type == AMBERWIN_EV_BUTTON || ev->type == AMBERWIN_EV_KEY)) {
+            seen++;
+            if (ev->type == AMBERWIN_EV_BUTTON)
+                LogMessage(X_INFO, "AmberX: input #%d: button %d %s\n", seen,
+                           ev->button, ev->pressed ? "down" : "up");
+            else
+                LogMessage(X_INFO, "AmberX: input #%d: keycode %d %s\n", seen,
+                           (int) ev->keycode + 8, ev->pressed ? "down" : "up");
+        }
+    }
+
     switch (ev->type) {
     case AMBERWIN_EV_POINTER_MOVE:
         valuator_mask_zero(amberMask);
