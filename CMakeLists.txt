@@ -62,6 +62,7 @@ set(AMBER_SOURCES
     src/security/PrivacyCloak.h  src/security/PrivacyCloak.cpp
     src/remote/XAuth.h           src/remote/XAuth.cpp
     src/remote/RemoteDisplay.h   src/remote/RemoteDisplay.cpp
+    src/amberx/control/Protocol.h src/amberx/control/Protocol.cpp
     src/term/palette.h
     src/term/input.h       src/term/input.cpp
     src/ssh/ring.h

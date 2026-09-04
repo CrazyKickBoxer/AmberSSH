@@ -116,6 +116,14 @@ struct FwdRemote
     int destPort = 0;
 };
 
+// Per-direction backlog cap for a forwarded channel. Reaching it stops the
+// READ on the producing side rather than dropping bytes, so the flow control
+// is the transport's own — TCP's receive window one way, libssh2's channel
+// window the other. Sized to hold a large X11 image burst without stalling
+// ordinary traffic, and small enough that a runaway client cannot exhaust
+// memory: with many channels this is the per-channel bound, not the total.
+constexpr size_t kTunnelHighWater = 1u << 20;   // 1 MiB
+
 struct FwdTunnel
 {
     SOCKET sock = INVALID_SOCKET;
@@ -398,7 +406,14 @@ void PumpTunnels(std::vector<FwdTunnel>& tunnels, LIBSSH2_SESSION* session,
         }
 
         // socket → channel
-        if (!drop && t.ch && !t.sockEof)
+        //
+        // Only read when the backlog we would add to is below the high-water
+        // mark. Stopping the read IS the backpressure: TCP closes its receive
+        // window and the peer stops sending. Without it a producer that
+        // outruns the consumer grows this vector without limit — which never
+        // mattered at terminal scale and very much does for a forwarded X11
+        // client rendering faster than the display drains.
+        if (!drop && t.ch && !t.sockEof && t.toChannel.size() < kTunnelHighWater)
         {
             int n = recv(s, reinterpret_cast<char*>(buf), sizeof(buf), 0);
             if (n > 0)
@@ -430,7 +445,11 @@ void PumpTunnels(std::vector<FwdTunnel>& tunnels, LIBSSH2_SESSION* session,
         }
 
         // channel → socket
-        if (!drop && t.ch)
+        //
+        // Same rule in the other direction. Declining to read leaves the bytes
+        // in libssh2's channel window, which stops the remote end rather than
+        // buffering its output here without limit.
+        if (!drop && t.ch && t.toSock.size() < kTunnelHighWater)
         {
             ssize_t n = libssh2_channel_read(
                 t.ch, reinterpret_cast<char*>(buf), sizeof(buf));
