@@ -10,3 +10,7 @@ AmberSSH/x64/
 dist/
 *.log
 AmberSSH.live-*.exe
+
+# AmberX upstream imports: re-fetched from pinned tags by docs/amberx/SOURCE-PROVENANCE.md, never vendored
+third_party/amberx/upstream/
+third_party/amberx/probe-out/
