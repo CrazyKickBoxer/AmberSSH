@@ -1327,7 +1327,8 @@ void SshSession::ThreadMain(SshConfig cfg)
                     launch.identity = cfg.amberxIdentity.empty()
                                           ? cfg.host + " \xc2\xb7 " + cfg.user
                                           : cfg.amberxIdentity;
-                    launch.modeLabel = "X11 FORWARDED";   // RESTRICTED/TRUSTED arrive with Phase 5
+                    launch.trusted = cfg.x11Trusted;
+                    launch.modeLabel = cfg.x11Trusted ? "X11 TRUSTED" : "X11 RESTRICTED";
                     launch.sigil = fingerprint.empty()
                                        ? std::string()
                                        : amber::SigilMnemonic(amber::MakeSigil(fingerprint));

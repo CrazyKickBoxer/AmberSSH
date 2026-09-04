@@ -49,6 +49,22 @@ static Bool NewOutputPending;
 static Bool CriticalOutputPending;
 static Bool connections_ready;
 
+/* AMBERX_TRACE_IO=1 logs each flush, each client that runs out of input,
+ * each deferred flush and any wait that took longer than it should: the
+ * tool for "the reply arrived late" questions, which is how the readiness
+ * bug below was found. Off unless asked, and it never logs request or
+ * reply content — only sizes and counts. The controller also appends the
+ * host log rather than truncating it while this is set, so a run that
+ * starts several hosts keeps every host's trace. */
+static int traceIo = -1;
+static int
+trace_io(void)
+{
+    if (traceIo < 0)
+        traceIo = getenv("AMBERX_TRACE_IO") != NULL;
+    return traceIo;
+}
+
 /* channel id → client. A flat table: 64 entries is not worth a hash. */
 static struct {
     CARD32 channel;
@@ -120,10 +136,19 @@ YieldControl(void)
     isItTimeToYield = TRUE;
 }
 
+/* The client's channel had nothing more to give: stop calling it ready and
+ * let the next arrival of bytes (amber_os_channel_readable) say otherwise.
+ * This is the ONLY place readiness is dropped for an active client — see the
+ * note at the end of ReadRequestFromClient for why consuming the buffer is
+ * not itself a reason to drop it. */
 static void
 YieldControlNoInput(ClientPtr client)
 {
+    AmberCommPtr oc = AMBER_COMM(client);
     YieldControl();
+    if (trace_io() && oc)
+        LogMessage(X_INFO, "trace-io: client %d has no input (icnt=%d off=%d last=%d)\n",
+                   client->index, oc->icnt, (int) (oc->iptr - oc->ibuf), oc->lenLastReq);
     mark_client_not_ready(client);
 }
 
@@ -554,7 +579,6 @@ ReadRequestFromClient(ClientPtr client)
                                        (size_t) (oc->isize - oc->icnt));
         if (result == 0) {
             /* nothing pending yet: the wait loop will mark us ready again */
-            mark_client_not_ready(client);
             YieldControlNoInput(client);
             return 0;
         }
@@ -619,13 +643,16 @@ ReadRequestFromClient(ClientPtr client)
 
     oc->lenLastReq = needed;
 
-    /* If only a partial request remains, yield so other clients get a turn
-     * and the wait loop re-arms readiness when more bytes arrive. */
+    /* Readiness is level-triggered, as upstream's is on the socket: a client
+     * stays ready until a channel read comes up empty or short (the two
+     * YieldControlNoInput paths above). It is NOT cleared here when the
+     * buffer happens to be fully consumed by this request — the next read
+     * refills the buffer from the channel, and if Dispatch then leaves its
+     * loop early (an error reply does that) the requests already buffered
+     * would sit unread until the client sent something else. That was a
+     * real bug: a refused request stalled the ones behind it for the length
+     * of the client's next timeout. */
     gotnow -= needed;
-    if (!gotnow && !oc->ignoreBytes) {
-        /* buffer fully consumed: the next ready mark comes from the channel */
-        mark_client_not_ready(client);
-    }
     if (move_header) {
         if (client->req_len < bytes_to_int32(sizeof(xBigReq) - sizeof(xReq))) {
             YieldControlDeath();
@@ -754,6 +781,9 @@ FlushClient(ClientPtr who, OsCommPtr oc_, const void *__extraBuf, int extraCount
         return 0;
     if (FlushCallback)
         CallCallbacks(&FlushCallback, who);
+    if (trace_io())
+        LogMessage(X_INFO, "trace-io: flush client %d %ld bytes, t=%u\n",
+                   who ? who->index : -1, notWritten, GetTimeInMillis());
     if (oc->gone) {
         oc->ocnt = 0;
         return -1;
@@ -815,7 +845,9 @@ WriteToClient(ClientPtr who, int count, const void *__buf)
             CallCallbacks((&ReplyCallback), (void *) &replyinfo);
         }
     }
-    if (oc->ocnt == 0 || oc->ocnt + count + padBytes > oc->osize) {
+    /* as upstream: buffer until full, or until FlushAllOutput finds the
+     * client idle; one pipe frame per reply was the earlier, slower shape */
+    if (oc->ocnt + count + padBytes > oc->osize) {
         output_pending_clear(who);
         if (!any_output_pending()) {
             CriticalOutputPending = FALSE;
@@ -861,8 +893,12 @@ FlushAllOutput(void)
             output_pending_clear(client);
             (void) FlushClient(client, (OsCommPtr) AMBER_COMM(client), NULL, 0);
         }
-        else
+        else {
+            if (trace_io())
+                LogMessage(X_INFO, "trace-io: client %d still ready, flush deferred, t=%u\n",
+                           client->index, GetTimeInMillis());
             NewOutputPending = TRUE;
+        }
     }
 }
 
@@ -954,7 +990,15 @@ WaitForSomething(Bool are_ready)
             FlushAllOutput();
         if (dispatchException)
             return FALSE;
-        woke = amberwin_wait(timeout);
+        if (trace_io()) {
+            CARD32 t0 = GetTimeInMillis();
+            woke = amberwin_wait(timeout);
+            if (GetTimeInMillis() - t0 > 20)
+                LogMessage(X_INFO, "trace-io: wait(%d) took %u ms, woke=%d, ready=%d\n",
+                           timeout, GetTimeInMillis() - t0, woke, clients_are_ready());
+        }
+        else
+            woke = amberwin_wait(timeout);
         drain_backend();
         WakeupHandler(woke);
         if (dispatchException)

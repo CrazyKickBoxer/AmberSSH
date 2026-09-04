@@ -10996,6 +10996,7 @@ void App::BuildSshConfig(const amber::ConnectionProfile& p, SshConfig& cfg) cons
             // the identity strip on every AmberX frame: this session, this skin
             cfg.amberxIdentity = cfg.host + " \xc2\xb7 " + cfg.user;
             cfg.amberxSkin = amber::ChromeId();
+            cfg.x11Trusted = p.x11Trust != 0;
         }
         else
         {

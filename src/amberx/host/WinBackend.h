@@ -23,6 +23,8 @@ struct HostOptions
     std::string mode = "X11 FORWARDED";   // "RESTRICTED"/"TRUSTED" once Phase 5 enforces them
     std::string sigil;          // the host-key sigil mnemonic
     int skin = 0;               // AmberSSH chrome style index
+    bool trusted = false;       // the SECURITY trust level of the session cookie
+    int authTimeout = 1200;     // seconds an unused untrusted cookie lives
 };
 
 // Registers the window classes and, rootful, the display window. The pipe

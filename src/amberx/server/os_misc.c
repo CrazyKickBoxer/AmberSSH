@@ -19,6 +19,7 @@
 #include "dixstruct.h"
 #include "input.h"
 #include "amberwin.h"
+#include "amberlimits.h"
 
 /* ---- extension globals (normally os/utils.c) -------------------------- */
 Bool noCompositeExtension = FALSE;
@@ -54,6 +55,7 @@ OsInit(void)
      * the scheduler reads the clock after every request instead of
      * being told by a signal */
     TimerInit();
+    amber_limits_os_init();
 }
 
 void

@@ -124,7 +124,11 @@ bool CreateServerPipe(ServerPipe& out, std::string& err)
         err = "could not determine the current user SID";
         return false;
     }
-    const std::wstring sddl = L"D:P(A;;GA;;;" + sidText + L")";
+    // The DACL names one SID. The mandatory label (S:) is Low with
+    // no-write-up, so the host — which runs at low integrity from Phase 5
+    // on — may open the pipe; without it the default medium label would
+    // refuse a low-integrity writer regardless of the DACL.
+    const std::wstring sddl = L"D:P(A;;GA;;;" + sidText + L")S:(ML;;NW;;;LW)";
     PSECURITY_DESCRIPTOR sd = nullptr;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1,
                                                               &sd, nullptr))

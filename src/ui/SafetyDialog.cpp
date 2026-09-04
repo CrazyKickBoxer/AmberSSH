@@ -69,7 +69,7 @@ HFONT MakeFont(UINT dpi, int px, int weight, const wchar_t* face)
 
 // The two dialogs share a window class and a paint routine for the ground, so
 // a skin only has to be taught the surface once.
-enum class Kind { HostKey, Risk };
+enum class Kind { HostKey, Risk, TrustedX11 };
 
 struct SafetyState
 {
@@ -95,6 +95,8 @@ struct SafetyState
     const RiskReport* report = nullptr;
     ConfirmStyle style = ConfirmStyle::YesNo;
     std::wstring hostname;
+    // trusted X11
+    bool sessionOnly = false;
     HWND edit = nullptr;
     HWND yes = nullptr;
     HWND no = nullptr;
@@ -565,6 +567,66 @@ void PaintRisk(HDC dc, const RECT& rc, SafetyState& st)
     SelectObject(dc, oldFont);
 }
 
+// The trusted-X11 opt-in. Same ground, band, wells and typed confirmation as
+// the risk dialog, so every skin already knows how to draw it; the words are
+// the part that is new, and they say what trusted X11 actually permits.
+void PaintTrustedX11(HDC dc, const RECT& rc, SafetyState& st)
+{
+    const UINT dpi = st.dpi;
+    PaintGround(dc, rc, st);
+    SetBkMode(dc, TRANSPARENT);
+
+    const int pad = PadLeft(dpi);
+    const int padR = Px(26, dpi) + (PadLeft(dpi) > Px(26, dpi) ? Px(16, dpi) : 0);
+    int y = Px(26, dpi);
+
+    RECT band = { pad, y, rc.right - padR, y + Px(32, dpi) };
+    HGDIOBJ oldFont = SelectObject(dc, st.bodyFont);
+    std::wstring head = skin::Label(L"Trusted X11");
+    for (wchar_t& c : head)
+        c = static_cast<wchar_t>(towupper(c));
+    PaintAlarmBand(dc, band, st, (head + L"  \x2014  full access for every program from " + st.hostname).c_str());
+    y += Px(44, dpi);
+
+    // ---- what it means, in the terms the SECURITY extension enforces
+    static const wchar_t* lines[] = {
+        L"\x2022  Any forwarded program can read the keystrokes going to any other forwarded window.",
+        L"\x2022  Any forwarded program can read and change any other forwarded window's contents and properties.",
+        L"\x2022  Any forwarded program can grab the keyboard and pointer.",
+        L"\x2022  Restricted mode \x2014 the default \x2014 forbids all of that and still runs ordinary applications.",
+        L"\x2022  Every window will carry an \x201cX11 TRUSTED\x201d strip while this is on.",
+    };
+    SelectObject(dc, st.bodyFont);
+    for (const wchar_t* l : lines)
+    {
+        SetTextColor(dc, st.pal.text);
+        RECT lr = { pad + Px(4, dpi), y, rc.right - padR, y + Px(40, dpi) };
+        const int used = DrawTextW(dc, l, -1, &lr, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_CALCRECT);
+        DrawTextW(dc, l, -1, &lr, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+        y += (std::max)(Px(20, dpi), used) + Px(6, dpi);
+    }
+
+    SelectObject(dc, st.smallFont);
+    SetTextColor(dc, st.pal.textDim);
+    RECT sr = { pad, y + Px(4, dpi), rc.right - padR, y + Px(44, dpi) };
+    DrawTextW(dc,
+              st.sessionOnly
+                  ? L"For this session only: the choice is not saved and is gone when AmberSSH closes."
+                  : L"Saved with the profile: every connection to this host will be trusted until you change it back.",
+              -1, &sr, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+
+    // ---- the typed confirmation, exactly as the risk dialog lays it out
+    SelectObject(dc, st.bodyFont);
+    SetTextColor(dc, st.pal.textDim);
+    const int editTop = rc.bottom - PadBottom(dpi) - Px(34, dpi) - Px(38, dpi);
+    RECT pr = { pad, editTop - Px(24, dpi), rc.right - padR, editTop - Px(2, dpi) };
+    DrawTextW(dc, (L"Type " + st.hostname + L" to confirm:").c_str(), -1, &pr,
+              DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+    RECT ew = { pad - Px(4, dpi), editTop - Px(3, dpi), pad + Px(264, dpi), editTop + Px(31, dpi) };
+    skin::FrameWell(dc, ew, dpi, false);
+    SelectObject(dc, oldFont);
+}
+
 void Finish(HDC dc, const RECT& rc)
 {
     if (!ChromeSkinned())
@@ -602,6 +664,8 @@ void Paint(HWND hwnd, SafetyState& st)
 
     if (st.kind == Kind::HostKey)
         PaintHostKey(dc, rc, st);
+    else if (st.kind == Kind::TrustedX11)
+        PaintTrustedX11(dc, rc, st);
     else
         PaintRisk(dc, rc, st);
     Finish(dc, rc);
@@ -898,6 +962,22 @@ HostKeyChoice ShowHostKeyDialog(HWND owner, const std::string& label,
                              changed ? L"Accept new key" : L"Accept key",
                              L"Do not connect");
     return ok ? HostKeyChoice::Accept : HostKeyChoice::Reject;
+}
+
+bool ShowTrustedX11Dialog(HWND owner, const std::string& hostname, bool sessionOnly)
+{
+    SafetyState st;
+    st.kind = Kind::TrustedX11;
+    st.dpi = owner ? GetDpiForWindow(owner) : GetDpiForSystem();
+    st.pal = MakeDialogPalette();
+    st.style = ConfirmStyle::TypeHostname;   // always: there is no low-friction trusted
+    st.hostname = Wide(hostname.empty() ? std::string("trusted") : hostname);
+    st.sessionOnly = sessionOnly;
+    int h = 150 + 5 * 28 + 44 + 78 + 34 + 24;
+    if (ChromeSkinned() && Chrome().elbow)
+        h += 22;
+    return RunModal(owner, st, 660, h, L"AmberSSH \x2014 trusted X11",
+                    L"Enable trusted X11", L"Keep restricted");
 }
 
 bool ShowRiskDialog(HWND owner, const RiskReport& report, ConfirmStyle style,

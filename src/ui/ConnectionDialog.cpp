@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "../platform/CredentialStore.h"
+#include "SafetyDialog.h"
 #include "SkinDraw.h"
 #include "SkinFinish.h"
 #include "../platform/ConPty.h"
@@ -32,8 +33,8 @@ constexpr wchar_t kClassName[] = L"AmberSSHConnectionDialog";
 
 int Dpi(int value, UINT dpi);
 
-// Live theme palette — refreshed from amber::gThemeSrgb at each Show() so the
-// connection manager always matches the active theme (amber, emerald, ice…).
+// Live theme palette â refreshed from amber::gThemeSrgb at each Show() so the
+// connection manager always matches the active theme (amber, emerald, iceâ¦).
 COLORREF kBg, kField, kText, kTextDim, kTextDis, kBorder, kBorderHot, kAccent,
     kAccentTx, kSelBg, kSelText, kBanner, kBanner2;
 
@@ -109,7 +110,7 @@ void SkinShape(HDC dc, const RECT& rc, int cut, int radius)
     {
         // Blueprint: a drafted rectangle. The caller has already selected a
         // hollow brush for outlines; for fills we still want a rectangle, so
-        // the shape is the same either way — only the ink differs.
+        // the shape is the same either way â only the ink differs.
         Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
         return;
     }
@@ -327,7 +328,7 @@ HWND MakeButton(HWND parent, const wchar_t* text, int id, HFONT font,
     // Push buttons are owner-drawn (rounded amber); check boxes and radios
     // keep their auto styles but are un-themed so WM_CTLCOLORSTATIC can
     // color their text amber. Button styles are an enum in the low nibble
-    // (BS_TYPEMASK), not flag bits — compare, never AND.
+    // (BS_TYPEMASK), not flag bits â compare, never AND.
     const DWORD type = extra & 0xF /*BS_TYPEMASK*/;
     const int kind = type == BS_AUTOCHECKBOX ? 1 : type == BS_AUTORADIOBUTTON ? 2 : 0;
     // Every button is owner-drawn: the skin draws push buttons, check boxes
@@ -385,7 +386,7 @@ bool ConnectionDialog::Show(HWND owner, ProfileStore& store,
     int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - h) / 2;
 
     HWND hwnd = CreateWindowExW(
-        WS_EX_DLGMODALFRAME, kClassName, L"AmberSSH — Connection",
+        WS_EX_DLGMODALFRAME, kClassName, L"AmberSSH â Connection",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE, x, y, w, h,
         owner, nullptr, GetModuleHandleW(nullptr), &dlg);
     if (!hwnd)
@@ -604,7 +605,7 @@ LRESULT ConnectionDialog::Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 if (sel && amber::Chrome().darkText)
                 {
                     // A skin that letters in black on colour cannot select by
-                    // washing the ground towards the accent — gold at 22% on
+                    // washing the ground towards the accent â gold at 22% on
                     // mask green is mud. The selected row becomes a plated pad
                     // instead: the full accent, with ink chosen by its luma.
                     cd->clrTextBk = kBorderHot;
@@ -714,7 +715,7 @@ LRESULT ConnectionDialog::Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 }
                 if ((cd->nmcd.uItemState & CDIS_SELECTED) && amber::skin::Rehaut())
                 {
-                    // Horologe: the selected row is an applied index on lume —
+                    // Horologe: the selected row is an applied index on lume â
                     // raised by a rhodium line above and a shade below.
                     amber::skin::AppliedIndex(cd->nmcd.hdc, cd->nmcd.rc, kText,
                                               amber::skin::Dim(kBg, 0.45f));
@@ -1126,7 +1127,7 @@ void ConnectionDialog::DefineFields()
     chk(Page::Guardian, &P::reconnectNotify, L"Notify me on the outcome");
     chk(Page::Guardian, &P::reconnectBanner, L"Mark the drop and the recovery");
     note(Page::Guardian, L"A notification is raised only when AmberSSH is in the background, and\r\n"
-                         L"only when a session reconnects or gives up — never per failed attempt.\r\n"
+                         L"only when a session reconnects or gives up â never per failed attempt.\r\n"
                          L"The mark is drawn over the view, not written into the terminal, so it\r\n"
                          L"never appears in a copy, a search or a session log.");
 
@@ -1196,6 +1197,8 @@ void ConnectionDialog::DefineFields()
     choice(Page::SshX11, Kind::RadioRow, &P::x11Backend, L"X server",
            { L"External (VcXsrv, X410, ...)", L"AmberX built-in (experimental)" });
     str(Page::SshX11, &P::x11Display, L"X display location (e.g. localhost:0)", 260);
+    choice(Page::SshX11, Kind::RadioRow, &P::x11Trust, L"X11 trust",
+           {L"Restricted (default)", L"Trusted — saved", L"Trusted — this session only"});
     note(Page::SshX11, L"Remote X clients are connected to the X server at that display\r\n"
                        L"(VcXsrv, Xming, WSLg). Start it before connecting.");
 
@@ -1615,7 +1618,7 @@ void ConnectionDialog::Layout()
     HDC dc = GetDC(m_dlg);
     HGDIOBJ of = SelectObject(dc, m_font);
     // Measure what will actually be DRAWN. On an uppercase skin the control
-    // was created with cased text, which is wider than the source string —
+    // was created with cased text, which is wider than the source string â
     // measuring the original clips the last radio in a row.
     auto textW = [&](const std::wstring& s) {
         std::wstring cased = SkinLabel(s);
@@ -1946,7 +1949,7 @@ void ConnectionDialog::SaveCurrentProfile()
     if (p.name.empty())
         p.name = p.protocol == Protocol::Serial ? p.serialPort : p.host;
 
-    // Secrets go to the Credential Manager, keyed by profile id — never to JSON.
+    // Secrets go to the Credential Manager, keyed by profile id â never to JSON.
     auto secret = [&](bool remember, int editId, SecretKind kind)
     {
         if (remember)
@@ -1960,6 +1963,20 @@ void ConnectionDialog::SaveCurrentProfile()
     secret(p.rememberPassword, IdPassword, SecretKind::Password);
     secret(p.rememberPassphrase, IdPassphrase, SecretKind::KeyPassphrase);
     secret(p.rememberProxyPassword, IdProxyPassword, SecretKind::ProxyPassword);
+
+    // Trusted X11 is an opt-in behind a typed confirmation, asked whenever
+    // trust is being turned on or changed to the other kind — never when a
+    // profile that already has it is merely edited. Declining leaves the
+    // profile restricted; it never fails the save.
+    if (p.x11Trust != 0)
+    {
+        const ConnectionProfile* prev = m_store.Find(p.id);
+        if (!prev || prev->x11Trust != p.x11Trust)
+        {
+            if (!ShowTrustedX11Dialog(m_dlg, p.host, p.x11Trust == 2))
+                p.x11Trust = 0;
+        }
+    }
 
     m_selectedProfileId = m_store.Upsert(p);
     std::string err;
@@ -2115,7 +2132,7 @@ void ConnectionDialog::SyncProtocol()
         L"Rlogin: plain text, port 513 (Connection > Rlogin for the local user).",
         L"Raw: bare TCP stream, no protocol (set the port).",
         L"Serial: local COM port (Connection > Serial for line settings).",
-        L"Local: a shell on this machine — PowerShell, cmd, WSL (Connection > Local).",
+        L"Local: a shell on this machine â PowerShell, cmd, WSL (Connection > Local).",
     };
     SetStatus(hints[std::clamp(now, 0, 5)]);
 }
@@ -2150,7 +2167,7 @@ void ConnectionDialog::PaintChrome(HDC dc)
     const int pad = Dpi(12, m_dpi);
     const int bannerH = Dpi(58, m_dpi);
     // Horologe: the header band is engine-turned before anything is set on
-    // it. The band only — labels and fields below the divider stay plain.
+    // it. The band only â labels and fields below the divider stay plain.
     if (amber::skin::Rehaut())
     {
         RECT band = { 0, 0, rc.right, pad + bannerH - Dpi(12, m_dpi) };
@@ -2176,7 +2193,7 @@ void ConnectionDialog::PaintChrome(HDC dc)
     }
     if (amber::skin::Stitch())
     {
-        // Atelier: the dialog is one piece of hide — painted edge, stitch
+        // Atelier: the dialog is one piece of hide â painted edge, stitch
         // inside it. Controls sit a full pad in from the edge, so neither
         // touches them.
         amber::skin::EdgePaint(dc, rc, m_dpi, kBorder);
@@ -2253,7 +2270,7 @@ void ConnectionDialog::PaintChrome(HDC dc)
     }
     else if (amber::skin::Stitch())
     {
-        // Atelier: a seam — two stitch lines with the painted edge between.
+        // Atelier: a seam â two stitch lines with the painted edge between.
         RECT seam = { pad, dy - Dpi(5, m_dpi), x1, dy + Dpi(1, m_dpi) };
         HBRUSH pb = CreateSolidBrush(kBorder);
         FillRect(dc, &seam, pb);
@@ -2267,13 +2284,13 @@ void ConnectionDialog::PaintChrome(HDC dc)
         RECT rule = { pad, dy - Dpi(2, m_dpi), x1, dy };
         amber::skin::AppliedIndex(dc, rule, RGB(0xE6, 0xE8, 0xEB), RGB(0x7E, 0x82, 0x87));
         RECT plate = { x1 - Dpi(260, m_dpi), pad, x1 - Dpi(6, m_dpi), pad + Dpi(18, m_dpi) };
-        amber::skin::Engrave(dc, plate, L"AMBER SSH  ·  MODEL 1.0", m_tagFont, kTextDim,
+        amber::skin::Engrave(dc, plate, L"AMBER SSH  Â·  MODEL 1.0", m_tagFont, kTextDim,
                              RGB(0xE6, 0xE8, 0xEB),
                              DT_RIGHT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
     }
     else if (amber::skin::Glaze())
     {
-        // Tenmoku: the divider is the rim — rust where the glaze thins — and
+        // Tenmoku: the divider is the rim â rust where the glaze thins â and
         // the studio's chop sits beside the wordmark.
         RECT rim = { pad, dy - Dpi(2, m_dpi), x1, dy };
         HBRUSH rb = CreateSolidBrush(amber::skin::kRust);
@@ -2536,7 +2553,7 @@ static void DrawCheckRadio(const DRAWITEMSTRUCT& dis, int kind, bool checked,
     if (Hairline())
     {
         // Blueprint: drafted symbols. A square with a cross through it for a
-        // check, a circle with a solid centre for a radio — both in ink, both
+        // check, a circle with a solid centre for a radio â both in ink, both
         // unfilled, the way a legend marks a state on a drawing.
         if (kind == 2)
         {
@@ -2731,7 +2748,7 @@ void ConnectionDialog::DrawThemedButton(const DRAWITEMSTRUCT& dis)
     if (amber::skin::Impression())
     {
         // Letterpress: the primary is foil-stamped; everything else is a
-        // blind deboss — no ink, only the impression — lettered in the ink.
+        // blind deboss â no ink, only the impression â lettered in the ink.
         // Both are finished after the shape is drawn.
         fill = kBg;
         line = kBg;

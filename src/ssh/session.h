@@ -96,6 +96,8 @@ struct SshConfig
     // itself once the key has been verified.
     std::string amberxIdentity;
     int amberxSkin = 0;
+    // Trusted X11: an explicit, warned opt-in. Fixed for the host's lifetime.
+    bool x11Trusted = false;
 
     // ---- Telnet / Rlogin ---------------------------------------------------
     bool telnetPassive = false;

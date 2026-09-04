@@ -34,6 +34,7 @@
 #include "rootless.h"
 #include "amberos.h"
 #include "amberwin.h"
+#include "amberlimits.h"
 
 typedef struct {
     void *bits;
@@ -275,6 +276,9 @@ amberScreenInit(ScreenPtr pScreen, int argc, char **argv)
             return FALSE;
     }
     if (!miCreateDefColormap(pScreen))
+        return FALSE;
+    /* limits wrap last, so they are outermost on every path */
+    if (!amber_limits_screen_init(pScreen))
         return FALSE;
     return TRUE;
 }

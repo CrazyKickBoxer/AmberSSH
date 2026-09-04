@@ -210,6 +210,7 @@ json ToJson(const ConnectionProfile& p)
         {"x11Forward", p.x11Forward},
         {"x11Display", p.x11Display},
         {"x11Backend", p.x11Backend},
+        {"x11Trust", p.x11Trust == 1 ? 1 : 0},   // session-only trust is not saved
         {"manualHostKeys", p.manualHostKeys},
         {"forwards", p.forwards},
         {"jumpHost", p.jumpHost},
@@ -372,6 +373,7 @@ bool FromJson(const json& j, ConnectionProfile& out)
     out.x11Forward = Get<bool>(j, "x11Forward", false);
     out.x11Display = Get<std::string>(j, "x11Display", d.x11Display);
     out.x11Backend = std::clamp(Get<int>(j, "x11Backend", 0), 0, 1);
+    out.x11Trust = std::clamp(Get<int>(j, "x11Trust", 0), 0, 1);
     out.manualHostKeys = Get<std::string>(j, "manualHostKeys", std::string());
     out.forwards = Get<std::string>(j, "forwards", std::string());
     out.jumpHost = Get<std::string>(j, "jumpHost", std::string());

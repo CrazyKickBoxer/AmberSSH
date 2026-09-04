@@ -1153,6 +1153,8 @@ bool BackendInit(FramedPipe& pipe, const HostOptions& opt, std::string& err)
     g.cfg.identity = g.identity.c_str();
     g.cfg.mode = g.mode.c_str();
     g.cfg.skin = opt.skin;
+    g.cfg.trusted = opt.trusted ? 1 : 0;
+    g.cfg.auth_timeout_seconds = opt.authTimeout;
     g.wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!g.wake)
     {

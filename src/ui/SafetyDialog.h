@@ -46,6 +46,13 @@ HostKeyChoice ShowHostKeyDialog(HWND owner, const std::string& label,
 bool ShowRiskDialog(HWND owner, const RiskReport& report, ConfirmStyle style,
                     const std::string& hostname);
 
+// The high-friction opt-in for trusted X11 (Phase 5 of AmberX). Trusted mode
+// lets every program forwarded from `hostname` see the input and windows of
+// every other, which is what X11 trusted means; restricted mode is the
+// default and needs no dialog. The user must type the hostname. Returns true
+// only on that positive confirmation.
+bool ShowTrustedX11Dialog(HWND owner, const std::string& hostname, bool sessionOnly);
+
 // Draws a sigil into `rc` on a GDI DC, in the colours of the active skin.
 // Exposed so the tab strip and the status bar can draw the same figure at a
 // smaller size — recognition only works if it is the same drawing everywhere.

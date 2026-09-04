@@ -51,8 +51,19 @@ public:
         int skin = 0;               // chrome style index
         std::string keymap;         // .xkm path, or empty
         bool rootful = false;
+        // Phase 5: the SECURITY trust level of the session cookie. Restricted
+        // is the default; trusted is an explicit, warned opt-in and cannot be
+        // changed once the host is running.
+        bool trusted = false;
+        int authTimeoutSeconds = 1200;   // an unused untrusted cookie expires after this
     };
     void Configure(const Launch& l) { m_launch = l; }
+
+    // What the host process is confined by, read back from its token after
+    // launch — never just what was requested: "integrity=Low restricted=yes".
+    const std::string& Confinement() const { return m_confinement; }
+    // Test hook: ends the host abruptly, as a crash would.
+    void KillHostForTest();
 
     bool Start(std::string& err);
     bool Alive() const;
@@ -76,6 +87,7 @@ private:
     HANDLE m_proc = nullptr;
     ChannelTable m_channels;
     std::string m_security;
+    std::string m_confinement;
     Launch m_launch;
     bool m_ready = false;
     void Kill();

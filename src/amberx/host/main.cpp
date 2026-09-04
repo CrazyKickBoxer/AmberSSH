@@ -43,6 +43,8 @@ struct Args
     std::string identity, sigil;
     std::string mode = "X11 FORWARDED";
     int skin = 0;
+    bool trusted = false;
+    int authTimeout = 1200;
 };
 
 std::string Narrow(const std::wstring& w)
@@ -90,6 +92,13 @@ bool ParseArgs(int argc, wchar_t** argv, Args& a)
             a.sigil = Narrow(v);
         else if (k == L"--skin")
             a.skin = static_cast<int>(wcstol(v.c_str(), nullptr, 10));
+        else if (k == L"--trusted")
+        {
+            a.trusted = true;
+            --i;
+        }
+        else if (k == L"--auth-timeout")
+            a.authTimeout = static_cast<int>(wcstol(v.c_str(), nullptr, 10));
         else
             return false;
     }
@@ -240,6 +249,8 @@ int wmain(int argc, wchar_t** argv)
     opt.mode = a.mode;
     opt.sigil = a.sigil;
     opt.skin = a.skin;
+    opt.trusted = a.trusted;
+    opt.authTimeout = a.authTimeout;
     if (!BackendInit(pipe, opt, err))
     {
         fprintf(stderr, "AmberXHost: %s\n", err.c_str());

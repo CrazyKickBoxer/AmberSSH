@@ -39,7 +39,10 @@ typedef struct amberwin_config {
     const char *keymap_path;/* an .xkm compiled by xkbcomp, or NULL for the
                                built-in US map (see ddx_keymap.c) */
     const char *identity;   /* the session badge text, e.g. "host · user" */
-    const char *mode;       /* "RESTRICTED" or "TRUSTED" */
+    const char *mode;       /* the strip's mode word, as given */
+    int trusted;            /* 0: the session cookie is registered UNTRUSTED with
+                               the SECURITY extension (Phase 5); 1: trusted */
+    int auth_timeout_seconds; /* untrusted authorization timeout; 0 = none */
     int skin;               /* AmberSSH chrome style index for the badge */
 } amberwin_config;
 const amberwin_config *amberwin_get_config(void);

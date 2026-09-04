@@ -50,15 +50,69 @@ struct XClient
     static void put32(std::vector<uint8_t>& v, uint32_t x) { for (int i = 0; i < 4; ++i) v.push_back((x >> (8 * i)) & 0xff); }
     static void pad4(std::vector<uint8_t>& v) { while (v.size() % 4) v.push_back(0); }
 
-    // Raw bytes to the channel, whole or one byte per frame.
+    // Raw bytes to the channel: in frame-sized pieces, or one byte per frame.
     bool sendRaw(const std::vector<uint8_t>& bytes)
     {
-        if (!fragmented)
-            return c.SendData(ch, bytes.data(), bytes.size());
-        for (uint8_t b : bytes)
-            if (!c.SendData(ch, &b, 1))
+        if (fragmented)
+        {
+            for (uint8_t b : bytes)
+                if (!c.SendData(ch, &b, 1))
+                    return false;
+            return true;
+        }
+        size_t off = 0;
+        while (off < bytes.size())
+        {
+            const size_t n = std::min(bytes.size() - off, static_cast<size_t>(kMaxPayload));
+            if (!c.SendData(ch, bytes.data() + off, n))
                 return false;
+            off += n;
+        }
         return true;
+    }
+
+    // A BIG-REQUESTS request: length field 0, then the 32-bit length in
+    // 4-byte units. The client must have enabled the extension first.
+    bool sendBig(std::vector<uint8_t> req)
+    {
+        req[2] = 0;
+        req[3] = 0;
+        const uint32_t units = static_cast<uint32_t>((req.size() + 4) / 4);
+        std::vector<uint8_t> ext(4);
+        for (int i = 0; i < 4; ++i)
+            ext[i] = static_cast<uint8_t>((units >> (8 * i)) & 0xff);
+        req.insert(req.begin() + 4, ext.begin(), ext.end());
+        ++seq;
+        return sendRaw(req);
+    }
+
+    // The X error code for request `s`, or 0 if it produced none: a probe
+    // with a reply is sent afterwards, and whichever of "error for s" and
+    // "the probe's reply or error" arrives first decides. The probe is a
+    // GetGeometry of the root — readable by every client, trusted or not —
+    // so the probe itself can never be what is refused. -1 when nothing
+    // arrives.
+    int errorFor(uint32_t s)
+    {
+        std::vector<uint8_t> probe = { 14, 0, 0, 0 };
+        put32(probe, root);
+        send(probe);
+        const uint32_t probeSeq = seq;
+        const ULONGLONG until = GetTickCount64() + 5000;
+        while (GetTickCount64() < until)
+        {
+            std::vector<uint8_t> m;
+            const int k = next(m, 1000);
+            if (k < 0)
+                continue;
+            if (k == 0 && (u16(&m[2]) & 0xffff) == (s & 0xffff))
+                return m[1];
+            if ((k == 1 || k == 0) && (u16(&m[2]) & 0xffff) == (probeSeq & 0xffff))
+                return 0;
+            if (k == 2)
+                events.push_back(m);
+        }
+        return -1;
     }
 
     // Reads channel bytes until `want` are buffered, setting aside the
@@ -520,6 +574,191 @@ int RunPreviewClient(AmberXController& c, const Line& line)
     check("no X errors and no host errors", x.hostErrors.empty() && y.hostErrors.empty(), x.hostErrors + y.hostErrors);
     if (const char* hold = getenv("AMBERX_PREVIEW_HOLD_MS"))
         Sleep(static_cast<DWORD>(atoi(hold)));
+    return failures;
+}
+
+// ---- Phase 5: what restricted and trusted enforce, and what limits refuse ----
+int RunPreviewTrustChecks(AmberXController& c, bool trusted, const Line& line)
+{
+    int failures = 0;
+    const std::string tag = trusted ? " [trusted]" : " [restricted]";
+    auto check = [&](const std::string& step, bool ok, const std::string& detail = {}) {
+        line((step + tag).c_str(), ok, detail);
+        if (!ok)
+            ++failures;
+    };
+    if (!c.OpenChannel(1))
+    {
+        check("open channel", false);
+        return failures;
+    }
+    XClient x(c, line, 1);
+    if (!x.setup((std::string("setup") + tag).c_str()))
+        return failures + 1;
+
+    const uint32_t eventMask = 0x8000 | 0x20000;
+    const uint32_t wid = x.ridBase + 1;
+    const uint32_t aNetWmName = x.internAtom("_NET_WM_NAME");
+    const uint32_t aUtf8 = x.internAtom("UTF8_STRING");
+    x.createToplevel(wid, 40, 40, 120, 80, 0x00888888, eventMask, aNetWmName, aUtf8,
+                     trusted ? "AmberX trusted probe" : "AmberX restricted probe");
+    x.mapWindow(wid);
+
+    // 1. Writing a property on the ROOT window — a trusted client's window.
+    //    Untrusted clients may read it, never write it: BadAccess.
+    std::vector<uint8_t> r;
+    {
+        const char v = 'x';
+        x.changeProperty(x.root, 39 /*WM_NAME*/, 31 /*STRING*/, 8, &v, 1);
+        const int e = x.errorFor(x.seq);
+        check("ChangeProperty on the root window", trusted ? e == 0 : e == 10 /*BadAccess*/,
+              "error " + std::to_string(e) + (trusted ? " (expected none)" : " (expected 10 BadAccess)"));
+    }
+    // 2. A keyboard grab: the SECURITY extension's device policy.
+    {
+        r = { 31, 0, 0, 0 }; XClient::put32(r, wid); XClient::put32(r, 0); r.push_back(1); r.push_back(1); r.push_back(0); r.push_back(0);
+        x.send(r);
+        std::vector<uint8_t> rep;
+        const uint32_t s = x.seq;
+        std::vector<uint8_t> m;
+        int status = -1;
+        const ULONGLONG until = GetTickCount64() + 5000;
+        while (status < 0 && GetTickCount64() < until)
+        {
+            const int k = x.next(m, 1000);
+            if (k == 1 && (XClient::u16(&m[2]) & 0xffff) == (s & 0xffff)) status = 100 + m[1];   // reply: 100 + grab status
+            else if (k == 0 && (XClient::u16(&m[2]) & 0xffff) == (s & 0xffff)) status = m[1];    // error code
+            else if (k == 2) x.events.push_back(m);
+        }
+        line((std::string("GrabKeyboard outcome") + tag).c_str(), true,
+             status >= 100 ? "reply, status " + std::to_string(status - 100) : "error " + std::to_string(status));
+    }
+    // 3. Exhaustion: a pixmap beyond the limit is refused with BadAlloc,
+    //    and the server keeps answering.
+    {
+        r = { 53, 24, 0, 0 }; XClient::put32(r, x.ridBase + 2); XClient::put32(r, wid); XClient::put16(r, 20000); XClient::put16(r, 20000);
+        x.send(r);
+        const int e = x.errorFor(x.seq);
+        check("20000x20000 pixmap refused", e == 11 /*BadAlloc*/, "error " + std::to_string(e));
+    }
+    // 4. Exhaustion: a 2 MiB property (over the 1 MiB limit) through
+    //    BIG-REQUESTS is refused with BadAlloc before it is stored.
+    {
+        std::vector<uint8_t> q = { 98, 0, 0, 0 }; XClient::put16(q, 12); XClient::put16(q, 0);
+        const char* ext = "BIG-REQUESTS"; q.insert(q.end(), ext, ext + 12);
+        x.send(q);
+        std::vector<uint8_t> rep;
+        uint8_t major = 0;
+        if (x.reply(x.seq, rep) && rep[8])
+            major = rep[9];
+        bool enabled = false;
+        if (major)
+        {
+            q = { major, 0, 0, 0 };
+            x.send(q);
+            enabled = x.reply(x.seq, rep);
+        }
+        check("BIG-REQUESTS enabled", enabled);
+        if (enabled)
+        {
+            std::vector<uint8_t> big = { 18, 0, 0, 0 };
+            XClient::put32(big, wid); XClient::put32(big, aNetWmName); XClient::put32(big, 31);
+            big.push_back(8); big.push_back(0); big.push_back(0); big.push_back(0);
+            const uint32_t n = 2u * 1024 * 1024;
+            XClient::put32(big, n);
+            big.resize(big.size() + n, 'A');
+            x.sendBig(big);
+            const int e = x.errorFor(x.seq);
+            check("2 MiB property refused", e == 11, "error " + std::to_string(e));
+        }
+    }
+    // 5. Exhaustion: an atom flood trips the rate limit, and the server is
+    //    still there afterwards.
+    {
+        int refused = 0;
+        // Only messages for the flood's own sequence range count: an earlier
+        // errorFor probe can leave its reply queued, and it must not be
+        // mistaken for one of the flood's answers.
+        const uint32_t firstSeq = (x.seq + 1) & 0xffff;
+        auto inFlood = [&](const std::vector<uint8_t>& m) {
+            const uint32_t d = (XClient::u16(&m[2]) - firstSeq) & 0xffff;
+            return d < 2100;
+        };
+        for (int i = 0; i < 2100; ++i)
+        {
+            char name[48];
+            snprintf(name, sizeof name, "amberx-flood-%d-%u", i, static_cast<unsigned>(GetTickCount64() & 0xffff));
+            std::vector<uint8_t> q = { 16, 0, 0, 0 };
+            XClient::put16(q, static_cast<uint32_t>(strlen(name))); XClient::put16(q, 0);
+            q.insert(q.end(), name, name + strlen(name));
+            XClient::pad4(q);
+            x.send(q);
+        }
+        // drain: count errors among the replies
+        const ULONGLONG until = GetTickCount64() + 15000;
+        int seen = 0;
+        while (seen < 2100 && GetTickCount64() < until)
+        {
+            std::vector<uint8_t> m;
+            const int k = x.next(m, 1000);
+            if (k == 1) { if (inFlood(m)) ++seen; }
+            else if (k == 0) { if (inFlood(m)) { ++seen; ++refused; } }
+            else if (k == 2) x.events.push_back(m);
+            else break;
+        }
+        check("atom flood rate-limited", refused > 0 && seen == 2100,
+              std::to_string(refused) + " of " + std::to_string(seen) + " refused");
+        r = { 14, 0, 0, 0 }; XClient::put32(r, wid);
+        x.send(r);
+        std::vector<uint8_t> rep;
+        check("server still answers after the flood", x.reply(x.seq, rep));
+    }
+    c.CloseChannel(1);
+    return failures;
+}
+
+// ---- Phase 5: an untrusted authorization that expires ------------------------
+int RunPreviewTimeoutCheck(AmberXController& c, const Line& line)
+{
+    int failures = 0;
+    auto check = [&](const char* step, bool ok, const std::string& detail = {}) {
+        line(step, ok, detail);
+        if (!ok)
+            ++failures;
+    };
+    c.OpenChannel(1);
+    {
+        XClient x(c, line, 1);
+        check("client before the timeout", x.setup("setup with a 2 s authorization"));
+        c.CloseChannel(1);
+    }
+    Sleep(3500);   // past the 2 s timeout, with no client holding the cookie
+    c.OpenChannel(2);
+    {
+        XClient y(c, line, 2);
+        std::vector<uint8_t> s;
+        s.push_back('l'); s.push_back(0);
+        XClient::put16(s, 11); XClient::put16(s, 0);
+        XClient::put16(s, 18); XClient::put16(s, 16); XClient::put16(s, 0);
+        const char* name = "MIT-MAGIC-COOKIE-1";
+        s.insert(s.end(), name, name + 18); s.push_back(0); s.push_back(0);
+        s.insert(s.end(), 16, 0x42);
+        y.sendRaw(s);
+        bool refused = false;
+        std::string reason;
+        if (y.recv(8, 5000))
+        {
+            const uint8_t status = y.inbuf[0];
+            const uint32_t extra = XClient::u16(&y.inbuf[6]) * 4;
+            if (y.recv(8 + extra, 3000) && status == 0)
+            {
+                refused = true;
+                reason.assign(reinterpret_cast<const char*>(y.inbuf.data()) + 8, y.inbuf[1]);
+            }
+        }
+        check("client after the timeout is refused", refused, reason);
+        c.CloseChannel(2);
+    }
     return failures;
 }
 

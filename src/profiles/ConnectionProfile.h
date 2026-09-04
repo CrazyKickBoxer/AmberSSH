@@ -261,6 +261,10 @@ struct ConnectionProfile
     // 0 = an external X server at x11Display (VcXsrv, X410, ...);
     // 1 = AmberX, the built-in host process (docs/amberx/). Experimental.
     int         x11Backend = 0;
+    // 0 restricted (the SECURITY extension marks every forwarded client
+    // untrusted); 1 trusted, saved with the profile after a warning;
+    // 2 trusted for this session only — never written to disk.
+    int         x11Trust = 0;
     std::string manualHostKeys;      // accepted fingerprints, one per line
     // Tunnels: semicolon-separated forward specs —
     //   L<listenPort>:<host>:<port>   local forward

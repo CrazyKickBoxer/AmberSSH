@@ -1,6 +1,10 @@
 #include "AmberXController.h"
 
+#include <sddl.h>
+
 #include <cstdio>
+#include <cstring>
+#include <cstdlib>
 #include <string>
 
 #include "control/Handshake.h"
@@ -31,9 +35,18 @@ std::wstring HostLogPath()
 
 // A JOB_OBJECT_LIMIT_ACTIVE_PROCESS of 1 means the host cannot spawn
 // children at all — there is nothing an X server host should ever need to
-// launch, and a limit is cheaper than an argument.
+// launch, and a limit is cheaper than an argument. The job also carries the
+// resource ceilings the prompt asks for: memory, a hard CPU cap, and the UI
+// restrictions a display server has no business exceeding.
+constexpr SIZE_T kHostMemoryLimit = 1024ull * 1024 * 1024;   // 1 GiB
+constexpr DWORD kHostCpuPercent = 50;
+
 HANDLE MakeJob()
 {
+    const char* diag = getenv("AMBERX_SANDBOX_DIAG");
+    const bool noMem = diag && (strstr(diag, "nojobmem") || strstr(diag, "nojoball"));
+    const bool noCpu = diag && (strstr(diag, "nojobcpu") || strstr(diag, "nojoball"));
+    const bool noUi = diag && (strstr(diag, "nojobui") || strstr(diag, "nojoball"));
     HANDLE job = CreateJobObjectW(nullptr, nullptr);
     if (!job)
         return nullptr;
@@ -41,13 +54,132 @@ HANDLE MakeJob()
     jl.BasicLimitInformation.LimitFlags =
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS |
         JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
+    if (!noMem)
+    {
+        jl.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_JOB_MEMORY;
+        jl.ProcessMemoryLimit = kHostMemoryLimit;
+        jl.JobMemoryLimit = kHostMemoryLimit;
+    }
     jl.BasicLimitInformation.ActiveProcessLimit = 1;
     if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &jl, sizeof(jl)))
     {
         CloseHandle(job);
         return nullptr;
     }
+    if (!noCpu)
+    {
+        JOBOBJECT_CPU_RATE_CONTROL_INFORMATION cpu = {};
+        cpu.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+        cpu.CpuRate = kHostCpuPercent * 100;
+        SetInformationJobObject(job, JobObjectCpuRateControlInformation, &cpu, sizeof(cpu));
+    }
+    if (!noUi)
+    {
+        // no shutting the desktop down, no changing display or system settings,
+        // no global atoms, no other desktops — a window is all it may make
+        JOBOBJECT_BASIC_UI_RESTRICTIONS ui = {};
+        ui.UIRestrictionsClass = JOB_OBJECT_UILIMIT_EXITWINDOWS | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS |
+                                 JOB_OBJECT_UILIMIT_DISPLAYSETTINGS | JOB_OBJECT_UILIMIT_GLOBALATOMS |
+                                 JOB_OBJECT_UILIMIT_DESKTOP;
+        SetInformationJobObject(job, JobObjectBasicUIRestrictions, &ui, sizeof(ui));
+    }
     return job;
+}
+
+// The host's token: this user's, with every privilege removed and the
+// integrity level set to Low. Low integrity means UIPI stops it sending
+// messages to AmberSSH's windows or any other medium-integrity process, and
+// the mandatory label stops it writing to the user's files. It can still
+// create windows and draw, which is all it is for. Fails closed: no
+// restricted token, no host.
+HANDLE MakeHostToken(std::string& err)
+{
+    HANDLE tok = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(),
+                          TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT,
+                          &tok))
+    {
+        err = "could not open the process token";
+        return nullptr;
+    }
+    HANDLE restricted = nullptr;
+    const BOOL ok = CreateRestrictedToken(tok, DISABLE_MAX_PRIVILEGE, 0, nullptr, 0, nullptr, 0, nullptr, &restricted);
+    CloseHandle(tok);
+    if (!ok)
+    {
+        err = "could not create the restricted token";
+        return nullptr;
+    }
+    PSID low = nullptr;
+    if (!ConvertStringSidToSidW(L"S-1-16-4096", &low))   // SECURITY_MANDATORY_LOW_RID
+    {
+        CloseHandle(restricted);
+        err = "could not build the low-integrity SID";
+        return nullptr;
+    }
+    TOKEN_MANDATORY_LABEL label = {};
+    label.Label.Attributes = SE_GROUP_INTEGRITY;
+    label.Label.Sid = low;
+    const BOOL set = SetTokenInformation(restricted, TokenIntegrityLevel, &label,
+                                         sizeof(label) + GetLengthSid(low));
+    LocalFree(low);
+    if (!set)
+    {
+        CloseHandle(restricted);
+        err = "could not lower the token's integrity level";
+        return nullptr;
+    }
+    return restricted;
+}
+
+// Reads what the launched host actually runs under. This is the
+// verification, as opposed to the request above.
+std::string ReadConfinement(HANDLE proc)
+{
+    HANDLE tok = nullptr;
+    if (!OpenProcessToken(proc, TOKEN_QUERY, &tok))
+        return "unverified";
+    std::string out;
+    DWORD n = 0;
+    GetTokenInformation(tok, TokenIntegrityLevel, nullptr, 0, &n);
+    std::vector<uint8_t> buf(n ? n : 1);
+    if (n && GetTokenInformation(tok, TokenIntegrityLevel, buf.data(), n, &n))
+    {
+        auto* tml = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(buf.data());
+        const DWORD rid = *GetSidSubAuthority(tml->Label.Sid, *GetSidSubAuthorityCount(tml->Label.Sid) - 1);
+        out += rid < SECURITY_MANDATORY_MEDIUM_RID ? "integrity=Low" : rid < SECURITY_MANDATORY_HIGH_RID ? "integrity=Medium" : "integrity=High";
+    }
+    else
+        out += "integrity=?";
+    // Privileges: DISABLE_MAX_PRIVILEGE leaves SeChangeNotifyPrivilege alone,
+    // so a stripped token has exactly one. (IsTokenRestricted would only be
+    // true with restricting SIDs, which this token does not use.)
+    n = 0;
+    GetTokenInformation(tok, TokenPrivileges, nullptr, 0, &n);
+    std::vector<uint8_t> pbuf(n ? n : 1);
+    if (n && GetTokenInformation(tok, TokenPrivileges, pbuf.data(), n, &n))
+        out += " privileges=" + std::to_string(reinterpret_cast<TOKEN_PRIVILEGES*>(pbuf.data())->PrivilegeCount);
+    else
+        out += " privileges=?";
+    CloseHandle(tok);
+    return out;
+}
+
+// Process mitigation policies for the host: no dynamic code, no extension
+// DLLs, no images from remote or low-labelled locations, strict handles,
+// terminate on heap corruption, full ASLR. win32k stays: it draws windows.
+DWORD64 HostMitigations()
+{
+    return PROCESS_CREATION_MITIGATION_POLICY_DEP_ENABLE |
+           PROCESS_CREATION_MITIGATION_POLICY_SEHOP_ENABLE |
+           PROCESS_CREATION_MITIGATION_POLICY_HEAP_TERMINATE_ALWAYS_ON |
+           PROCESS_CREATION_MITIGATION_POLICY_BOTTOM_UP_ASLR_ALWAYS_ON |
+           PROCESS_CREATION_MITIGATION_POLICY_HIGH_ENTROPY_ASLR_ALWAYS_ON |
+           PROCESS_CREATION_MITIGATION_POLICY_STRICT_HANDLE_CHECKS_ALWAYS_ON |
+           PROCESS_CREATION_MITIGATION_POLICY_EXTENSION_POINT_DISABLE_ALWAYS_ON |
+           PROCESS_CREATION_MITIGATION_POLICY_PROHIBIT_DYNAMIC_CODE_ALWAYS_ON |
+           PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_NO_REMOTE_ALWAYS_ON |
+           PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_NO_LOW_LABEL_ALWAYS_ON;
 }
 
 } // namespace
@@ -136,23 +268,57 @@ bool AmberXController::Start(std::string& err)
     // sensitive is ever written (os_log.c). Truncated per launch, so it is
     // never larger than one session.
     SECURITY_ATTRIBUTES inheritLog = { sizeof(inheritLog), nullptr, TRUE };
-    HANDLE logH = CreateFileW(HostLogPath().c_str(), GENERIC_WRITE, FILE_SHARE_READ, &inheritLog,
-                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // With AMBERX_TRACE_IO set the log is appended instead, so a run that
+    // starts several hosts (the preview) keeps every host's trace.
+    const bool appendLog = getenv("AMBERX_TRACE_IO") != nullptr;
+    HANDLE logH = CreateFileW(HostLogPath().c_str(), appendLog ? FILE_APPEND_DATA : GENERIC_WRITE,
+                              FILE_SHARE_READ, &inheritLog, appendLog ? OPEN_ALWAYS : CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
     HANDLE inheritList[2] = { rd, logH };
     const DWORD inheritCount = (logH != INVALID_HANDLE_VALUE) ? 2 : 1;
 
+    // AMBERX_SANDBOX_DIAG=notoken|nomitig: diagnosis only — which half of the
+    // confinement a launch failure belongs to. Never set in normal use.
+    const char* diag = getenv("AMBERX_SANDBOX_DIAG");
+    const bool diagNoToken = diag && strstr(diag, "notoken");
+    const bool diagNoMitig = diag && strstr(diag, "nomitig");
+    // No PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY: with it the loader ends
+    // the host with STATUS_DLL_INIT_FAILED before wmain runs (found by
+    // bisection; token, mitigations and job limits are all fine without it).
+    // The Job Object's ActiveProcessLimit of 1 already forbids children.
+    const bool diagNoChild = true;
+    DWORD64 mitigations = HostMitigations();
+    DWORD childPolicy = 0;
+    const DWORD attrCount = 1 + (diagNoMitig ? 0 : 1) + (diagNoChild ? 0 : 1);
     SIZE_T attrSize = 0;
-    InitializeProcThreadAttributeList(nullptr, 1, 0, &attrSize);
+    InitializeProcThreadAttributeList(nullptr, attrCount, 0, &attrSize);
     std::vector<uint8_t> attrBuf(attrSize);
     auto* attrs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrBuf.data());
-    if (!InitializeProcThreadAttributeList(attrs, 1, 0, &attrSize) ||
+    if (!InitializeProcThreadAttributeList(attrs, attrCount, 0, &attrSize) ||
         !UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inheritList,
-                                   sizeof(HANDLE) * inheritCount, nullptr, nullptr))
+                                   sizeof(HANDLE) * inheritCount, nullptr, nullptr) ||
+        (!diagNoMitig &&
+         !UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &mitigations,
+                                    sizeof(mitigations), nullptr, nullptr)) ||
+        (!diagNoChild &&
+         !UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, &childPolicy,
+                                    sizeof(childPolicy), nullptr, nullptr)))
     {
         CloseHandle(rd);
         if (logH != INVALID_HANDLE_VALUE)
             CloseHandle(logH);
-        err = "could not build the handle list";
+        err = "could not build the process attributes";
+        Kill();
+        return false;
+    }
+
+    HANDLE hostToken = diagNoToken ? nullptr : MakeHostToken(err);
+    if (!hostToken && !diagNoToken)
+    {
+        DeleteProcThreadAttributeList(attrs);
+        CloseHandle(rd);
+        if (logH != INVALID_HANDLE_VALUE)
+            CloseHandle(logH);
         Kill();
         return false;
     }
@@ -179,6 +345,9 @@ bool AmberXController::Start(std::string& err)
         cmd += L" --keymap " + quoted(m_launch.keymap);
     if (m_launch.rootful)
         cmd += L" --rootful";
+    if (m_launch.trusted)
+        cmd += L" --trusted";
+    cmd += L" --auth-timeout " + std::to_wstring(m_launch.authTimeoutSeconds);
 
     STARTUPINFOEXW si = {};
     si.StartupInfo.cb = sizeof(si);
@@ -191,21 +360,29 @@ bool AmberXController::Start(std::string& err)
         si.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
     }
     PROCESS_INFORMATION pi = {};
-    const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE,
-                                   EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED |
-                                       CREATE_NO_WINDOW,
-                                   nullptr, nullptr, &si.StartupInfo, &pi);
+    const BOOL ok = hostToken
+        ? CreateProcessAsUserW(hostToken, nullptr, cmd.data(), nullptr, nullptr, TRUE,
+                               EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                               nullptr, nullptr, &si.StartupInfo, &pi)
+        : CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE,
+                         EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                         nullptr, nullptr, &si.StartupInfo, &pi);
+    const DWORD launchError = GetLastError();
     DeleteProcThreadAttributeList(attrs);
+    if (hostToken)
+        CloseHandle(hostToken);
     CloseHandle(rd);   // the child has its own copy now
     if (logH != INVALID_HANDLE_VALUE)
         CloseHandle(logH);
     if (!ok)
     {
-        err = "could not start AmberXHost.exe (is it next to AmberSSH.exe?)";
+        err = "could not start AmberXHost.exe under the restricted token (error " +
+              std::to_string(launchError) + "; is it next to AmberSSH.exe?)";
         Kill();
         return false;
     }
     m_proc = pi.hProcess;
+    m_confinement = ReadConfinement(m_proc);
     // Assigned before it runs a single instruction, so there is no window in
     // which the host exists outside the job.
     if (!AssignProcessToJobObject(m_job, m_proc))
@@ -222,7 +399,15 @@ bool AmberXController::Start(std::string& err)
     // ---- connect and handshake -----------------------------------------
     if (!WaitForClient(m_srv.h, 10000))
     {
-        err = "the host did not connect";
+        // Say whether the host is still alive (it cannot reach the pipe) or
+        // already gone (and with what code): the two have different causes.
+        DWORD code = 0;
+        char detail[96];
+        if (WaitForSingleObject(m_proc, 0) == WAIT_OBJECT_0 && GetExitCodeProcess(m_proc, &code))
+            snprintf(detail, sizeof detail, " (host exited with 0x%08lx before connecting)", code);
+        else
+            snprintf(detail, sizeof detail, " (host still running; it could not open the pipe)");
+        err = std::string("the host did not connect") + detail;
         Kill();
         return false;
     }
@@ -306,6 +491,12 @@ bool AmberXController::CloseChannel(uint32_t id)
     f.type = MsgType::ChannelClose;
     f.channel = id;
     return m_pipe.WriteFrame(f);
+}
+
+void AmberXController::KillHostForTest()
+{
+    if (m_proc)
+        TerminateProcess(m_proc, 99);
 }
 
 PipeRead AmberXController::Poll(Frame& out, DWORD timeoutMs)
@@ -418,6 +609,100 @@ int RunPreview()
             line("second host alive", c.Alive());
             c.Stop();
             line("second host exited", !c.Alive());
+        }
+    }
+
+    // ---- Phase 5 -----------------------------------------------------------
+    // Each host below is started, given the cookie, driven, and stopped.
+    auto startWithCookie = [&](AmberXController& h, const AmberXController::Launch& l, const char* what) -> bool {
+        h.Configure(l);
+        std::string e;
+        if (!h.Start(e))
+        {
+            line(what, false, e);
+            return false;
+        }
+        line(what, true, h.Confinement());
+        h.SetCookie(std::vector<uint8_t>(16, 0x42), 0);
+        Frame f;
+        uint32_t open = 0; uint64_t bytes = 0; bool cookie = false;
+        const ULONGLONG until = GetTickCount64() + 5000;
+        while (!cookie && GetTickCount64() < until)
+            if (h.Poll(f, 500) == PipeRead::Ok && f.type == MsgType::HostStatus)
+                ParseHostStatus(f.payload, open, bytes, cookie);
+        return cookie;
+    };
+    auto logHasSecret = [&]() -> bool {
+        FILE* lf = _wfopen(HostLogPath().c_str(), L"rb");
+        if (!lf)
+            return false;
+        std::string all;
+        char buf[4096];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof buf, lf)) > 0)
+            all.append(buf, n);
+        fclose(lf);
+        // the cookie is sixteen 0x42 bytes: neither its hex nor the raw bytes may appear
+        return all.find("4242424242424242") != std::string::npos ||
+               all.find(std::string(16, 'B')) != std::string::npos;
+    };
+    {
+        AmberXController r;
+        if (startWithCookie(r, launch, "restricted host started (confinement read back)"))
+        {
+            line("host runs at low integrity with its privileges stripped",
+                 r.Confinement().find("integrity=Low") != std::string::npos &&
+                     r.Confinement().find("privileges=1") != std::string::npos,
+                 r.Confinement());
+            failures += RunPreviewTrustChecks(r, false, [&](const char* step, bool ok, const std::string& detail) {
+                fprintf(out, "%-44s %s%s%s\n", step, ok ? "ok" : "FAIL", detail.empty() ? "" : "  ", detail.c_str());
+            });
+            r.Stop();
+            line("cookie absent from the host log", !logHasSecret());
+        }
+    }
+    {
+        AmberXController t;
+        AmberXController::Launch lt = launch;
+        lt.trusted = true;
+        lt.modeLabel = "X11 TRUSTED";
+        if (startWithCookie(t, lt, "trusted host started"))
+        {
+            failures += RunPreviewTrustChecks(t, true, [&](const char* step, bool ok, const std::string& detail) {
+                fprintf(out, "%-44s %s%s%s\n", step, ok ? "ok" : "FAIL", detail.empty() ? "" : "  ", detail.c_str());
+            });
+            t.Stop();
+        }
+    }
+    {
+        AmberXController u;
+        AmberXController::Launch lu = launch;
+        lu.authTimeoutSeconds = 2;
+        if (startWithCookie(u, lu, "host with a 2 s authorization timeout started"))
+        {
+            failures += RunPreviewTimeoutCheck(u, [&](const char* step, bool ok, const std::string& detail) {
+                fprintf(out, "%-44s %s%s%s\n", step, ok ? "ok" : "FAIL", detail.empty() ? "" : "  ", detail.c_str());
+            });
+            u.Stop();
+        }
+    }
+    {
+        // A host that dies under the controller: the controller notices,
+        // stays alive, and can start another.
+        AmberXController k;
+        if (startWithCookie(k, launch, "host for the crash test started"))
+        {
+            k.KillHostForTest();
+            Frame f;
+            PipeRead r = PipeRead::Ok;
+            const ULONGLONG until = GetTickCount64() + 5000;
+            while (r == PipeRead::Ok && GetTickCount64() < until)
+                r = k.Poll(f, 500);
+            line("controller sees the host crash as a closed pipe", r == PipeRead::Closed || r == PipeRead::Bad || !k.Alive());
+            std::string e;
+            line("controller starts a new host after the crash", k.Start(e), e);
+            k.Stop();
+            line("no host left after the crash test", !k.Alive());
         }
     }
     fprintf(out, "\n%s\n", failures ? "PREVIEW FAILED" : "PREVIEW PASSED");
