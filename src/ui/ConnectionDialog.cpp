@@ -1366,7 +1366,9 @@ void ConnectionDialog::DefineFields()
     num(Page::Vnc, &P::vncCustomH, L"Custom height", 90);
     num(Page::Vnc, &P::vncGlow, L"Glow % (bloom on the desktop; the terminal's is 100)", 90);
     num(Page::Vnc, &P::vncVividness, L"Vividness % (saturation and contrast; 100 = the decoded colours)", 90);
-    num(Page::Vnc, &P::vncMotion, L"Motion speed % (the swarm's drift, the motion style and the effects)", 90);
+    num(Page::Vnc, &P::vncMotion, L"Motion speed % (25-800; the swarm's drift, the motion style and the effects)", 90);
+    choice(Page::Vnc, Kind::Combo, &P::vncTransition, L"Redraw style (how a changed region appears)",
+           { L"None: the new pixels at once", L"Burn", L"Dissolve", L"Scan wipe", L"Emboss flash" }, 0, 220);
     chk(Page::Vnc, &P::vncFxShock, L"Effect: a click sends a shockwave (right click pulls inward)");
     choice(Page::Vnc, Kind::Combo, &P::vncShockStyle, L"Shockwave style",
            { L"Ring", L"Water drop (ripples)", L"Splash", L"Vortex" }, 0, 200);

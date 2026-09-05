@@ -286,6 +286,26 @@ the swarm forces (curl, motion style, the pointer's push) stay scaled by
 (1 − solidity) and are zero there. Turn all four off for the pixel-exact
 picture the acceptance tests verify.
 
+## Redraw styles
+
+How a changed region appears, chosen on the VNC page or from the menu.
+Two textures make them possible: what each pixel was before its last
+change (copied out of the framebuffer texture before each upload
+overwrites it) and when it changed (a timestamp the energy pass writes for
+every marked pixel). With the old colour, the new colour, the change age
+and the particle's seed, each style is one small function
+(`Redraw` in `desktop_draw.hlsl`), runs 0.32 s, and ends exactly on the
+new colour. Any style but None is an effect: the picture is not
+pixel-exact during those 0.32 s, and the self-check runs with None.
+
+| style | what happens |
+|---|---|
+| None | the new pixels at once (the exact contract) |
+| Burn | the old colour heats to a flame, chars to near-black, and the new picture appears through a ragged front the seed decides |
+| Dissolve | each pixel flips from old to new at its own moment |
+| Scan wipe | a bright line sweeps down each 48-row band with the new picture behind it |
+| Emboss flash | the new region appears as its edges alone, a bright relief, then the flat colour floods in behind them |
+
 ## The VNC menu
 
 A **VNC** menu sits beside Effects on the menu bar (and takes every skin
@@ -296,8 +316,9 @@ starts from.
 
 | entry | what it sets |
 |---|---|
-| Particle Speed: Slow / Normal / Fast / Faster / Frenzy | Motion speed 50 / 100 / 200 / 300 / 400 % |
+| Particle Speed: Slow / Normal / Fast / Faster / Fastest / Custom | Motion speed 50 / 100 / 200 / 400 / 800 %, or any value 25–800 from a prompt |
 | Shockwave Style: Ring / Water Drop / Splash / Vortex | the click's shockwave (below) |
+| Redraw Style: None / Burn / Dissolve / Scan Wipe / Emboss Flash | how a changed region appears (above) |
 | Shockwave on Click, Edge Glow, Heat on Change, Materialise on Connect | the four effect switches |
 | Desktop Size: the server's own / fit this window / presets / custom | asks the server at once; fit then follows the window |
 | Refresh Screen, View Only, Send Ctrl+Alt+Del, Send Clipboard to Server | as in the palette |

@@ -20,6 +20,49 @@ StructuredBuffer<DeskParticle> gParticles : register(t0);
 Texture2D<float4>              gFrame     : register(t1);   // B8G8R8A8_UNORM: sRGB-encoded bytes
 Texture2D<float4>              gCursor    : register(t2);   // the pointer's shape, premultiplied alpha
 Texture2D<float>               gEnergy    : register(t3);   // disturbance energy, sampled resolution
+Texture2D<float4>              gPrev      : register(t4);   // each pixel before its last change
+Texture2D<float>               gStamp     : register(t5);   // when it changed (seconds), sampled resolution
+
+// The redraw transitions: how a changed pixel goes from what it was to
+// what it is, over transitionSecs, by t in 0..1 and the particle's seed.
+// Each ends exactly on the new colour; a value above 1 mid-way is meant to
+// bloom for a moment (burn's flame, the scan line, the emboss relief).
+float3 Redraw(int style, float t, float3 oldc, float3 newc, float seed, float edge, float2 fp)
+{
+    if (style == 1)
+    {
+        // burn: heat to a flame, char to near-black, then the new picture
+        // appears through a ragged front the seed decides
+        const float3 flame = float3(1.7, 0.6, 0.12);
+        const float front = 0.5 + 0.45 * seed;
+        if (t < 0.22)
+            return lerp(oldc, flame, t / 0.22);
+        if (t < front)
+            return lerp(flame, float3(0.02, 0.006, 0.0), saturate((t - 0.22) / max(front - 0.22, 0.01)));
+        return newc;
+    }
+    if (style == 2)
+        return t > seed ? newc : oldc;   // dissolve: each pixel flips at its own moment
+    if (style == 3)
+    {
+        // scan wipe: a bright line sweeps down each 48-row band, the new
+        // picture behind it
+        const float band = frac(fp.y / 48.0);
+        if (abs(t - band) < 0.03)
+            return float3(1.5, 1.5, 1.5);
+        return t > band ? newc : oldc;
+    }
+    if (style == 4)
+    {
+        // emboss flash: the new region as its edges alone, a bright relief,
+        // then the flat colour floods in behind them
+        const float3 relief = edge.xxx * 2.2;
+        if (t < 0.3)
+            return relief;
+        return lerp(relief, newc, (t - 0.3) / 0.7);
+    }
+    return newc;
+}
 
 // The shockwave as a refraction: a particle stays on its pixel and takes
 // its colour from a displaced source pixel, so the picture itself ripples
@@ -39,7 +82,7 @@ float2 ShockRefraction(float2 fp)
     const float2 ds = fp - centre;
     const float sd = max(length(ds), 1.0);
     const float2 away = ds / sd;
-    const float amp = 7.0 * shockAmp * fxShock;   // pixels of displacement at full strength
+    const float amp = 18.0 * shockAmp * fxShock;   // pixels of displacement at full strength
     const int style = int(shockStyle + 0.5);
     if (style == 1)
     {
@@ -99,6 +142,7 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     float lift = 0.0;   // screen px upward, the heat effect
     float edge = 0.0;   // 0..1 luminance-gradient strength, the edge effect
     float heat = 0.0;   // 0..1 disturbance energy, the heat effect
+    int2 at = int2(0, 0);   // the framebuffer pixel the colour came from
     if (isCursor)
     {
         // the cluster's particles sample the cursor shape by their seed
@@ -126,7 +170,7 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
         HomeOf(iid, src, home, sub);
         // the shockwave refracts: the colour comes from a displaced pixel
         const float2 refract = ShockRefraction(float2(src) + 0.5);
-        const int2 at = clamp(int2(floor(float2(src) + 0.5 + refract)), int2(0, 0), int2(int(fbW) - 1, int(fbH) - 1));
+        at = clamp(int2(floor(float2(src) + 0.5 + refract)), int2(0, 0), int2(int(fbW) - 1, int(fbH) - 1));
         // B8G8R8A8_UNORM reads as (b,g,r,a) in .rgba order already swizzled
         // by the format: .rgb is red, green, blue
         const float4 c = gFrame.Load(int3(at, 0));
@@ -169,6 +213,26 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     // The base colour never exceeds 1: a white window must not bloom. Only
     // the effects' own additions may, and they are bounded.
     rgb = clamp(rgb, 0.0, 1.0);
+    // The redraw transition, for a pixel that changed within transitionSecs:
+    // after the clamp, so its flame, line or relief may bloom for a moment.
+    if (transition > 0.5 && !isCursor)
+    {
+        const float age = time - gStamp.Load(int3(at / max(stride, 1u), 0));
+        if (age >= 0.0 && age < transitionSecs)
+        {
+            const float3 oldc = clamp(SrgbToLinearExact(gPrev.Load(int3(at, 0)).rgb), 0.0, 1.0);
+            float edgeNew = edge;
+            if (fxEdge <= 0.0)
+            {
+                // the emboss relief needs the gradient even with edge glow off
+                const float gx = LumaAt(at + int2(1, 0)) - LumaAt(at - int2(1, 0));
+                const float gy = LumaAt(at + int2(0, 1)) - LumaAt(at - int2(0, 1));
+                edgeNew = saturate(sqrt(gx * gx + gy * gy) * edgeGain);
+            }
+            rgb = Redraw(int(transition + 0.5), age / transitionSecs, oldc, rgb, UnpackSeed(p.extra), edgeNew,
+                         float2(at));
+        }
+    }
     rgb *= 1.0 + edge * 0.35;                              // edges: a little past 1, so bloom finds them
     rgb += float3(1.0, 0.55, 0.15) * heat * 0.6;            // heat: an amber tint that cools away
 

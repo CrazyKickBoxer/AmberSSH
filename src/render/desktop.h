@@ -54,7 +54,7 @@ struct DesktopCB
     float cursorScale = 0, cursorW = 0, cursorH = 0, motion = 1;
     float fxShock = 0, fxEdge = 0, fxHeat = 0, fxMaterialise = 0;
     float bornTime = -1e6f, shockAmp = 1, edgeGain = 4, vivid = 1;
-    float shockStyle = 0, pad5 = 0, pad6 = 0, pad7 = 0;
+    float shockStyle = 0, transition = 0, transitionSecs = 0.32f, pad7 = 0;
 };
 static_assert(sizeof(DesktopCB) == 60 * 4, "DesktopCB must stay 60 scalars, mirrored in HLSL");
 static_assert(sizeof(DesktopCB) % 16 == 0, "constant buffers are 16-byte aligned");
@@ -98,6 +98,11 @@ public:
         float shockX = 0, shockY = 0, shockTime = -1;
         float shockAmp = 1;             // +1 outward, negative inward
         int shockStyle = 0;             // 0 ring, 1 water drop, 2 splash, 3 vortex
+        // How a changed pixel redraws, from its old colour to its new one
+        // over transitionSecs: 0 at once, 1 burn, 2 dissolve, 3 scan wipe,
+        // 4 emboss flash. Anything but 0 is an effect (not pixel-exact).
+        int transition = 0;
+        float transitionSecs = 0.32f;
         // The effects, 0 off .. 1 full (docs/vnc.md, "Effects"). Any of them
         // above 0 takes the desktop out of faithful mode: the picture is
         // exact only once they have settled, and edge glow never settles.
@@ -173,6 +178,13 @@ private:
     ComPtr<ID3D12Resource> m_energy;      // R16_FLOAT sampledW x sampledH
     ComPtr<ID3D12Resource> m_inject;      // R8_UNORM sampledW x sampledH
     ComPtr<ID3D12Resource> m_cursor;      // B8G8R8A8_UNORM, up to kMaxCursorDim square
+    // For the redraw transitions: what each changed pixel was before its
+    // last change (copied out of m_frame before the upload overwrites it),
+    // and when it changed (seconds, written by the energy pass)
+    ComPtr<ID3D12Resource> m_prev;        // B8G8R8A8_UNORM fbW x fbH
+    ComPtr<ID3D12Resource> m_stamp;       // R32_FLOAT sampledW x sampledH
+    D3D12_RESOURCE_STATES m_prevState = D3D12_RESOURCE_STATE_COPY_DEST;
+    D3D12_RESOURCE_STATES m_stampState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES m_particleState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES m_frameState = D3D12_RESOURCE_STATE_COPY_DEST;
     D3D12_RESOURCE_STATES m_injectState = D3D12_RESOURCE_STATE_COPY_DEST;
@@ -182,9 +194,11 @@ private:
     D3D12_RESOURCE_STATES m_energyState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
     // descriptors, allocated once and rewritten on Configure: the draw's
-    // table is three consecutive SRVs (frame, cursor, energy)
+    // table is five consecutive SRVs (frame, cursor, energy, prev, stamp);
+    // the energy pass's three consecutive UAVs (energy, inject, stamp)
     uint32_t m_slotFrameSrv = UINT32_MAX, m_slotCursorSrv = UINT32_MAX, m_slotEnergySrv = UINT32_MAX;
-    uint32_t m_slotEnergyUav = UINT32_MAX, m_slotInjectUav = UINT32_MAX;
+    uint32_t m_slotPrevSrv = UINT32_MAX, m_slotStampSrv = UINT32_MAX;
+    uint32_t m_slotEnergyUav = UINT32_MAX, m_slotInjectUav = UINT32_MAX, m_slotStampUav = UINT32_MAX;
     double m_bornTime = -1e6;                     // Params::time at the last reset
 
     // the CPU shadow of the framebuffer, for colour deltas

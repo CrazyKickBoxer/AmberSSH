@@ -48,14 +48,16 @@ enum VncMenuId : int
     // The VNC menu's ranges, above every other id (see menu-id ranges).
     // These change the ACTIVE TAB's copy of its profile; the connection
     // manager holds the defaults.
-    IdmVncMotionFirst = 41800,     // +0..4 -> 50 / 100 / 200 / 300 / 400 %
-    IdmVncMotionLast = IdmVncMotionFirst + 4,
+    IdmVncMotionFirst = 41800,     // +0..4 -> 50 / 100 / 200 / 400 / 800 %, +5 custom (a prompt)
+    IdmVncMotionLast = IdmVncMotionFirst + 5,
     IdmVncShockFirst = 41810,      // +0..3 -> ring / water drop / splash / vortex
     IdmVncShockLast = IdmVncShockFirst + 3,
     IdmVncFxFirst = 41820,         // +0..3 -> shock / edge / heat / materialise toggles
     IdmVncFxLast = IdmVncFxFirst + 3,
     IdmVncSizeFirst = 41830,       // +0..7 -> the Desktop size choices
     IdmVncSizeLast = IdmVncSizeFirst + 7,
+    IdmVncRedrawFirst = 41840,     // +0..4 -> none / burn / dissolve / scan wipe / emboss flash
+    IdmVncRedrawLast = IdmVncRedrawFirst + 4,
 };
 
 class App
@@ -214,6 +216,8 @@ private:
     void VncCommand(int id);                     // the palette / menu entries
     bool VncMenuCommand(int id);                 // the VNC menu's ranges; true when taken
     void BuildVncMenu(HMENU bar);                // the VNC menu, appended to the bar
+    // The area a desktop may occupy: between the title bar and the foot bar.
+    void VncContentArea(uint32_t& w, uint32_t& h, float& top) const;
     void UpdateVncMenuChecks();
     // The Windows clipboard to the server, through the paste guard first.
     // `typeIt` also presses V afterwards (Ctrl is already held): Ctrl+V.

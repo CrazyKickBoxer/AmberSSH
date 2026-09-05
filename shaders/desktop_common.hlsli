@@ -42,7 +42,9 @@ cbuffer DesktopCB : register(b1)
     float bornTime, shockAmp, edgeGain, vivid;
     // shockStyle: 0 ring, 1 water drop (concentric ripples), 2 splash
     // (a burst with an upward lean), 3 vortex (a swirl that draws in)
-    float shockStyle, pad5, pad6, pad7;
+    // transition: how a changed pixel redraws — 0 at once, 1 burn, 2
+    // dissolve, 3 scan wipe, 4 emboss flash — over transitionSecs
+    float shockStyle, transition, transitionSecs, pad7;
 };
 
 // materialise runs this long after bornTime: the flight home, then exact

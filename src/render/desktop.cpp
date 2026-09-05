@@ -79,11 +79,11 @@ bool DesktopParticles::Init(Device& dev, ShaderCompiler& sc)
     m_dev = &dev;
     ID3D12Device* d = dev.Dev();
 
-    // ---- energy pass: CBV(b1) + table { UAV u0 energy, UAV u1 inject } ------
+    // ---- energy pass: CBV(b1) + table { UAV u0 energy, u1 inject, u2 stamp } --
     {
         D3D12_DESCRIPTOR_RANGE range = {};
         range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-        range.NumDescriptors = 2;
+        range.NumDescriptors = 3;
         range.BaseShaderRegister = 0;
         range.OffsetInDescriptorsFromTableStart = 0;
         D3D12_ROOT_PARAMETER params[2] = {};
@@ -130,11 +130,11 @@ bool DesktopParticles::Init(Device& dev, ShaderCompiler& sc)
         pd.CS = cs.Bytecode();
         ThrowIfFailed(d->CreateComputePipelineState(&pd, IID_PPV_ARGS(&m_simPSO)), "desktop sim PSO");
     }
-    // ---- draw: CBV(b1) + SRV(t0 particles) + table { SRV t1 frame, t2 cursor, t3 energy }
+    // ---- draw: CBV(b1) + SRV(t0 particles) + table { SRV t1 frame, t2 cursor, t3 energy, t4 prev, t5 stamp }
     {
         D3D12_DESCRIPTOR_RANGE range = {};
         range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        range.NumDescriptors = 3;
+        range.NumDescriptors = 5;
         range.BaseShaderRegister = 1;
         range.OffsetInDescriptorsFromTableStart = 0;
         D3D12_ROOT_PARAMETER params[3] = {};
@@ -182,25 +182,30 @@ bool DesktopParticles::Init(Device& dev, ShaderCompiler& sc)
         ThrowIfFailed(d->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&m_drawOver)), "desktop draw PSO (over)");
     }
 
-    // descriptors: two consecutive pairs
-    m_slotEnergyUav = dev.AllocSrv();
-    m_slotInjectUav = dev.AllocSrv();
-    if (m_slotInjectUav != m_slotEnergyUav + 1)
+    // descriptors: the energy pass's consecutive triple ...
+    for (int attempt = 0; attempt < 2; ++attempt)
     {
         m_slotEnergyUav = dev.AllocSrv();
         m_slotInjectUav = dev.AllocSrv();
+        m_slotStampUav = dev.AllocSrv();
+        if (m_slotInjectUav == m_slotEnergyUav + 1 && m_slotStampUav == m_slotEnergyUav + 2)
+            break;
     }
-    // ... and the draw's triple
+    // ... and the draw's consecutive five
     for (int attempt = 0; attempt < 2; ++attempt)
     {
         m_slotFrameSrv = dev.AllocSrv();
         m_slotCursorSrv = dev.AllocSrv();
         m_slotEnergySrv = dev.AllocSrv();
-        if (m_slotCursorSrv == m_slotFrameSrv + 1 && m_slotEnergySrv == m_slotFrameSrv + 2)
+        m_slotPrevSrv = dev.AllocSrv();
+        m_slotStampSrv = dev.AllocSrv();
+        if (m_slotCursorSrv == m_slotFrameSrv + 1 && m_slotEnergySrv == m_slotFrameSrv + 2 &&
+            m_slotPrevSrv == m_slotFrameSrv + 3 && m_slotStampSrv == m_slotFrameSrv + 4)
             break;
     }
-    if (m_slotInjectUav != m_slotEnergyUav + 1 || m_slotCursorSrv != m_slotFrameSrv + 1 ||
-        m_slotEnergySrv != m_slotFrameSrv + 2)
+    if (m_slotInjectUav != m_slotEnergyUav + 1 || m_slotStampUav != m_slotEnergyUav + 2 ||
+        m_slotCursorSrv != m_slotFrameSrv + 1 || m_slotEnergySrv != m_slotFrameSrv + 2 ||
+        m_slotPrevSrv != m_slotFrameSrv + 3 || m_slotStampSrv != m_slotFrameSrv + 4)
         return false;
 
     // the cursor texture exists from the start, empty
@@ -278,6 +283,31 @@ bool DesktopParticles::Configure(uint32_t fbW, uint32_t fbH, uint32_t density)
                            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST,
                            L"desktop inject");
     m_injectState = D3D12_RESOURCE_STATE_COPY_DEST;
+    m_prev = MakeTexture(d, DXGI_FORMAT_B8G8R8A8_UNORM, fbW, fbH, D3D12_RESOURCE_FLAG_NONE,
+                         D3D12_RESOURCE_STATE_COPY_DEST, L"desktop previous frame");
+    m_prevState = D3D12_RESOURCE_STATE_COPY_DEST;
+    m_stamp = MakeTexture(d, DXGI_FORMAT_R32_FLOAT, L.sampledW, L.sampledH,
+                          D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                          L"desktop change stamp");
+    m_stampState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC us = {};
+        us.Format = DXGI_FORMAT_R32_FLOAT;
+        us.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        d->CreateUnorderedAccessView(m_stamp.Get(), nullptr, &us, m_dev->SrvCpu(m_slotStampUav));
+        D3D12_SHADER_RESOURCE_VIEW_DESC ss = {};
+        ss.Format = DXGI_FORMAT_R32_FLOAT;
+        ss.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        ss.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        ss.Texture2D.MipLevels = 1;
+        d->CreateShaderResourceView(m_stamp.Get(), &ss, m_dev->SrvCpu(m_slotStampSrv));
+        D3D12_SHADER_RESOURCE_VIEW_DESC sp = {};
+        sp.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        sp.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        sp.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sp.Texture2D.MipLevels = 1;
+        d->CreateShaderResourceView(m_prev.Get(), &sp, m_dev->SrvCpu(m_slotPrevSrv));
+    }
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC ue = {};
     ue.Format = DXGI_FORMAT_R16_FLOAT;
@@ -420,10 +450,30 @@ void DesktopParticles::Upload(ID3D12GraphicsCommandList* cl, FrameContext& frame
 {
     if (!Ready() || d.rects.empty() || d.width != m_layout.fbW || d.height != m_layout.fbH)
         return;
+    const uint32_t W = m_layout.fbW, H = m_layout.fbH, S = m_layout.stride;
+
+    // What the changed rectangles were, kept for the redraw transitions:
+    // copied out of the framebuffer texture before the upload overwrites it
+    Transition(cl, m_frame.Get(), m_frameState, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Transition(cl, m_prev.Get(), m_prevState, D3D12_RESOURCE_STATE_COPY_DEST);
+    for (const Rect& r : d.rects)
+    {
+        if (static_cast<uint32_t>(r.x) + r.w > W || static_cast<uint32_t>(r.y) + r.h > H || r.w == 0 || r.h == 0)
+            continue;
+        D3D12_TEXTURE_COPY_LOCATION dst = {};
+        dst.pResource = m_prev.Get();
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dst.SubresourceIndex = 0;
+        D3D12_TEXTURE_COPY_LOCATION src = {};
+        src.pResource = m_frame.Get();
+        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        src.SubresourceIndex = 0;
+        D3D12_BOX box = { r.x, r.y, 0, static_cast<UINT>(r.x + r.w), static_cast<UINT>(r.y + r.h), 1 };
+        cl->CopyTextureRegion(&dst, r.x, r.y, 0, &src, &box);
+    }
     Transition(cl, m_frame.Get(), m_frameState, D3D12_RESOURCE_STATE_COPY_DEST);
     Transition(cl, m_inject.Get(), m_injectState, D3D12_RESOURCE_STATE_COPY_DEST);
 
-    const uint32_t W = m_layout.fbW, H = m_layout.fbH, S = m_layout.stride;
     size_t base = 0;
     for (const Rect& r : d.rects)
     {
@@ -454,7 +504,10 @@ void DesktopParticles::Upload(ID3D12GraphicsCommandList* cl, FrameContext& frame
                     const int dg = std::abs(static_cast<int>((o >> 8) & 0xFF) - static_cast<int>((n >> 8) & 0xFF));
                     const int db = std::abs(static_cast<int>(o & 0xFF) - static_cast<int>(n & 0xFF));
                     const int delta = std::max(dr, std::max(dg, db));
-                    const int burst = std::min(255, static_cast<int>(delta * disturbance));
+                    // at least 1: a changed pixel is always marked, so the
+                    // change stamp (for the redraw transitions) is written
+                    // even at disturbance 0; 1/255 of energy is nothing
+                    const int burst = std::clamp(static_cast<int>(delta * disturbance), 1, 255);
                     uint8_t& cell = injRow[(r.x + xx) / S - sx0];
                     if (burst > cell)
                         cell = static_cast<uint8_t>(burst);
@@ -523,7 +576,10 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
     if (m_needReset)
         m_bornTime = p.time;
     cb.bornTime = static_cast<float>(m_bornTime);
-    const bool anyFx = cb.fxShock > 0.0f || cb.fxEdge > 0.0f || cb.fxHeat > 0.0f || cb.fxMaterialise > 0.0f;
+    cb.transition = static_cast<float>(std::clamp(p.transition, 0, 4));
+    cb.transitionSecs = std::clamp(p.transitionSecs, 0.05f, 2.0f);
+    const bool anyFx = cb.fxShock > 0.0f || cb.fxEdge > 0.0f || cb.fxHeat > 0.0f || cb.fxMaterialise > 0.0f ||
+                       cb.transition > 0.0f;
     cb.motion = std::clamp(p.motion, 0.25f, 4.0f);
     // vividness recolours; the exact contract forbids that, so faithful
     // (solidity 1, no effect) pins it to 1 whatever the profile says
@@ -565,6 +621,7 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
     // ---- energy: decay + inject ----------------------------------------------
     Transition(cl, m_inject.Get(), m_injectState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     Transition(cl, m_energy.Get(), m_energyState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Transition(cl, m_stamp.Get(), m_stampState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     cl->SetComputeRootSignature(m_energyRS.Get());
     cl->SetPipelineState(m_energyPSO.Get());
     cl->SetComputeRootConstantBufferView(0, m_cbGpu);
@@ -594,8 +651,12 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
         cl->ResourceBarrier(1, &b);
     }
     Transition(cl, m_particles.Get(), m_particleState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    // the draw reads the framebuffer, the cursor and the energy in the vertex stage
+    // the draw reads the framebuffer, the cursor, the energy, the previous
+    // frame and the change stamp in the vertex stage
     Transition(cl, m_energy.Get(), m_energyState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(cl, m_stamp.Get(), m_stampState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(cl, m_prev.Get(), m_prevState,
+               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     Transition(cl, m_frame.Get(), m_frameState,
                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     Transition(cl, m_cursor.Get(), m_cursorState,

@@ -92,6 +92,17 @@ bool DesiredDesktopSize(const amber::ConnectionProfile& p, uint32_t availW, uint
 
 } // namespace
 
+void App::VncContentArea(uint32_t& w, uint32_t& h, float& top) const
+{
+    // the title bar above, the status bar (when shown) below: the desktop
+    // fits between them, never under either
+    w = m_device.Width();
+    top = m_titleBarH;
+    const float bottom = m_statusBarH;
+    const float avail = static_cast<float>(m_device.Height()) - top - bottom;
+    h = avail > 1.0f ? static_cast<uint32_t>(avail) : 1u;
+}
+
 amber::VncTab* App::VncActive()
 {
     if (!HasSession())
@@ -198,10 +209,9 @@ void App::PumpVncEvents()
                     // the profile's desktop size, asked as soon as we are in;
                     // the worker holds it until the server's layout is known
                     uint16_t w, h;
-                    const uint32_t availW = m_device.Width();
-                    const uint32_t availH = m_device.Height() > static_cast<uint32_t>(m_titleBarH)
-                                                ? m_device.Height() - static_cast<uint32_t>(m_titleBarH)
-                                                : m_device.Height();
+                    uint32_t availW, availH;
+                    float top;
+                    VncContentArea(availW, availH, top);
                     if (DesiredDesktopSize(s.profile, availW, availH, w, h))
                     {
                         t.session->RequestDesktopSize(w, h);
@@ -330,12 +340,12 @@ void App::RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame)
 
     // "Fit the window": when the content area changes, ask the server for
     // the new size after a pause, so a drag asks once at the end
+    uint32_t areaW, areaH;
+    float areaTop;
+    VncContentArea(areaW, areaH, areaTop);
     if (prof.vncDesktopSize == 1 && t.session->State() == vnc::VncState::Connected)
     {
-        const uint32_t availW = m_device.Width();
-        const uint32_t availH = m_device.Height() > static_cast<uint32_t>(m_titleBarH)
-                                    ? m_device.Height() - static_cast<uint32_t>(m_titleBarH)
-                                    : m_device.Height();
+        const uint32_t availW = areaW, availH = areaH;
         if (availW != t.lastAvailW || availH != t.lastAvailH)
         {
             t.lastAvailW = availW;
@@ -358,14 +368,14 @@ void App::RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame)
     // placement: native when it fits, letterboxed and scaled down when not
     if (t.fbW > 0 && t.fbH > 0)
     {
-        const float availW = static_cast<float>(m_device.Width());
-        const float availH = static_cast<float>(m_device.Height()) - m_titleBarH;
+        const float availW = static_cast<float>(areaW);
+        const float availH = static_cast<float>(areaH);
         float scale = std::min(availW / static_cast<float>(t.fbW), availH / static_cast<float>(t.fbH));
         if (scale >= 1.0f)
             scale = 1.0f;
         t.scale = scale;
         t.dstX = std::floor((availW - static_cast<float>(t.fbW) * scale) * 0.5f);
-        t.dstY = std::floor(m_titleBarH + (availH - static_cast<float>(t.fbH) * scale) * 0.5f);
+        t.dstY = std::floor(areaTop + (availH - static_cast<float>(t.fbH) * scale) * 0.5f);
         t.nativeScale = scale == 1.0f;
     }
 
@@ -414,7 +424,9 @@ void App::RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame)
     p.fxHeat = prof.vncFxHeat ? 1.0f : 0.0f;
     p.fxMaterialise = prof.vncFxMaterialise ? 1.0f : 0.0f;
     p.vivid = static_cast<float>(std::clamp(prof.vncVividness, 50, 200)) / 100.0f;
-    p.motion = static_cast<float>(std::clamp(prof.vncMotion, 25, 400)) / 100.0f;
+    p.motion = static_cast<float>(std::clamp(prof.vncMotion, 25, 800)) / 100.0f;
+    p.transition = std::clamp(prof.vncTransition, 0, 4);
+    p.transitionSecs = 0.32f;
     p.dstX = t.dstX;
     p.dstY = t.dstY;
     p.scale = t.scale;
@@ -679,9 +691,11 @@ void App::VncCommand(int id)
 // effect on the next frame; the connection manager holds the defaults.
 namespace
 {
-const wchar_t* const kVncMotionLabels[] = { L"&Slow (50%)", L"&Normal (100%)", L"&Fast (200%)", L"Fas&ter (300%)",
-                                            L"F&renzy (400%)" };
-const int kVncMotionValues[] = { 50, 100, 200, 300, 400 };
+const wchar_t* const kVncMotionLabels[] = { L"&Slow (50%)", L"&Normal (100%)", L"&Fast (200%)", L"Fas&ter (400%)",
+                                            L"F&astest (800%)", L"&Custom..." };
+const int kVncMotionValues[] = { 50, 100, 200, 400, 800 };   // the sixth entry prompts
+const wchar_t* const kVncRedrawLabels[] = { L"&None (the new pixels at once)", L"&Burn", L"&Dissolve", L"&Scan Wipe",
+                                            L"&Emboss Flash" };
 const wchar_t* const kVncShockLabels[] = { L"&Ring", L"&Water Drop", L"&Splash", L"&Vortex" };
 const wchar_t* const kVncFxLabels[] = { L"&Shockwave on Click", L"&Edge Glow", L"&Heat on Change",
                                         L"&Materialise on Connect" };
@@ -693,11 +707,14 @@ const wchar_t* const kVncSizeLabels[] = { L"The &Server's Own", L"&Fit This Wind
 void App::BuildVncMenu(HMENU bar)
 {
     HMENU motion = CreatePopupMenu();
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < 6; ++i)
         AppendMenuW(motion, MF_STRING, IdmVncMotionFirst + i, kVncMotionLabels[i]);
     HMENU shock = CreatePopupMenu();
     for (int i = 0; i < 4; ++i)
         AppendMenuW(shock, MF_STRING, IdmVncShockFirst + i, kVncShockLabels[i]);
+    HMENU redraw = CreatePopupMenu();
+    for (int i = 0; i < 5; ++i)
+        AppendMenuW(redraw, MF_STRING, IdmVncRedrawFirst + i, kVncRedrawLabels[i]);
     HMENU size = CreatePopupMenu();
     for (int i = 0; i < 8; ++i)
         AppendMenuW(size, MF_STRING, IdmVncSizeFirst + i, kVncSizeLabels[i]);
@@ -705,6 +722,7 @@ void App::BuildVncMenu(HMENU bar)
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_POPUP, reinterpret_cast<UINT_PTR>(motion), L"Particle &Speed");
     AppendMenuW(m, MF_POPUP, reinterpret_cast<UINT_PTR>(shock), L"Shock&wave Style");
+    AppendMenuW(m, MF_POPUP, reinterpret_cast<UINT_PTR>(redraw), L"&Redraw Style");
     for (int i = 0; i < 4; ++i)
         AppendMenuW(m, MF_STRING, IdmVncFxFirst + i, kVncFxLabels[i]);
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
@@ -725,12 +743,13 @@ void App::UpdateVncMenuChecks()
     const amber::ConnectionProfile* p = t ? &Cur().profile : nullptr;
     // the ranges show the active desktop tab's values; with no desktop tab
     // they show the built-in defaults, and the commands say so when used
-    int motionIdx = 2;
-    if (p)
-        for (int i = 0; i < 5; ++i)
-            if (kVncMotionValues[i] == p->vncMotion)
-                motionIdx = i;
+    int motionIdx = p ? 5 : 2;   // a value that is no preset shows as Custom
+    for (int i = 0; i < 5; ++i)
+        if (p && kVncMotionValues[i] == p->vncMotion)
+            motionIdx = i;
     CheckMenuRadioItem(m_menu, IdmVncMotionFirst, IdmVncMotionLast, IdmVncMotionFirst + motionIdx, MF_BYCOMMAND);
+    CheckMenuRadioItem(m_menu, IdmVncRedrawFirst, IdmVncRedrawLast,
+                       IdmVncRedrawFirst + std::clamp(p ? p->vncTransition : 1, 0, 4), MF_BYCOMMAND);
     CheckMenuRadioItem(m_menu, IdmVncShockFirst, IdmVncShockLast,
                        IdmVncShockFirst + std::clamp(p ? p->vncShockStyle : 0, 0, 3), MF_BYCOMMAND);
     CheckMenuRadioItem(m_menu, IdmVncSizeFirst, IdmVncSizeLast,
@@ -754,8 +773,23 @@ bool App::VncMenuCommand(int id)
     amber::ConnectionProfile& p = Cur().profile;
     if (id >= IdmVncMotionFirst && id <= IdmVncMotionLast)
     {
-        p.vncMotion = kVncMotionValues[id - IdmVncMotionFirst];
+        const int idx = id - IdmVncMotionFirst;
+        if (idx < 5)
+            p.vncMotion = kVncMotionValues[idx];
+        else
+        {
+            std::string s = std::to_string(p.vncMotion);
+            if (!PromptText("Particle speed, 25 to 800 %", s))
+                return true;
+            p.vncMotion = std::clamp(atoi(s.c_str()), 25, 800);
+        }
         SetStatus("VNC: particle speed " + std::to_string(p.vncMotion) + "%");
+    }
+    else if (id >= IdmVncRedrawFirst && id <= IdmVncRedrawLast)
+    {
+        p.vncTransition = id - IdmVncRedrawFirst;
+        static const char* names[] = { "none", "burn", "dissolve", "scan wipe", "emboss flash" };
+        SetStatus(std::string("VNC: redraw style ") + names[p.vncTransition]);
     }
     else if (id >= IdmVncShockFirst && id <= IdmVncShockLast)
     {
@@ -775,10 +809,9 @@ bool App::VncMenuCommand(int id)
     {
         p.vncDesktopSize = id - IdmVncSizeFirst;
         // ask now: the fit path re-asks on its own when the window changes
-        const uint32_t availW = m_device.Width();
-        const uint32_t availH = m_device.Height() > static_cast<uint32_t>(m_titleBarH)
-                                    ? m_device.Height() - static_cast<uint32_t>(m_titleBarH)
-                                    : m_device.Height();
+        uint32_t availW, availH;
+        float top;
+        VncContentArea(availW, availH, top);
         uint16_t w, h;
         if (DesiredDesktopSize(p, availW, availH, w, h))
         {
@@ -891,6 +924,10 @@ void App::VncStatusLines(const Session& s, float y)
     if (s.profile.vncFxEdge) fx += " edge";
     if (s.profile.vncFxHeat) fx += " heat";
     if (s.profile.vncFxMaterialise) fx += " materialise";
+    {
+        static const char* redraw[] = { "", " redraw:burn", " redraw:dissolve", " redraw:scan", " redraw:emboss" };
+        fx += redraw[std::clamp(s.profile.vncTransition, 0, 4)];
+    }
     const std::string contract = fx.empty() ? (s.profile.vncSolidity >= 100 && t.nativeScale ? "faithful" : "swarm")
                                             : "FX:" + fx;
     snprintf(line, sizeof line,

@@ -12,6 +12,7 @@
 
 RWTexture2D<float>       gEnergy : register(u0);
 RWTexture2D<unorm float> gInject : register(u1);
+RWTexture2D<float>       gStamp  : register(u2);   // when each pixel last changed (seconds)
 
 [numthreads(16, 16, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID)
@@ -21,5 +22,12 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     const float keep = pow(max(energyDecay, 1e-4), dt);   // retention per second, applied for dt
     const float burst = gInject[id.xy];
     gEnergy[id.xy] = resetFlag ? 0.0 : saturate(gEnergy[id.xy] * keep + burst);
+    // the change stamp, for the redraw transitions: any burst at all means
+    // the pixel changed this frame (the CPU marks changed pixels with at
+    // least 1/255 whatever the disturbance setting)
+    if (resetFlag)
+        gStamp[id.xy] = -1.0e6;
+    else if (burst > 0.0)
+        gStamp[id.xy] = time;
     gInject[id.xy] = 0.0;
 }

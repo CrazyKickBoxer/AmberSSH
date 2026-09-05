@@ -6615,7 +6615,7 @@ void App::UpdateMenuChecks()
 
 bool App::HandleMenuCommand(int id)
 {
-    if (id >= IdmVncMotionFirst && id <= IdmVncSizeLast)
+    if (id >= IdmVncMotionFirst && id <= IdmVncRedrawLast)
         return VncMenuCommand(id);
     if (id >= IdmRiskFirst && id <= IdmRiskLast)
     {
