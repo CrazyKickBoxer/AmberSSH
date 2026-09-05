@@ -115,12 +115,36 @@ The crash handler, the `PutImage` probe and the `address is BEFORE/inside/
 PAST` describer that found this stay in the host: they are bounded, log
 geometry only, and are what turned three theories into one measurement.
 
+### Finding 4 — the session loop found host frames on a tick (GTK 4, "laggy")
+
+With Composite withdrawn, `gnome-text-editor` drew its whole window, took
+clicks (its menu popover opened and repainted) and took keys — the host's
+input log shows every button and keycode arriving — but the user's verdict
+was "sorta responsive but laggy and inconsistent". Not lost input: latency.
+
+AmberSSH's session loop waited on the SSH socket alone (`select` with a
+30 ms timeout) and *polled* the AmberX host's pipe once per pass. A named
+pipe cannot sit in `select()`, so a frame from the host — every event, every
+reply — that arrived while the socket was quiet waited for the tick. A GTK
+interaction is several round trips; 0–30 ms of jitter per trip compounds
+into exactly what was described. `xeyes` never showed it because it polls
+the server continuously, and the harness never saw it because its client is
+chatty and the harness does not go through SSH at all.
+
+The controller now owns the pipe read on a thread, queues frames, and holds
+an event high while the queue has anything in it; the session loop waits on
+that event beside the socket (`WSAEventSelect`, armed for the one wait). The
+F3 diagnostics line reports the measured result — `host wait max/avg` — the
+time frames sat on that queue, which is the loop's own pickup latency.
+Before this change that number was, by construction, 0–30 ms. What GTK 4
+feels like now is the user's call, not this file's.
+
 ## Toolkits
 
 | toolkit | application | backend | distro + version | result | notes |
 |---|---|---|---|---|---|
 | GTK 3 *(both modes)* | `gedit` or `gnome-text-editor` | X11 | | NOT RUN | |
-| GTK 4 | `gnome-text-editor`, `GSK_RENDERER=cairo GDK_BACKEND=x11` | X11 | Fedora 44 (Server) | **CRASHED THE HOST** — fixed (Finding 3), rerun pending | restricted mode; the crash was on the first frame handed over |
+| GTK 4 | `gnome-text-editor`, `GSK_RENDERER=cairo GDK_BACKEND=x11` | X11 | Fedora 44 (Server) | draws, takes input; **latency judged "laggy"** — Finding 4, fixed, rerun pending | restricted mode; Finding 3 fixed the startup crash |
 | Qt 5 | `qt5ct` or `dolphin` | xcb | | NOT RUN | |
 | Qt 6 | any, `QT_QPA_PLATFORM=xcb` | xcb | | NOT RUN | |
 | Tk | `wish` with a small script | X11 | | NOT RUN | |

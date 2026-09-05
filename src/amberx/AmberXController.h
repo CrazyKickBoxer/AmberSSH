@@ -97,8 +97,17 @@ public:
     // shelf. Close asks the application through the X side; it never kills.
     bool SendWindowAction(uint32_t xid, WindowAct act);
     bool CloseChannel(uint32_t id);
-    // Incoming HostStatus / HostError.
+    // Incoming HostStatus / HostError, and every X11 data frame. Once the
+    // host is up these come off a queue that a reader thread feeds, and the
+    // event below is signalled while that queue is non-empty — so the session
+    // loop can sleep on it beside the socket instead of finding host frames
+    // on a tick. Before that (and after Stop) Poll reads the pipe directly.
     PipeRead Poll(Frame& out, DWORD timeoutMs);
+    HANDLE ReadableEvent() const;
+    // How long frames sat on that queue since the last call, in microseconds:
+    // enqueue is arrival, so this is the loop's pickup latency, which is the
+    // number a tick-driven loop is judged by. Zeroed on read.
+    void QueueWait(uint32_t& maxUs, uint32_t& avgUs, uint32_t& frames);
     // Shutdown frame, wait briefly for a clean exit, then the Job Object
     // takes whatever is left.
     void Stop();
@@ -113,6 +122,13 @@ private:
     std::string m_confinement;
     Launch m_launch;
     bool m_ready = false;
+    // The reader thread and its queue; a plain pointer so the header owes
+    // nothing to <thread>. Owned here, started at the end of Start, stopped
+    // first thing in Kill — before the pipe it reads from is closed.
+    struct Reader;
+    Reader* m_reader = nullptr;
+    void StartReader();
+    void StopReader();
     void Kill();
 };
 

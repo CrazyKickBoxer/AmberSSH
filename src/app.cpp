@@ -4285,10 +4285,12 @@ void App::DrawStatusLine()
                                 line, 0.6f, m_sampler);
                 snprintf(line, sizeof(line),
                          "AmberX x11 in %.2f MiB  out %.2f MiB  presents %u  "
-                         "dirty %u  ipc high water %u B  refused %u  gpu n/a%s%s",
+                         "dirty %u  ipc high water %u B  refused %u  "
+                         "host wait max %u us avg %u us (%u)  gpu n/a%s%s",
                          static_cast<double>(ax.x11In) / (1024.0 * 1024.0),
                          static_cast<double>(ax.x11Out) / (1024.0 * 1024.0),
                          ax.presents, ax.dirtyRects, ax.ipcHighWater, ax.rejected,
+                         ax.hostWaitMaxUs, ax.hostWaitAvgUs, ax.hostWaitFrames,
                          ax.lastError.empty() ? "" : "  last error: ",
                          ax.lastError.c_str());
                 m_prims.AddText(m_gm.originX, m_titleBarH + 2.0f + m_gm.cellH * 4.0f,

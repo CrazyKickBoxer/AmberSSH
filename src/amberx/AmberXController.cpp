@@ -3,10 +3,15 @@
 #include <psapi.h>
 #include <sddl.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <deque>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <utility>
 
 #include "control/Handshake.h"
 #include "PreviewClient.h"
@@ -192,6 +197,7 @@ bool AmberXController::Alive() const
 
 void AmberXController::Kill()
 {
+    StopReader();   // before the handle it reads from goes away
     m_ready = false;
     m_pipe.Close();
     if (m_srv.h != INVALID_HANDLE_VALUE)
@@ -457,6 +463,9 @@ bool AmberXController::Start(std::string& err)
         return false;
     }
     m_ready = true;
+    // From here on the pipe's reads belong to the reader thread; the
+    // handshake above was the last direct one.
+    StartReader();
     return true;
 }
 
@@ -548,11 +557,136 @@ void AmberXController::KillHostForTest()
         TerminateProcess(m_proc, 99);
 }
 
+// ------------------------------------------------------------------ reader
+// The session loop used to find host frames by polling the pipe on its own
+// tick — 30 ms when the socket was quiet — so every event and reply from the
+// host waited up to a tick before it went anywhere. GTK 4 felt that as
+// input that was "laggy and inconsistent", which is what tick-quantised
+// latency compounded over a few round trips is. Now a thread owns the pipe
+// read, queues frames, and holds an event high while the queue has anything
+// in it; the loop sleeps on that event beside the socket and wakes the
+// moment the host speaks.
+//
+// The pipe is overlapped I/O: this thread's reads and the session thread's
+// writes use separate events and separate OVERLAPPEDs on one handle, which
+// is exactly what overlapped handles are for. The only ordering that matters
+// is that the thread is stopped before the handle is closed — Kill does that.
+struct AmberXController::Reader
+{
+    std::thread th;
+    std::mutex mu;
+    std::deque<std::pair<Frame, uint64_t>> q;   // frame, arrival (QPC us)
+    HANDLE readable = nullptr;                    // manual-reset: high while q is non-empty
+    std::atomic<bool> stop{false};
+    PipeRead end = PipeRead::Ok;                  // why the thread finished, if it has
+    uint64_t waitSumUs = 0, waitMaxUs = 0;
+    uint32_t waited = 0;
+};
+
+static uint64_t NowUs()
+{
+    static LARGE_INTEGER freq = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f; }();
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return static_cast<uint64_t>(t.QuadPart) * 1000000ull / static_cast<uint64_t>(freq.QuadPart);
+}
+
+void AmberXController::StartReader()
+{
+    if (m_reader)
+        return;
+    m_reader = new Reader;
+    m_reader->readable = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    m_reader->th = std::thread([this] {
+        Reader& r = *m_reader;
+        for (;;)
+        {
+            if (r.stop.load())
+                return;
+            Frame f;
+            // A bounded wait rather than INFINITE, so a stop request is
+            // honoured within a quarter second without touching the handle
+            // from another thread.
+            const PipeRead rc = m_pipe.ReadFrame(f, 250);
+            if (rc == PipeRead::Timeout)
+                continue;
+            std::lock_guard<std::mutex> lk(r.mu);
+            if (rc == PipeRead::Ok)
+                r.q.emplace_back(std::move(f), NowUs());
+            else
+                r.end = rc;
+            SetEvent(r.readable);
+            if (rc != PipeRead::Ok)
+                return;
+        }
+    });
+}
+
+void AmberXController::StopReader()
+{
+    if (!m_reader)
+        return;
+    m_reader->stop.store(true);
+    if (m_reader->th.joinable())
+        m_reader->th.join();
+    if (m_reader->readable)
+        CloseHandle(m_reader->readable);
+    delete m_reader;
+    m_reader = nullptr;
+}
+
 PipeRead AmberXController::Poll(Frame& out, DWORD timeoutMs)
 {
     if (!m_ready)
         return PipeRead::Closed;
-    return m_pipe.ReadFrame(out, timeoutMs);
+    if (!m_reader)
+        return m_pipe.ReadFrame(out, timeoutMs);
+    Reader& r = *m_reader;
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        {
+            std::lock_guard<std::mutex> lk(r.mu);
+            if (!r.q.empty())
+            {
+                out = std::move(r.q.front().first);
+                const uint64_t now = NowUs();
+                const uint64_t waited = now > r.q.front().second ? now - r.q.front().second : 0;
+                r.q.pop_front();
+                r.waitSumUs += waited;
+                if (waited > r.waitMaxUs)
+                    r.waitMaxUs = waited;
+                r.waited++;
+                if (r.q.empty() && r.end == PipeRead::Ok)
+                    ResetEvent(r.readable);
+                return PipeRead::Ok;
+            }
+            if (r.end != PipeRead::Ok)
+                return r.end;
+        }
+        if (pass == 0 && timeoutMs > 0)
+            WaitForSingleObject(r.readable, timeoutMs);
+        else
+            break;
+    }
+    return PipeRead::Timeout;
+}
+
+HANDLE AmberXController::ReadableEvent() const
+{
+    return m_reader ? m_reader->readable : nullptr;
+}
+
+void AmberXController::QueueWait(uint32_t& maxUs, uint32_t& avgUs, uint32_t& frames)
+{
+    maxUs = avgUs = frames = 0;
+    if (!m_reader)
+        return;
+    std::lock_guard<std::mutex> lk(m_reader->mu);
+    frames = m_reader->waited;
+    maxUs = static_cast<uint32_t>(m_reader->waitMaxUs);
+    avgUs = frames ? static_cast<uint32_t>(m_reader->waitSumUs / frames) : 0;
+    m_reader->waitSumUs = m_reader->waitMaxUs = 0;
+    m_reader->waited = 0;
 }
 
 void AmberXController::Stop()
@@ -564,7 +698,7 @@ void AmberXController::Stop()
         f.channel = kControlChannel;
         m_pipe.WriteFrame(f);
         Frame ack;
-        m_pipe.ReadFrame(ack, 1000);   // the host's final status, if it sends one
+        Poll(ack, 1000);   // the host's final status, if it sends one
     }
     Kill();
 }

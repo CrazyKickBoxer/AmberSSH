@@ -155,6 +155,12 @@ struct RemoteAppReport
     uint64_t pixmapBytes = 0;
     uint64_t x11In = 0, x11Out = 0;
     uint32_t presents = 0, dirtyRects = 0, ipcHighWater = 0, rejected = 0;
+    // Measured here, not reported by the host: how long host frames sat in
+    // the controller's queue before the session loop picked them up, over
+    // the last report interval. Arrival is enqueue, so this is the loop's
+    // own pickup latency — the number that was 0-30 ms while the loop found
+    // host frames on a tick.
+    uint32_t hostWaitMaxUs = 0, hostWaitAvgUs = 0, hostWaitFrames = 0;
     std::string lastError;       // the host's last reported error, if any
     std::vector<RemoteAppWindow> list;
 };

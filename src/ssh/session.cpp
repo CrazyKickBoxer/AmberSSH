@@ -58,17 +58,50 @@ static std::string Base64(const uint8_t* data, size_t len)
 // Wait for socket readiness in the direction(s) libssh2 asks for.
 #include <mstcpip.h>   // SIO_TCP_INFO / TCP_INFO_v0 (link RTT sampling)
 
-static void WaitSocket(SOCKET sock, LIBSSH2_SESSION* session, int timeoutMs)
+// With `hostReadable` (the AmberX controller's queue event) the wait covers
+// the socket AND the host, so a frame from the display wakes the loop the
+// moment it arrives instead of on the next tick. A named pipe cannot sit in
+// select(), so for that case the socket is armed with WSAEventSelect for this
+// one wait and disarmed after; that leaves the socket non-blocking, which it
+// already is. FD_READ is re-recorded at arming time if data is pending, so a
+// read that became possible while unarmed is never missed. FD_WRITE is only
+// recorded when space frees after a would-block, so a writability change
+// while unarmed can wait for the timeout — no worse than the old tick, and
+// the case a session loop is rarely in.
+static void WaitSocket(SOCKET sock, LIBSSH2_SESSION* session, int timeoutMs,
+                       HANDLE hostReadable = nullptr)
 {
+    int dir = session ? libssh2_session_block_directions(session)
+                      : LIBSSH2_SESSION_BLOCK_INBOUND;
+    if (!(dir & (LIBSSH2_SESSION_BLOCK_INBOUND | LIBSSH2_SESSION_BLOCK_OUTBOUND)))
+        dir = LIBSSH2_SESSION_BLOCK_INBOUND;
+
+    if (hostReadable)
+    {
+        WSAEVENT sev = WSACreateEvent();
+        if (sev != WSA_INVALID_EVENT)
+        {
+            long mask = FD_CLOSE;
+            if (dir & LIBSSH2_SESSION_BLOCK_INBOUND) mask |= FD_READ;
+            if (dir & LIBSSH2_SESSION_BLOCK_OUTBOUND) mask |= FD_WRITE;
+            if (WSAEventSelect(sock, sev, mask) == 0)
+            {
+                HANDLE hs[2] = { sev, hostReadable };
+                WaitForMultipleObjects(2, hs, FALSE, static_cast<DWORD>(timeoutMs));
+                WSAEventSelect(sock, nullptr, 0);
+                WSACloseEvent(sev);
+                return;
+            }
+            WSACloseEvent(sev);
+        }
+        // fall through to the plain wait: the tick is still a bound
+    }
+
     fd_set rfd, wfd;
     FD_ZERO(&rfd);
     FD_ZERO(&wfd);
-    int dir = session ? libssh2_session_block_directions(session)
-                      : LIBSSH2_SESSION_BLOCK_INBOUND;
     if (dir & LIBSSH2_SESSION_BLOCK_INBOUND) FD_SET(sock, &rfd);
     if (dir & LIBSSH2_SESSION_BLOCK_OUTBOUND) FD_SET(sock, &wfd);
-    if (!(dir & (LIBSSH2_SESSION_BLOCK_INBOUND | LIBSSH2_SESSION_BLOCK_OUTBOUND)))
-        FD_SET(sock, &rfd);
     timeval tv;
     tv.tv_sec = timeoutMs / 1000;
     tv.tv_usec = (timeoutMs % 1000) * 1000;
@@ -1641,6 +1674,7 @@ void SshSession::ThreadMain(SshConfig cfg)
                 out.dirtyRects = report.dirtyRects;
                 out.ipcHighWater = report.ipcHighWater;
                 out.rejected = report.rejected;
+                m_amberx->QueueWait(out.hostWaitMaxUs, out.hostWaitAvgUs, out.hostWaitFrames);
                 out.list.reserve(report.windowList.size());
                 for (const auto& w : report.windowList)
                     out.list.push_back({ w.xid, w.flags, w.title });
@@ -1845,7 +1879,7 @@ void SshSession::ThreadMain(SshConfig cfg)
         }
 
         if (!activity)
-            WaitSocket(sock, session, 30);
+            WaitSocket(sock, session, 30, m_amberx ? m_amberx->ReadableEvent() : nullptr);
     }
     closeReason = "disconnected";
     m_cleanClose.store(true);
