@@ -29,7 +29,16 @@ add_executable(AmberTests
     AmberXProtocolTests.cpp
     AmberXFuzzTests.cpp
     AmberXHandshakeTests.cpp
+    VncDesTests.cpp
+    VncProtocolTests.cpp
+    VncClientTests.cpp
+    VncSessionTests.cpp
 
+    ${CMAKE_SOURCE_DIR}/src/vnc/RfbDes.cpp
+    ${CMAKE_SOURCE_DIR}/src/vnc/RfbProtocol.cpp
+    ${CMAKE_SOURCE_DIR}/src/vnc/RfbDecoders.cpp
+    ${CMAKE_SOURCE_DIR}/src/vnc/RfbClient.cpp
+    ${CMAKE_SOURCE_DIR}/src/vnc/VncSession.cpp
     ${CMAKE_SOURCE_DIR}/src/term/vtparser.cpp
     ${CMAKE_SOURCE_DIR}/src/term/grid.cpp
     ${CMAKE_SOURCE_DIR}/src/term/charwidth.cpp
@@ -70,10 +79,12 @@ if(MSVC)
     target_compile_options(AmberTests PRIVATE /W3 /utf-8 /EHsc /MP)
 endif()
 
+find_package(ZLIB REQUIRED)   # the VNC ZRLE decoder, and the tests that deflate fixtures for it
 target_link_libraries(AmberTests PRIVATE
     Catch2::Catch2WithMain
     nlohmann_json::nlohmann_json
-    d3d12 dxgi dxguid advapi32 bcrypt shell32 ole32
+    ZLIB::ZLIB
+    d3d12 dxgi dxguid advapi32 bcrypt shell32 ole32 ws2_32
 )
 
 include(Catch)

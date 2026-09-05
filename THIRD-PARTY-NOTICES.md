@@ -21,6 +21,48 @@ Debug overlay. MIT.
 ## DirectX Shader Compiler (DXC)
 Compiles the HLSL shaders at build time. LLVM Release License / MIT.
 
+## zlib
+Inflate for the RFB ZRLE encoding (`src/vnc/RfbDecoders.cpp`). zlib License.
+Already present in the dependency closure through libssh2; linked directly
+for VNC. Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler.
+
+## vncfree — reference implementation for the VNC client
+<https://github.com/sp00nznet/vncfree> (MIT). Copyright (c) 2026 vncfree
+contributors.
+
+The RFB client in `src/vnc/` follows that project's `docs/design.md` and
+`src/bin/client.rs`: the version-specific handshake rules for RFB 3.3, 3.7
+and 3.8, the connection-spanning ZRLE zlib stream, handling DesktopSize
+before the bounds check, requesting the next update before decoding the
+current one, the CursorShape mask handling, press-before-release input
+ordering with the keysym captured at press time, and the VNC Authentication
+key derivation. The reference is Rust; AmberSSH's implementation is C++20
+written against RFC 6143 with those notes as the guide to its pitfalls. No
+Rust source or runtime is included. Hextile is not in the reference and was
+written from RFC 6143 §7.7.4.
+
+    MIT License
+
+    Copyright (c) 2026 vncfree contributors
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
 ## amber-particle-ssh — design reference
 <https://github.com/CrazyKickBoxer/amber-particle-ssh> (MIT).
 

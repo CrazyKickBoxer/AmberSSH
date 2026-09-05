@@ -71,6 +71,11 @@ set(AMBER_SOURCES
     src/ssh/ring.h
     src/ssh/session.h      src/ssh/session.cpp
     src/ssh/transport.h    src/ssh/transports.cpp
+    src/vnc/RfbDes.h       src/vnc/RfbDes.cpp
+    src/vnc/RfbProtocol.h  src/vnc/RfbProtocol.cpp
+    src/vnc/RfbDecoders.h  src/vnc/RfbDecoders.cpp
+    src/vnc/RfbClient.h    src/vnc/RfbClient.cpp
+    src/vnc/VncSession.h   src/vnc/VncSession.cpp
     src/glyphs/sampler.h   src/glyphs/sampler.cpp
     ${AMBER_CORE_SOURCES}
 )
@@ -112,9 +117,13 @@ endif()
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(directx-dxc CONFIG REQUIRED)        # Microsoft::DirectXShaderCompiler + dxc tool
 
+# zlib is already in the dependency closure through libssh2; VNC's ZRLE
+# decoder links it directly (see THIRD-PARTY-NOTICES.md).
+find_package(ZLIB REQUIRED)
 target_link_libraries(AmberSSH PRIVATE
     ${AMBER_LIBSSH2}
     OpenSSL::SSL OpenSSL::Crypto
+    ZLIB::ZLIB
     Microsoft::DirectXShaderCompiler
     d3d12 dxgi dxguid dwrite dwmapi
     nlohmann_json::nlohmann_json

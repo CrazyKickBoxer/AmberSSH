@@ -41,8 +41,10 @@ inline AuthMethod AuthMethodFromName(const std::string& name)
     return AuthMethod::Password;
 }
 
-// Connection type (PuTTY: SSH / Serial / Other: Telnet, Rlogin, Raw).
-enum class Protocol { Ssh = 0, Telnet = 1, Rlogin = 2, Raw = 3, Serial = 4, Local = 5 };
+// Connection type (PuTTY: SSH / Serial / Other: Telnet, Rlogin, Raw), plus
+// VNC — a remote desktop rather than a terminal: the tab carries a
+// framebuffer instead of a grid (sessions/Session.h, `vnc`).
+enum class Protocol { Ssh = 0, Telnet = 1, Rlogin = 2, Raw = 3, Serial = 4, Local = 5, Vnc = 6 };
 
 inline const char* ProtocolName(Protocol p)
 {
@@ -53,6 +55,7 @@ inline const char* ProtocolName(Protocol p)
     case Protocol::Raw:    return "raw";
     case Protocol::Serial: return "serial";
     case Protocol::Local:  return "local";
+    case Protocol::Vnc:    return "vnc";
     case Protocol::Ssh:    default: return "ssh";
     }
 }
@@ -64,6 +67,7 @@ inline Protocol ProtocolFromName(const std::string& n)
     if (n == "raw")    return Protocol::Raw;
     if (n == "serial") return Protocol::Serial;
     if (n == "local")  return Protocol::Local;
+    if (n == "vnc")    return Protocol::Vnc;
     return Protocol::Ssh;
 }
 
@@ -76,6 +80,7 @@ inline int ProtocolDefaultPort(Protocol p)
     case Protocol::Raw:    return 0;
     case Protocol::Serial: return 0;
     case Protocol::Local:  return 0;
+    case Protocol::Vnc:    return 5900;
     case Protocol::Ssh:    default: return 22;
     }
 }
@@ -280,6 +285,21 @@ struct ConnectionProfile
     // derives it from those three rather than defaulting it to off — which
     // would silently turn a working remote GUI off on upgrade.
     int         remoteGui = 0;
+
+    // ---- VNC (Protocol::Vnc) ---------------------------------------------
+    // The password, when remembered, is the profile's ordinary Password
+    // secret in the Credential Manager: nothing here holds it.
+    std::string vncViaProfileId;     // empty = direct TCP; else a live SSH
+                                     // session (by profile id) to tunnel through
+    bool        vncViewOnly = false; // no keys, pointer or clipboard go out
+    int         vncDensity = 1;      // particles per framebuffer pixel, 1..4
+    int         vncSolidity = 100;   // 0 loose swarm .. 100 faithful desktop
+    int         vncParticleSize = 1; // 1..3 px
+    int         vncDisturbance = 100;// burst strength for changed pixels, 0..200 (%)
+    int         vncEncodings = 0;    // 0 ZRLE first, 1 Hextile first, 2 Raw only
+    int         vncCursorMode = 0;   // 0 local particle cursor (server shape),
+                                     // 1 server-drawn (no cursor extension), 2 hidden
+    int         vncTls = 0;          // 0 off, 1 VeNCrypt required — never downgraded
     // Where remote windows appear: 0 native Windows windows, 1 AmberSSH tabs,
     // 2 AmberSSH panes, 3 ask per application. Only 0 is implemented; the
     // others are accepted, reported, and fall back to native (see PHASE-7-GATE).

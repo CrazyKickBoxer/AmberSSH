@@ -142,6 +142,11 @@ struct FwdListener
     char type = 'L';                 // 'L' local forward, 'D' dynamic SOCKS5
     std::string destHost;            // 'L' only
     int destPort = 0;
+    // The port actually bound. Equals the one asked for, except for a spec
+    // of L0:host:port, which asks for any free loopback port: that is how a
+    // VNC tab raises a tunnel through a live session without guessing a
+    // number, and the ForwardUp event carries this back to it.
+    int boundPort = 0;
 };
 
 struct FwdRemote
@@ -319,7 +324,9 @@ void ParseForwards(const std::string& spec, std::vector<FwdListener>& local,
         int lp = atoi(rest.substr(0, c1).c_str());
         std::string host = rest.substr(c1 + 1, c2 - c1 - 1);
         int dp = atoi(rest.substr(c2 + 1).c_str());
-        if (lp <= 0 || lp > 65535 || dp <= 0 || dp > 65535 || host.empty())
+        // a local port of 0 asks for any free one (see FwdListener::boundPort);
+        // a remote forward has to name the port it wants on the far side
+        if (lp < 0 || lp > 65535 || (kind != 'L' && lp == 0) || dp <= 0 || dp > 65535 || host.empty())
         {
             errors += " " + one + " (bad spec)";
             continue;
@@ -330,7 +337,7 @@ void ParseForwards(const std::string& spec, std::vector<FwdListener>& local,
             l.type = 'L';
             l.destHost = host;
             l.destPort = dp;
-            l.sock = OpenLoopbackListener(lp);
+            l.sock = OpenLoopbackListener(lp, &l.boundPort);
             if (l.sock != INVALID_SOCKET)
                 local.push_back(l);
             else
@@ -1625,7 +1632,15 @@ void SshSession::ThreadMain(SshConfig cfg)
                 if (!err.empty())
                     PostEvent(SshEventType::Status, "forward failed:" + err);
                 for (FwdListener& l : more)
+                {
                     listeners.push_back(l);
+                    // "bound:host:port" — the bound port is the news when the
+                    // spec asked for any free one
+                    if (l.type == 'L')
+                        PostEvent(SshEventType::ForwardUp, std::to_string(l.boundPort) + ":" +
+                                                               l.destHost + ":" +
+                                                               std::to_string(l.destPort));
+                }
                 if (more.empty() && err.empty())
                     PostEvent(SshEventType::Status,
                               "forward not understood: " + spec);

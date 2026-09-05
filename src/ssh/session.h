@@ -177,6 +177,11 @@ enum class SshEventType
     // block on whichever application currently holds it — so the text is
     // handed to the UI thread as an ordinary event and applied there.
     ClipboardText,
+    // A local forward added with AddForward is listening. text =
+    // "bound:host:port" — the bound port is the news when the spec asked
+    // for any free one (L0:host:port), which is how a VNC tab tunnels
+    // through this session without guessing a number.
+    ForwardUp,
 };
 
 struct SshEvent

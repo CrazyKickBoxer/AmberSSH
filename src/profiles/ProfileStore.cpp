@@ -213,6 +213,15 @@ json ToJson(const ConnectionProfile& p)
         {"x11Trust", p.x11Trust == 1 ? 1 : 0},   // session-only trust is not saved
         {"x11Clipboard", p.x11Clipboard},
         {"remoteGui", p.remoteGui},
+        {"vncVia", p.vncViaProfileId},
+        {"vncViewOnly", p.vncViewOnly},
+        {"vncDensity", p.vncDensity},
+        {"vncSolidity", p.vncSolidity},
+        {"vncParticleSize", p.vncParticleSize},
+        {"vncDisturbance", p.vncDisturbance},
+        {"vncEncodings", p.vncEncodings},
+        {"vncCursorMode", p.vncCursorMode},
+        {"vncTls", p.vncTls},
         {"windowMode", p.windowMode},
         {"displayMode", p.displayMode},
         {"displayW", p.displayW},
@@ -381,6 +390,15 @@ bool FromJson(const json& j, ConnectionProfile& out)
     out.x11Display = Get<std::string>(j, "x11Display", d.x11Display);
     out.x11Backend = std::clamp(Get<int>(j, "x11Backend", 0), 0, 1);
     out.x11Trust = std::clamp(Get<int>(j, "x11Trust", 0), 0, 1);
+    out.vncViaProfileId = Get<std::string>(j, "vncVia", std::string());
+    out.vncViewOnly = Get<bool>(j, "vncViewOnly", false);
+    out.vncDensity = std::clamp(Get<int>(j, "vncDensity", 1), 1, 4);
+    out.vncSolidity = std::clamp(Get<int>(j, "vncSolidity", 100), 0, 100);
+    out.vncParticleSize = std::clamp(Get<int>(j, "vncParticleSize", 1), 1, 3);
+    out.vncDisturbance = std::clamp(Get<int>(j, "vncDisturbance", 100), 0, 200);
+    out.vncEncodings = std::clamp(Get<int>(j, "vncEncodings", 0), 0, 2);
+    out.vncCursorMode = std::clamp(Get<int>(j, "vncCursorMode", 0), 0, 2);
+    out.vncTls = std::clamp(Get<int>(j, "vncTls", 0), 0, 1);
     out.x11Clipboard = std::clamp(Get<int>(j, "x11Clipboard", 0), 0, 4);
     // Remote GUI. A profile saved before this field existed does not have the
     // key, and defaulting it to "off" would turn a working remote GUI off on
