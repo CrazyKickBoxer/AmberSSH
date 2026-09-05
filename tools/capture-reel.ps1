@@ -35,8 +35,42 @@ if (-not $SshOnly -and $Capture -and -not $Profile) { throw "no VNC profile: pas
 $out = $Out
 New-Item -ItemType Directory -Force $out | Out-Null
 $cap = "$out\capture.mp4"
+$win = "$out\window.txt"
 $beat = 60.0 / $Bpm
 $length = $Beats * $beat
+
+# The grab has to be of the whole screen — a DX12 swap chain does not come
+# out of a window-only BitBlt — so the window's own rectangle is measured
+# while it is up and the cut is made to that. Nothing outside AmberSSH is in
+# the finished film: not the taskbar, not whatever else is on the desktop.
+Add-Type -TypeDefinition @'
+using System;using System.Runtime.InteropServices;
+public class Win {
+  public struct R { public int L, T, Rt, B; }
+  [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr c);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr FindWindowW(string c, string n);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out R r);
+  [DllImport("user32.dll")] static extern bool SystemParametersInfo(int a, int n, out R r, int f);
+  public static void Dpi() { try { SetProcessDpiAwarenessContext((IntPtr)(-4)); } catch {} }
+  // "x y w h" for what the named window class actually paints, or "" when
+  // it is not up yet. A maximized window's rectangle includes the invisible
+  // resize border and overhangs the screen, and the taskbar sits on top of
+  // whatever is under it — so the visible part is the window intersected
+  // with the work area, which is exactly what the film should be cut to.
+  public static string Rect(string cls) {
+    IntPtr h = FindWindowW(cls, null);
+    if (h == IntPtr.Zero) return "";
+    R w, a;
+    if (!GetWindowRect(h, out w)) return "";
+    if (!SystemParametersInfo(0x0030, 0, out a, 0)) return "";
+    int l = Math.Max(w.L, a.L), t = Math.Max(w.T, a.T);
+    int rt = Math.Min(w.Rt, a.Rt), b = Math.Min(w.B, a.B);
+    if (rt - l < 400 || b - t < 300) return "";
+    return l + " " + t + " " + (rt - l) + " " + (b - t);
+  }
+}
+'@
+[Win]::Dpi()
 
 if ($Capture) {
   $s = "$env:LOCALAPPDATA\AmberSSH\settings.json"; $bak = "$out\settings.bak"; if (Test-Path $s) { Copy-Item $s $bak -Force }
@@ -48,6 +82,18 @@ if ($Capture) {
     $grab = Start-Process $ff -ArgumentList @("-hide_banner","-loglevel","error","-y","-f","gdigrab","-framerate","30","-draw_mouse","0","-video_size","1920x1080","-t","$([int]($length + 20))","-i","desktop","-c:v","libx264","-preset","ultrafast","-crf","16","-pix_fmt","yuv420p",$cap) -PassThru -WindowStyle Hidden
     Start-Sleep -Milliseconds 800
     $app = Start-Process $exe -ArgumentList "--reel" -PassThru
+    # Measure it once it is up and maximized, and keep the rectangle for the cut.
+    Remove-Item $win -ErrorAction SilentlyContinue
+    for ($i = 0; $i -lt 40; $i++) {
+      Start-Sleep -Milliseconds 250
+      $rect = [Win]::Rect("AmberSSHWindow")
+      if ($rect -and ([int](($rect -split ' ')[2]) -gt 400)) {
+        $rect | Set-Content $win -Encoding utf8
+        "window at $rect"
+        break
+      }
+    }
+    if (-not (Test-Path $win)) { "WARNING: window not measured, the cut will use the work area" }
     $grab.WaitForExit()
     "grab finished"
     if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
@@ -104,31 +150,39 @@ if ($Assemble) {
   } else {
     $cards = @(
       # the desktop, first
-      (Card "A LINUX DESKTOP" 0.7 4.5 82 $orb 0.09),
-      (Card "drawn in particles, live over VNC" 1.4 3.8 38 $mic 0.16),
-      (Card "SHOCKWAVES" 3.2 5.6 60 $orb 0.09),
-      (Card "every click is a real click" 3.8 5 32 $mic 0.15),
-      (Card "REAL INPUT" 12.2 4 60 $orb 0.09),
-      (Card "commands running on the far side" 12.8 4 34 $mic 0.15),
-      (Card "IRIS" 15.2 2.4 52 $orb 0.09),
-      (Card "SONIC BOOM" 18.2 2.4 52 $orb 0.09),
-      (Card "SHATTER" 21.2 2.6 52 $orb 0.09),
-      (Card "ODOMETER" 25.2 2.4 52 $orb 0.09),
-      (Card "SHEAR PLATES" 28.2 2.6 52 $orb 0.09),
-      (Card "LIGHT SPEED" 32.2 3 52 $orb 0.09),
-      (Card "BURN" 37.2 2.2 52 $orb 0.09),
+      (Card "A LINUX DESKTOP" 0.6 2.6 82 $orb 0.09),
+      (Card "drawn in particles, live over VNC" 1.1 2.1 38 $mic 0.16),
+      (Card "THE MENU, KEY BY KEY" 3.4 3.6 56 $orb 0.09),
+      (Card "every arrow is a real key on the far side" 4.0 3 30 $mic 0.15),
+      (Card "A FILE MANAGER" 10.0 3.6 56 $orb 0.09),
+      (Card "opened, driven, and closed again" 10.6 3 30 $mic 0.15),
+      (Card "REAL INPUT" 19.0 2.8 60 $orb 0.09),
+      (Card "commands running on the far side" 19.5 2.3 34 $mic 0.15),
+      (Card "IRIS" 20.7 1.6 50 $orb 0.09),
+      (Card "SHATTER" 24.7 1.6 50 $orb 0.09),
+      (Card "SHEAR PLATES" 28.7 1.6 50 $orb 0.09),
+      (Card "LIGHT SPEED" 30.7 1.6 50 $orb 0.09),
+      (Card "SONIC BOOM" 34.7 1.6 50 $orb 0.09),
+      (Card "BURN" 38.7 1.6 50 $orb 0.09),
       # the terminal
       (Card "AND A TERMINAL" 43.15 1.9 86 $orb 0.40),
       (Card "made of the same particles" 43.65 1.4 36 $mic 0.50),
       (Card "2000 GLYPHS, ONE FRAME" 45.2 2.4 58 $orb 0.09),
       (Card "a real directory, re-forming on every half beat" 45.7 1.9 30 $mic 0.15),
       (Card "DIGITAL RAIN" 48.6 2.3 54 $orb 0.09),
+      (Card "ls /etc" 49.0 1.8 28 $mono 0.155),
       (Card "SONIC BOOM" 51.1 2.3 54 $orb 0.09),
+      (Card "ls /usr/lib64" 51.5 1.8 28 $mono 0.155),
       (Card "MAGNETIC ASSEMBLE" 53.6 2.3 54 $orb 0.09),
+      (Card "ls -lhA /var/log" 54.0 1.8 28 $mono 0.155),
       (Card "CYCLONE" 56.1 2.3 54 $orb 0.09),
+      (Card "sftp - 28 files, every bar moving" 56.5 1.8 28 $mono 0.155),
       (Card "GLITCH" 58.6 2.3 54 $orb 0.09),
+      (Card "ls /usr/share" 59.0 1.8 28 $mono 0.155),
       (Card "STARWAKE" 61.1 2.3 54 $orb 0.09),
+      (Card "ls /usr/bin" 61.5 1.8 28 $mono 0.155),
       (Card "FILM BURN" 63.6 2.3 54 $orb 0.09),
+      (Card "rsync - incremental, mid-flight" 64.0 1.8 28 $mono 0.155),
       (Card "MURMURATION" 66.1 2.3 54 $orb 0.09),
       (Card "HAMMER" 68.6 2.3 54 $orb 0.09),
       (Card "15 INTERFACE STYLES" 73 4.5 66 $orb 0.09),
@@ -138,15 +192,20 @@ if ($Assemble) {
     )
   }
   $fadeOut = $length - 1.6
-  # The app is maximized, so the Windows taskbar is the only thing in the
-  # grab that is not it: crop to the work area, in physical pixels.
-  Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class Dpi{[DllImport("user32.dll")]public static extern bool SetProcessDpiAwarenessContext(IntPtr c);}' -ErrorAction SilentlyContinue
-  try { [Dpi]::SetProcessDpiAwarenessContext([IntPtr]-4) | Out-Null } catch {}
-  Add-Type -AssemblyName System.Windows.Forms
-  $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
-  $cw = [int]([math]::Floor($wa.Width / 2) * 2); $ch = [int]([math]::Floor($wa.Height / 2) * 2)
-  "crop ${cw}x${ch}+$($wa.X)+$($wa.Y)"
-  $vf = "[0:v]crop=${cw}:${ch}:$($wa.X):$($wa.Y)," + ($cards -join ",") +
+  # Cut to the window's own rectangle, measured during the grab. If that
+  # measurement is missing (an -Assemble of an older capture), fall back to
+  # the work area, which is the same thing whenever the window was maximized.
+  if (Test-Path $win) {
+    $p = (Get-Content $win -Raw).Trim() -split '\s+'
+    $cx = [int]$p[0]; $cy = [int]$p[1]; $cw = [int]$p[2]; $ch = [int]$p[3]
+  } else {
+    Add-Type -AssemblyName System.Windows.Forms
+    $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    $cx = $wa.X; $cy = $wa.Y; $cw = $wa.Width; $ch = $wa.Height
+  }
+  $cw = [int]([math]::Floor($cw / 2) * 2); $ch = [int]([math]::Floor($ch / 2) * 2)
+  "crop ${cw}x${ch}+${cx}+${cy}"
+  $vf = "[0:v]crop=${cw}:${ch}:${cx}:${cy}," + ($cards -join ",") +
         ",fade=t=in:st=0:d=0.3,fade=t=out:st=${fadeOut}:d=1.6[v];" +
         "[1:a]afade=t=in:st=0:d=0.05,afade=t=out:st=${fadeOut}:d=1.6[a]"
   $final = if ($SshOnly) { "$out\AmberSSH-ssh-reel.mp4" } else { "$out\AmberSSH-reel.mp4" }
