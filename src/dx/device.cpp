@@ -1,5 +1,7 @@
 #include "device.h"
 
+#include <map>
+
 bool Device::Init(HWND hwnd, uint32_t width, uint32_t height)
 {
     m_hwnd = hwnd;
@@ -49,6 +51,7 @@ bool Device::Init(HWND hwnd, uint32_t width, uint32_t height)
                                         IID_PPV_ARGS(&m_device))))
         {
             m_videoMemory = desc.DedicatedVideoMemory;
+            m_adapterName = desc.Description;
             break;
         }
         m_device.Reset();
@@ -184,6 +187,7 @@ void Device::Stamp(ID3D12GraphicsCommandList* cl, StampSlot slot)
         return;
     cl->EndQuery(m_tsHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                  m_frameIndex * StampCount + slot);
+    m_stamped |= 1u << slot;
 }
 
 void Device::Shutdown()
@@ -310,10 +314,17 @@ ID3D12GraphicsCommandList* Device::BeginFrame()
 void Device::EndFrame(bool vsync)
 {
     if (m_tsHeap)
-        m_cmdList->ResolveQueryData(
-            m_tsHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
-            m_frameIndex * StampCount, StampCount, m_tsReadback.Get(),
-            sizeof(uint64_t) * StampCount * m_frameIndex);
+    {
+        // only the slots this frame stamped; an unstamped one keeps its old
+        // readback value, which the ordering check in BeginFrame rejects
+        for (uint32_t slot = 0; slot < StampCount; ++slot)
+            if (m_stamped & (1u << slot))
+                m_cmdList->ResolveQueryData(
+                    m_tsHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                    m_frameIndex * StampCount + slot, 1, m_tsReadback.Get(),
+                    sizeof(uint64_t) * (StampCount * m_frameIndex + slot));
+        m_stamped = 0;
+    }
     ThrowIfFailed(m_cmdList->Close(), "cmdlist close");
     ID3D12CommandList* lists[] = { m_cmdList.Get() };
     m_directQueue->ExecuteCommandLists(1, lists);
@@ -514,4 +525,75 @@ bool Device::ReadbackTexture(ID3D12Resource* tex, D3D12_RESOURCE_STATES state, D
     D3D12_RANGE none = { 0, 0 };
     rb->Unmap(0, &none);
     return true;
+}
+
+void Device::SetDebugBreaks(bool on)
+{
+#ifdef _DEBUG
+    ComPtr<ID3D12InfoQueue> iq;
+    if (m_device && SUCCEEDED(m_device.As(&iq)))
+    {
+        iq->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, on ? TRUE : FALSE);
+        iq->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, on ? TRUE : FALSE);
+        if (!on)
+            iq->SetMessageCountLimit(4096);   // keep them for the report instead
+    }
+#else
+    (void) on;
+#endif
+}
+
+int Device::DrainDebugMessages(std::string& out)
+{
+#ifdef _DEBUG
+    ComPtr<ID3D12InfoQueue> iq;
+    if (!m_device || FAILED(m_device.As(&iq)))
+    {
+        out += "d3d12 debug layer: not available\n";
+        return -1;
+    }
+    // One line per distinct message id, with its severity, how many times it
+    // was stored, and the first text — a frame-per-frame warning would
+    // otherwise be a thousand identical lines. The return value counts only
+    // error and corruption severities; the rest is for reading.
+    struct Agg { const char* sev; int count; std::string text; int rank; };
+    std::map<int, Agg> agg;
+    const UINT64 n = iq->GetNumStoredMessages();
+    int errors = 0;
+    for (UINT64 i = 0; i < n; ++i)
+    {
+        SIZE_T len = 0;
+        iq->GetMessage(i, nullptr, &len);
+        std::vector<char> buf(len);
+        auto* m = reinterpret_cast<D3D12_MESSAGE*>(buf.data());
+        if (len == 0 || FAILED(iq->GetMessage(i, m, &len)))
+            continue;
+        const bool err = m->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION || m->Severity == D3D12_MESSAGE_SEVERITY_ERROR;
+        const char* sev = m->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION ? "CORRUPTION"
+                          : m->Severity == D3D12_MESSAGE_SEVERITY_ERROR    ? "ERROR"
+                          : m->Severity == D3D12_MESSAGE_SEVERITY_WARNING  ? "WARNING"
+                          : m->Severity == D3D12_MESSAGE_SEVERITY_INFO     ? "INFO"
+                                                                            : "MESSAGE";
+        const int rank = err ? 0 : m->Severity == D3D12_MESSAGE_SEVERITY_WARNING ? 1 : 2;
+        auto it = agg.find(static_cast<int>(m->ID));
+        if (it == agg.end())
+            agg[static_cast<int>(m->ID)] = { sev, 1,
+                                             std::string(m->pDescription, m->DescriptionByteLength ? m->DescriptionByteLength - 1 : 0),
+                                             rank };
+        else
+            ++it->second.count;
+        if (err)
+            ++errors;
+    }
+    iq->ClearStoredMessages();
+    for (int rank = 0; rank <= 2; ++rank)
+        for (const auto& [id, a] : agg)
+            if (a.rank == rank)
+                out += std::string("d3d12 ") + a.sev + " #" + std::to_string(id) + " x" + std::to_string(a.count) + ": " +
+                       a.text.substr(0, 220) + "\n";
+    return errors;
+#else
+    out += "d3d12 debug layer: not a debug build\n";
+    return -1;
+#endif
 }

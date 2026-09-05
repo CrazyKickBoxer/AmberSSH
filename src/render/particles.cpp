@@ -456,6 +456,7 @@ void ParticleRenderer::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
     UploadRing::Alloc cbAlloc = frame.ring.Allocate(sizeof(FrameCB), 256);
     memcpy(cbAlloc.cpu, &cb, sizeof(cb));
     m_lastCbGpu = cbAlloc.gpu;
+    m_lastCb = cb;
 
     // ---- diff shadow → dirty ranges → CopyBufferRegion ------------------
     m_dirtyLast = 0;
@@ -607,4 +608,30 @@ void ParticleRenderer::Draw(ID3D12GraphicsCommandList* cl)
     cl->SetGraphicsRootShaderResourceView(1, m_particles->GetGPUVirtualAddress());
     cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     cl->DrawInstanced(4, m_particleCount, 0, 0);
+}
+
+D3D12_GPU_VIRTUAL_ADDRESS ParticleRenderer::UploadFrameCbOnly(FrameContext& frame, const GridMetrics& gm,
+                                                              float screenW, float screenH, float time,
+                                                              float dt, bool hdr)
+{
+    FrameCB cb = m_lastCb;
+    cb.time = time;
+    cb.dt = dt;
+    cb.cellW = gm.cellW;
+    cb.cellH = gm.cellH;
+    cb.originX = gm.originX;
+    cb.originY = gm.originY;
+    cb.screenW = screenW;
+    cb.screenH = screenH;
+    cb.cols = gm.cols;
+    cb.rows = gm.rows;
+    cb.hdrBoost = hdr ? 1.0f : 0.0f;
+    cb.resetFlag = 0;
+    UploadRing::Alloc cbAlloc = frame.ring.Allocate(sizeof(FrameCB), 256);
+    if (!cbAlloc.cpu)
+        return m_lastCbGpu;
+    memcpy(cbAlloc.cpu, &cb, sizeof(cb));
+    m_lastCbGpu = cbAlloc.gpu;
+    m_lastCb = cb;
+    return m_lastCbGpu;
 }

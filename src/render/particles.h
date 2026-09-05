@@ -152,6 +152,16 @@ public:
     void ResetInstant() { m_resetPending = true; m_resetKeepBright = true; m_instantNext = true; }
     // Frame constants uploaded by Simulate — shared with the prim passes.
     D3D12_GPU_VIRTUAL_ADDRESS FrameCbGpu() const { return m_lastCbGpu; }
+    // A fresh FrameCB for a frame that does not simulate the glyph field (a
+    // VNC desktop tab): the last one Simulate built, with the fields a frame
+    // owns — time, size, grid — brought up to date, uploaded into THIS
+    // frame's ring. The overlays draw against it. Without it FrameCbGpu()
+    // would point into a ring the frame no longer owns, or one that was
+    // re-created on a resize: the debug layer's "root descriptor on a
+    // deleted resource".
+    D3D12_GPU_VIRTUAL_ADDRESS UploadFrameCbOnly(FrameContext& frame, const GridMetrics& gm,
+                                                float screenW, float screenH, float time, float dt,
+                                                bool hdr);
 
 private:
     void CreateGridBuffers();
@@ -195,4 +205,5 @@ private:
     bool m_resetPending = true;
     uint32_t m_dirtyLast = 0;
     D3D12_GPU_VIRTUAL_ADDRESS m_lastCbGpu = 0;
+    FrameCB m_lastCb{};   // what Simulate last built, for UploadFrameCbOnly
 };

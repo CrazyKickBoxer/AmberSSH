@@ -143,6 +143,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int nCmdSho
     // %TEMP%\vnc-selfcheck.txt.
     if (lpCmdLine && wcsstr(lpCmdLine, L"--vnc-selfcheck"))
         app.RequestVncSelfCheck();
+    // --vnc-bench: the same harness serving 3840x2160, measuring frame times
+    // over a static desktop, a dragged block and full-frame video, vsync off;
+    // report in %TEMP%\vnc-bench.txt. Exits 0 — it measures, it does not judge.
+    if (lpCmdLine && wcsstr(lpCmdLine, L"--vnc-bench"))
+        app.RequestVncBench();
     g_app = &app;
     // Route messages to the app BEFORE Init so the custom-frame WM_NCCALCSIZE
     // that Init triggers (SWP_FRAMECHANGED) reaches App::WndProc.

@@ -79,7 +79,7 @@ set(AMBER_SOURCES
     src/vnc/VncSession.h   src/vnc/VncSession.cpp
     src/vnc/Keysyms.h      src/vnc/Keysyms.cpp
     src/vnc/SelfCheckServer.h src/vnc/SelfCheckServer.cpp
-    src/sessions/VncTab.h  src/app_vnc.cpp
+    src/sessions/VncTab.h  src/app_vnc.cpp   src/app_vnccheck.cpp
     src/glyphs/sampler.h   src/glyphs/sampler.cpp
     ${AMBER_CORE_SOURCES}
 )

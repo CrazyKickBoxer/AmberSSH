@@ -36,6 +36,14 @@ public:
     // Recolour a block; the update goes out on the client's next request,
     // or at once if one is outstanding.
     void ChangeBlock(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint32_t colour);
+    // A new desktop size: DesktopSize goes out on the next request (or at
+    // once), the pattern is regenerated, and the full picture follows the
+    // client's own full request.
+    void Resize(uint16_t w, uint16_t h);
+    // Sustained load, one update per request: 0 none; 1 "drag", a 400x300
+    // block that moves a step each time; 2 "video", the whole framebuffer
+    // recoloured each time.
+    void SetLoad(int mode);
 
     int Accepted() const { return m_accepted.load(); }
     int UpdatesSent() const { return m_updates.load(); }
@@ -54,6 +62,13 @@ private:
     mutable std::mutex m_mu;
     std::vector<uint32_t> m_px;
     struct Change { uint16_t x, y, w, h; bool pending = false; } m_change;
+    struct ResizeReq { uint16_t w = 0, h = 0; bool pending = false; } m_resize;
+    void Regenerate();               // the pattern for m_w x m_h, under m_mu
+    int m_load = 0;                  // SetLoad
+    uint32_t m_loadStep = 0;
+    // "drag": where the block was last painted, so its old place is repainted
+    int m_dragX = -1, m_dragY = -1;
+    bool NextLoadUpdate(uint16_t& x, uint16_t& y, uint16_t& w, uint16_t& h);
     std::atomic<int> m_accepted{ 0 }, m_updates{ 0 }, m_keys{ 0 }, m_pointers{ 0 };
 };
 

@@ -39,6 +39,18 @@ public:
     // The adapter's dedicated video memory, as DXGI reports it; 0 when the
     // adapter did not say. The desktop particle budget is derived from it.
     uint64_t             VideoMemoryBytes() const { return m_videoMemory; }
+    // The adapter's name as DXGI reports it, for measurements that must say
+    // what hardware produced them.
+    const std::wstring&  AdapterName() const { return m_adapterName; }
+    // Debug builds: every message the D3D12 debug layer has stored, appended
+    // to `out` one per line and cleared; the count is returned. Release
+    // builds return -1 and append a line saying there is no debug layer.
+    int DrainDebugMessages(std::string& out);
+    // Debug builds break into the debugger on an error-severity message,
+    // which with no debugger attached ends the process before anything is
+    // reported. The self-check turns that off so the messages reach its
+    // report instead; a no-op in release builds.
+    void SetDebugBreaks(bool on);
 
     // Descriptor heaps ----------------------------------------------------
     ID3D12DescriptorHeap* SrvHeap() const { return m_srvHeap.Get(); }
@@ -85,6 +97,7 @@ private:
     HWND m_hwnd = nullptr;
     uint32_t m_width = 0, m_height = 0;
     uint64_t m_videoMemory = 0;
+    std::wstring m_adapterName;
 
     ComPtr<IDXGIFactory6>       m_factory;
     ComPtr<ID3D12Device>        m_device;
@@ -122,4 +135,8 @@ private:
     float m_gpuFrameMs = 0.0f;
     float m_gpuBloomMs = 0.0f;
     float m_gpuDeskUploadMs = 0.0f, m_gpuDeskSimMs = 0.0f, m_gpuDeskDrawMs = 0.0f;
+    // Which slots this frame actually stamped: only those are resolved.
+    // Resolving a query that was never performed is a debug-layer error,
+    // and the desktop slots are written only on desktop frames.
+    uint32_t m_stamped = 0;
 };

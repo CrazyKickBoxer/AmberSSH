@@ -51,6 +51,9 @@ public:
               int previewSafety = 0);
     // --vnc-selfcheck (app_vnc.cpp): arms the check; it starts on the first Tick.
     void RequestVncSelfCheck() { m_vncSelfCheckRequested = true; }
+    // --vnc-bench: the same harness serving a 3840x2160 desktop, measuring
+    // frame times over three loads; report in %TEMP%\vnc-bench.txt.
+    void RequestVncBench() { m_vncSelfCheckRequested = true; m_vncBenchRequested = true; }
     // Open an asciinema .cast in a local playback tab (File menu, --play).
     void PlayRecordingFile(const std::wstring& path);
     void Shutdown();
@@ -187,6 +190,7 @@ private:
     // picture served, then a changed block and the energy texture checked.
     // Report in %TEMP%\vnc-selfcheck.txt; the exit code says pass or fail.
     bool m_vncSelfCheckRequested = false;
+    bool m_vncBenchRequested = false;            // --vnc-bench: the same harness, measuring
     struct VncSelfCheck;
     VncSelfCheck* m_vncCheck = nullptr;          // owned; deleted when it finishes
     void VncSelfCheckTick();                     // from Tick

@@ -258,10 +258,12 @@ bool DesktopParticles::Configure(uint32_t fbW, uint32_t fbH, uint32_t density)
 
     // ---- resources --------------------------------------------------------------
     m_dev->WaitIdle();   // the old ones may be in flight; a resize is rare and visible anyway
+    // buffers are created in COMMON whatever is asked for; the first
+    // transition takes it to the UAV the sim needs
     m_particles = MakeBuffer(d, static_cast<uint64_t>(L.particles + kCursorParticles) * kParticleBytes,
                              D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"desktop particles");
-    m_particleState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+                             D3D12_RESOURCE_STATE_COMMON, L"desktop particles");
+    m_particleState = D3D12_RESOURCE_STATE_COMMON;
     m_frame = MakeTexture(d, DXGI_FORMAT_B8G8R8A8_UNORM, fbW, fbH, D3D12_RESOURCE_FLAG_NONE,
                           D3D12_RESOURCE_STATE_COPY_DEST, L"desktop framebuffer");
     m_frameState = D3D12_RESOURCE_STATE_COPY_DEST;

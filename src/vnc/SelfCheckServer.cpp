@@ -29,15 +29,33 @@ uint32_t R32(const uint8_t* p)
            (static_cast<uint32_t>(p[2]) << 8) | p[3];
 }
 
-bool WriteAll(SOCKET s, const Bytes& b)
+// All of it, or false. Stop-aware: a 33 MB frame to a client that has
+// stopped reading must not hold the thread forever, so the socket is
+// non-blocking and each wait for buffer space polls the flag.
+bool WriteAll(SOCKET s, const std::atomic<bool>& stop, const Bytes& b)
 {
     size_t off = 0;
     while (off < b.size())
     {
-        const int k = send(s, reinterpret_cast<const char*>(b.data() + off), static_cast<int>(b.size() - off), 0);
-        if (k <= 0)
+        if (stop.load())
             return false;
-        off += static_cast<size_t>(k);
+        const int k = send(s, reinterpret_cast<const char*>(b.data() + off), static_cast<int>(b.size() - off), 0);
+        if (k > 0)
+        {
+            off += static_cast<size_t>(k);
+            continue;
+        }
+        if (k == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
+        {
+            fd_set w;
+            FD_ZERO(&w);
+            FD_SET(s, &w);
+            timeval tv{ 0, 100000 };
+            if (select(0, nullptr, &w, nullptr, &tv) < 0)
+                return false;
+            continue;
+        }
+        return false;
     }
     return true;
 }
@@ -60,6 +78,8 @@ bool ReadExact(SOCKET s, uint8_t* out, size_t n, const std::atomic<bool>& stop)
         if (sel == 0)
             continue;
         const int k = recv(s, reinterpret_cast<char*>(out + got), static_cast<int>(n - got), 0);
+        if (k == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
+            continue;   // the socket is non-blocking; select will say when
         if (k <= 0)
             return false;
         got += static_cast<size_t>(k);
@@ -93,10 +113,7 @@ bool SelfCheckServer::Start(uint16_t width, uint16_t height)
     WSAStartup(MAKEWORD(2, 2), &wsa);
     m_w = width;
     m_h = height;
-    m_px.resize(static_cast<size_t>(width) * height);
-    for (uint32_t y = 0; y < height; ++y)
-        for (uint32_t x = 0; x < width; ++x)
-            m_px[static_cast<size_t>(y) * width + x] = Pattern(x, y, width, height);
+    Regenerate();
 
     SOCKET l = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (l == INVALID_SOCKET)
@@ -130,6 +147,8 @@ bool SelfCheckServer::Start(uint16_t width, uint16_t height)
             SOCKET c = accept(static_cast<SOCKET>(m_listen), nullptr, nullptr);
             if (c == INVALID_SOCKET)
                 return;
+            u_long nb = 1;
+            ioctlsocket(c, FIONBIO, &nb);   // WriteAll and ReadExact both select() first
             m_accepted.fetch_add(1);
             Serve(static_cast<uintptr_t>(c));
             closesocket(c);
@@ -167,6 +186,81 @@ void SelfCheckServer::ChangeBlock(uint16_t x, uint16_t y, uint16_t w, uint16_t h
     m_change = { x, y, w, h, true };
 }
 
+void SelfCheckServer::Regenerate()
+{
+    m_px.resize(static_cast<size_t>(m_w) * m_h);
+    for (uint32_t y = 0; y < m_h; ++y)
+        for (uint32_t x = 0; x < m_w; ++x)
+            m_px[static_cast<size_t>(y) * m_w + x] = Pattern(x, y, m_w, m_h);
+    m_dragX = m_dragY = -1;
+}
+
+void SelfCheckServer::Resize(uint16_t w, uint16_t h)
+{
+    std::lock_guard<std::mutex> lk(m_mu);
+    m_resize = { w, h, true };
+}
+
+void SelfCheckServer::SetLoad(int mode)
+{
+    std::lock_guard<std::mutex> lk(m_mu);
+    m_load = mode;
+    m_loadStep = 0;
+}
+
+// Paints the next step of the load into m_px and says which rectangle
+// changed. Under m_mu.
+bool SelfCheckServer::NextLoadUpdate(uint16_t& x, uint16_t& y, uint16_t& w, uint16_t& h)
+{
+    if (m_load == 1)
+    {
+        // a 400x300 block walking across, the pattern restored behind it
+        const uint32_t bw = std::min<uint32_t>(400, m_w), bh = std::min<uint32_t>(300, m_h);
+        const uint32_t span = m_w > bw ? m_w - bw : 1;
+        const uint32_t nx = (m_loadStep * 8u) % span, ny = m_h > bh ? (m_h - bh) / 2 : 0;
+        uint32_t x0 = nx, x1 = nx + bw;
+        if (m_dragX >= 0)
+        {
+            const uint32_t ox = static_cast<uint32_t>(m_dragX);
+            for (uint32_t yy = ny; yy < ny + bh; ++yy)
+                for (uint32_t xx = ox; xx < ox + bw && xx < m_w; ++xx)
+                    m_px[static_cast<size_t>(yy) * m_w + xx] = Pattern(xx, yy, m_w, m_h);
+            x0 = std::min(x0, ox);
+            x1 = std::max(x1, ox + bw);
+        }
+        const uint32_t colour = 0xFF000000u | ((m_loadStep * 37u) & 0xFFu) << 16 | 0x80u << 8 | 0xC0u;
+        for (uint32_t yy = ny; yy < ny + bh; ++yy)
+            for (uint32_t xx = nx; xx < nx + bw && xx < m_w; ++xx)
+                m_px[static_cast<size_t>(yy) * m_w + xx] = colour;
+        m_dragX = static_cast<int>(nx);
+        m_dragY = static_cast<int>(ny);
+        ++m_loadStep;
+        x = static_cast<uint16_t>(x0);
+        y = static_cast<uint16_t>(ny);
+        w = static_cast<uint16_t>(std::min<uint32_t>(x1, m_w) - x0);
+        h = static_cast<uint16_t>(bh);
+        return true;
+    }
+    if (m_load == 2)
+    {
+        // the whole picture, a rolling recolour so every pixel changes
+        const uint32_t k = (m_loadStep * 13u) & 0xFFu;
+        for (uint32_t yy = 0; yy < m_h; ++yy)
+            for (uint32_t xx = 0; xx < m_w; ++xx)
+            {
+                const uint32_t p = Pattern(xx, yy, m_w, m_h);
+                m_px[static_cast<size_t>(yy) * m_w + xx] = 0xFF000000u | ((p ^ (k * 0x010101u)) & 0x00FFFFFFu);
+            }
+        ++m_loadStep;
+        x = 0;
+        y = 0;
+        w = m_w;
+        h = m_h;
+        return true;
+    }
+    return false;
+}
+
 bool SelfCheckServer::SendUpdate(uintptr_t sock, uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 {
     Bytes u = { 0, 0 };
@@ -186,7 +280,7 @@ bool SelfCheckServer::SendUpdate(uintptr_t sock, uint16_t x, uint16_t y, uint16_
             }
     }
     m_updates.fetch_add(1);
-    return WriteAll(static_cast<SOCKET>(sock), u);
+    return WriteAll(static_cast<SOCKET>(sock), m_stop, u);
 }
 
 void SelfCheckServer::Serve(uintptr_t sockv)
@@ -194,14 +288,14 @@ void SelfCheckServer::Serve(uintptr_t sockv)
     const SOCKET s = static_cast<SOCKET>(sockv);
     uint8_t buf[64];
     // version
-    WriteAll(s, Bytes{ 'R', 'F', 'B', ' ', '0', '0', '3', '.', '0', '0', '8', '\n' });
+    WriteAll(s, m_stop,Bytes{ 'R', 'F', 'B', ' ', '0', '0', '3', '.', '0', '0', '8', '\n' });
     if (!ReadExact(s, buf, 12, m_stop))
         return;
     // security: None only
-    WriteAll(s, Bytes{ 1, 1 });
+    WriteAll(s, m_stop,Bytes{ 1, 1 });
     if (!ReadExact(s, buf, 1, m_stop) || buf[0] != 1)
         return;
-    WriteAll(s, Bytes{ 0, 0, 0, 0 });
+    WriteAll(s, m_stop,Bytes{ 0, 0, 0, 0 });
     if (!ReadExact(s, buf, 1, m_stop))   // ClientInit
         return;
     Bytes init;
@@ -212,19 +306,44 @@ void SelfCheckServer::Serve(uintptr_t sockv)
     const char* name = "AmberSSH self-check";
     U32(init, static_cast<uint32_t>(strlen(name)));
     init.insert(init.end(), name, name + strlen(name));
-    WriteAll(s, init);
+    WriteAll(s, m_stop,init);
 
     int outstanding = 0;
     bool sentFull = false;
     for (;;)
     {
-        // a pending change goes out the moment a request is outstanding
-        bool pending;
+        // a pending change or resize goes out the moment a request is outstanding
+        bool pending, resize;
         Change ch;
+        ResizeReq rs;
         {
             std::lock_guard<std::mutex> lk(m_mu);
             pending = m_change.pending;
             ch = m_change;
+            resize = m_resize.pending;
+            rs = m_resize;
+        }
+        if (resize && outstanding > 0)
+        {
+            {
+                std::lock_guard<std::mutex> lk(m_mu);
+                m_resize.pending = false;
+                m_w = rs.w;
+                m_h = rs.h;
+                Regenerate();
+            }
+            // DesktopSize: one rectangle, no body; the client asks for the
+            // full picture itself and gets it from the FBUR case below
+            Bytes u = { 0, 0 };
+            U16(u, 1);
+            U16(u, 0); U16(u, 0); U16(u, rs.w); U16(u, rs.h);
+            U32(u, static_cast<uint32_t>(-223));
+            if (!WriteAll(s, m_stop,u))
+                return;
+            m_updates.fetch_add(1);
+            outstanding = 0;
+            sentFull = false;
+            continue;
         }
         if (pending && outstanding > 0)
         {
@@ -235,6 +354,22 @@ void SelfCheckServer::Serve(uintptr_t sockv)
             if (!SendUpdate(sockv, ch.x, ch.y, ch.w, ch.h))
                 return;
             outstanding = 0;
+        }
+        // sustained load: every outstanding request is answered at once
+        if (outstanding > 0)
+        {
+            uint16_t lx, ly, lw, lh;
+            bool have = false;
+            {
+                std::lock_guard<std::mutex> lk(m_mu);
+                have = NextLoadUpdate(lx, ly, lw, lh);
+            }
+            if (have)
+            {
+                if (!SendUpdate(sockv, lx, ly, lw, lh))
+                    return;
+                outstanding = 0;
+            }
         }
 
         // one client message
