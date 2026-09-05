@@ -1,0 +1,181 @@
+// desktop.h — the VNC particle desktop: a remote framebuffer rendered as
+// one particle per pixel (or two, three, four), each fixed to its source
+// pixel and coloured from it every frame.
+//
+// This is a sibling of ParticleRenderer, not a mode of it. The terminal's
+// particles belong to glyph cells and are choreographed by births and
+// templates; a desktop particle belongs to a pixel and has a home it never
+// leaves for long. They share the device, the per-frame upload ring, the
+// scene target, bloom and composite, the motion styles (as force fields, see
+// shaders/motion_fields.hlsli) and the appearance controls; they share no
+// buffers and no shaders.
+//
+// Ownership: the render thread owns everything here. The decode worker
+// hands it Damage (rectangles plus their pixels, already copied out); this
+// class uploads only those rectangles, computes each pixel's colour delta
+// against its own CPU shadow of the framebuffer, and injects that delta as
+// disturbance energy. Uploads go through the frame's UploadRing when they
+// fit, and through a per-frame-slot staging buffer sized for a full
+// framebuffer when they do not (a first picture, a resize, a recovery), so
+// reuse is protected by the same fence the frame's other uploads rely on.
+//
+// The budget: particle_count = framebuffer_width x framebuffer_height x
+// density, clamped to kMaxParticles and to what the adapter's memory
+// allows. When even density 1 exceeds it, the desktop is SAMPLED: every
+// stride-th pixel in each axis gets the particle, the effective resolution
+// is reported in Layout and on the overlay, and nothing claims one particle
+// per pixel that is not.
+#pragma once
+
+#include "../common.h"
+#include "../dx/device.h"
+#include "../dx/shaders.h"
+#include "../vnc/RfbDecoders.h"
+#include "../vnc/VncSession.h"
+
+// Mirrored in shaders/desktop_common.hlsli; ShaderContractTests compares the
+// scalar counts. Tightly packed, 4-byte scalars, 16-byte aligned.
+struct DesktopCB
+{
+    float time = 0, dt = 0, effectSpeed = 1, solidity = 1;
+    float springK = 400, damping = 24, curlAmp = 1, curlScale = 0.004f;
+    float particleSize = 1, glowSize = 3, disturbance = 1, energyDecay = 0.15f;
+    float dstX = 0, dstY = 0, scale = 1, jitter = 0;
+    float screenW = 1, screenH = 1, mouseX = -1e6f, mouseY = -1e6f;
+    float mouseRadius = 120, mouseForce = 0, shockX = 0, shockY = 0;
+    float shockTime = -1, lightMode = 0, hdrBoost = 0, audioWind = 0;
+    uint32_t fbW = 0, fbH = 0, density = 1, stride = 1;
+    uint32_t particleCount = 0, animStyle = 0, reducedMotion = 0, faithful = 1;
+    uint32_t resetFlag = 0, sampledW = 0, sampledH = 0, cursorCount = 0;
+    float brightness = 1, dragAmt = 0.25f, cursorX = -1e6f, cursorY = -1e6f;
+    float cursorScale = 0, cursorW = 0, cursorH = 0, pad3 = 0;
+};
+static_assert(sizeof(DesktopCB) == 48 * 4, "DesktopCB must stay 48 scalars, mirrored in HLSL");
+static_assert(sizeof(DesktopCB) % 16 == 0, "constant buffers are 16-byte aligned");
+
+// The largest desktop the particle field takes at full density. 3840x2160
+// at density 1 and 1920x1080 at density 4 are both 8 294 400, just inside.
+constexpr uint32_t kMaxDesktopParticles = 8u * 1024 * 1024;
+// The pointer's cluster.
+constexpr uint32_t kCursorParticles = 96;
+
+class DesktopParticles
+{
+public:
+    struct Layout
+    {
+        uint32_t fbW = 0, fbH = 0;      // the framebuffer as decoded
+        uint32_t density = 1;           // particles per SAMPLED pixel, after clamping
+        uint32_t stride = 1;            // 1 = every pixel; s = every s-th pixel per axis
+        uint32_t sampledW = 0, sampledH = 0;   // the effective resolution
+        uint32_t particles = 0;         // fbW/stride x fbH/stride x density
+        uint64_t gpuBytes = 0;          // what this layout allocates
+        bool clamped = false;           // the requested density was reduced
+        bool sampled = false;           // stride > 1
+    };
+
+    struct Params
+    {
+        float time = 0, dt = 0;
+        float solidity = 1;             // 0..1
+        float particleSize = 1;         // 1..3 px
+        float disturbance = 1;          // 0..2
+        uint32_t animStyle = 0;
+        float effectSpeed = 1;
+        float dragAmt = 0.25f;
+        bool reducedMotion = false;
+        bool lightMode = false;
+        float hdrBoost = 0;
+        float audioWind = 0;
+        float brightness = 1;
+        float mouseX = -1e6f, mouseY = -1e6f, mouseRadius = 120, mouseForce = 0;
+        float shockX = 0, shockY = 0, shockTime = -1;
+        // where the framebuffer sits on screen: top-left and px scale
+        float dstX = 0, dstY = 0, scale = 1;
+        // the local pointer, in screen px, and whether to draw its cluster
+        float cursorX = -1e6f, cursorY = -1e6f;
+        bool showCursor = false;
+    };
+
+    bool Init(Device& dev, ShaderCompiler& sc);
+
+    // (Re)creates every resource for a framebuffer size and requested
+    // density, within the budget. Returns false only when nothing can be
+    // allocated at all. Costs a full re-upload: the caller sends the whole
+    // framebuffer as the next Damage.
+    bool Configure(uint32_t fbW, uint32_t fbH, uint32_t density);
+    const Layout& GetLayout() const { return m_layout; }
+    bool Ready() const { return m_layout.particles > 0; }
+
+    // First thing each frame the desktop is drawn: stamps the pass's start
+    // and resets the per-frame counters — a frame with no damage never
+    // reaches Upload, and the stamp has to exist regardless.
+    void Begin(ID3D12GraphicsCommandList* cl);
+    // The rectangles that changed, uploaded and their deltas injected as
+    // energy. Must precede Simulate in the same command list.
+    void Upload(ID3D12GraphicsCommandList* cl, FrameContext& frame, const amber::vnc::Damage& d,
+                float disturbance);
+    // A new pointer shape (or none: width 0 hides it).
+    void SetCursor(ID3D12GraphicsCommandList* cl, FrameContext& frame, const amber::vnc::CursorShape& cs);
+    const amber::vnc::CursorShape& Cursor() const { return m_cursorShape; }
+
+    void Simulate(ID3D12GraphicsCommandList* cl, FrameContext& frame, const Params& p,
+                  float screenW, float screenH);
+    void Draw(ID3D12GraphicsCommandList* cl);
+
+    // Diagnostics for the overlay.
+    uint32_t UploadedRectsLastFrame() const { return m_rectsLast; }
+    uint64_t UploadedBytesLastFrame() const { return m_bytesLast; }
+    bool LastUploadFell() const { return m_fellBack; }   // a rect went to staging, not the ring
+
+private:
+    struct Staging
+    {
+        ComPtr<ID3D12Resource> buffer;
+        uint64_t size = 0;
+        uint8_t* mapped = nullptr;
+    };
+    bool UploadRect(ID3D12GraphicsCommandList* cl, FrameContext& frame, ID3D12Resource* target,
+                    uint32_t bpp, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                    const uint8_t* rows, uint32_t srcPitch);
+    Staging& StagingFor(FrameContext& frame, uint64_t bytes);
+    void Transition(ID3D12GraphicsCommandList* cl, ID3D12Resource* r, D3D12_RESOURCE_STATES& cur,
+                    D3D12_RESOURCE_STATES to);
+
+    Device* m_dev = nullptr;
+    Layout m_layout;
+
+    ComPtr<ID3D12RootSignature> m_energyRS, m_simRS, m_drawRS;
+    ComPtr<ID3D12PipelineState> m_energyPSO, m_simPSO, m_drawAdd, m_drawOver;
+
+    ComPtr<ID3D12Resource> m_particles;   // DeskParticle x (particles + cursor)
+    ComPtr<ID3D12Resource> m_frame;       // B8G8R8A8_UNORM fbW x fbH
+    ComPtr<ID3D12Resource> m_energy;      // R16_FLOAT sampledW x sampledH
+    ComPtr<ID3D12Resource> m_inject;      // R8_UNORM sampledW x sampledH
+    ComPtr<ID3D12Resource> m_cursor;      // B8G8R8A8_UNORM, up to kMaxCursorDim square
+    D3D12_RESOURCE_STATES m_particleState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES m_frameState = D3D12_RESOURCE_STATE_COPY_DEST;
+    D3D12_RESOURCE_STATES m_injectState = D3D12_RESOURCE_STATE_COPY_DEST;
+    D3D12_RESOURCE_STATES m_cursorState = D3D12_RESOURCE_STATE_COPY_DEST;
+
+    // descriptors, allocated once and rewritten on Configure
+    uint32_t m_slotFrameSrv = UINT32_MAX, m_slotCursorSrv = UINT32_MAX;
+    uint32_t m_slotEnergyUav = UINT32_MAX, m_slotInjectUav = UINT32_MAX;
+
+    // the CPU shadow of the framebuffer, for colour deltas
+    std::vector<uint32_t> m_shadow;
+    std::vector<uint8_t> m_injectScratch;
+    Staging m_staging[kFramesInFlight];
+    // staging is indexed by the frame slot the FrameContext belongs to
+    const FrameContext* m_frameSlots[kFramesInFlight] = {};
+
+    amber::vnc::CursorShape m_cursorShape;
+    bool m_needReset = true;
+    uint32_t m_rectsLast = 0;
+    uint64_t m_bytesLast = 0;
+    bool m_fellBack = false;
+    uint64_t m_stagingHead = 0;                   // bump offset into this frame's staging
+    D3D12_GPU_VIRTUAL_ADDRESS m_cbGpu = 0;        // this frame's DesktopCB, shared by the passes
+    bool m_lastFaithful = true, m_lastLight = false;
+    uint32_t m_lastInstances = 0;                 // particles + cursor cluster, as simulated
+};

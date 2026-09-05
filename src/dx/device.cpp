@@ -47,7 +47,10 @@ bool Device::Init(HWND hwnd, uint32_t width, uint32_t height)
             continue;
         if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0,
                                         IID_PPV_ARGS(&m_device))))
+        {
+            m_videoMemory = desc.DedicatedVideoMemory;
             break;
+        }
         m_device.Reset();
     }
     if (!m_device)
@@ -284,6 +287,18 @@ ID3D12GraphicsCommandList* Device::BeginFrame()
             if (vals[StampBloomEnd] > vals[StampBloomBegin])
                 m_gpuBloomMs = static_cast<float>(
                     (vals[StampBloomEnd] - vals[StampBloomBegin]) * toMs);
+            // The desktop slots are only written on frames with a desktop
+            // pass. On any other frame they hold whatever an earlier use of
+            // this slot left, so they count only when all four sit in order
+            // inside this frame's own begin/end — a stale set never does.
+            const bool desk = vals[StampDesktopBegin] >= vals[StampFrameBegin] &&
+                              vals[StampDesktopSimBegin] >= vals[StampDesktopBegin] &&
+                              vals[StampDesktopDrawBegin] >= vals[StampDesktopSimBegin] &&
+                              vals[StampDesktopEnd] >= vals[StampDesktopDrawBegin] &&
+                              vals[StampDesktopEnd] <= vals[StampFrameEnd];
+            m_gpuDeskUploadMs = desk ? static_cast<float>((vals[StampDesktopSimBegin] - vals[StampDesktopBegin]) * toMs) : 0.0f;
+            m_gpuDeskSimMs = desk ? static_cast<float>((vals[StampDesktopDrawBegin] - vals[StampDesktopSimBegin]) * toMs) : 0.0f;
+            m_gpuDeskDrawMs = desk ? static_cast<float>((vals[StampDesktopEnd] - vals[StampDesktopDrawBegin]) * toMs) : 0.0f;
         }
     }
 

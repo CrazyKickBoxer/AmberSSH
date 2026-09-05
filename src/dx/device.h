@@ -36,6 +36,9 @@ public:
     uint32_t             Width() const { return m_width; }
     uint32_t             Height() const { return m_height; }
     bool                 TearingSupported() const { return m_allowTearing; }
+    // The adapter's dedicated video memory, as DXGI reports it; 0 when the
+    // adapter did not say. The desktop particle budget is derived from it.
+    uint64_t             VideoMemoryBytes() const { return m_videoMemory; }
 
     // Descriptor heaps ----------------------------------------------------
     ID3D12DescriptorHeap* SrvHeap() const { return m_srvHeap.Get(); }
@@ -55,18 +58,26 @@ public:
     uint64_t SignalCopy();
     void     DirectWaitCopy(uint64_t value);
 
-    // GPU timestamps: 4 slots per frame (frame begin/end, bloom begin/end).
+    // GPU timestamps per frame: frame begin/end, bloom begin/end, and the
+    // VNC desktop pass's upload / simulate / draw boundaries.
     enum StampSlot { StampFrameBegin = 0, StampBloomBegin, StampBloomEnd,
-                     StampFrameEnd, StampCount };
+                     StampFrameEnd,
+                     StampDesktopBegin, StampDesktopSimBegin, StampDesktopDrawBegin,
+                     StampDesktopEnd, StampCount };
     void  Stamp(ID3D12GraphicsCommandList* cl, StampSlot slot);
     float GpuFrameMs() const { return m_gpuFrameMs; }
     float GpuBloomMs() const { return m_gpuBloomMs; }
+    // Zero on frames without a desktop pass.
+    float GpuDesktopUploadMs() const { return m_gpuDeskUploadMs; }
+    float GpuDesktopSimMs() const { return m_gpuDeskSimMs; }
+    float GpuDesktopDrawMs() const { return m_gpuDeskDrawMs; }
 
 private:
     void CreateSwapchainRTVs();
 
     HWND m_hwnd = nullptr;
     uint32_t m_width = 0, m_height = 0;
+    uint64_t m_videoMemory = 0;
 
     ComPtr<IDXGIFactory6>       m_factory;
     ComPtr<ID3D12Device>        m_device;
@@ -103,4 +114,5 @@ private:
     uint64_t m_tsFrequency = 0;
     float m_gpuFrameMs = 0.0f;
     float m_gpuBloomMs = 0.0f;
+    float m_gpuDeskUploadMs = 0.0f, m_gpuDeskSimMs = 0.0f, m_gpuDeskDrawMs = 0.0f;
 };

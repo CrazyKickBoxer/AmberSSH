@@ -15,6 +15,7 @@
 
 #include "common.h"
 #include "render/motion_styles.h"
+#include "render/desktop.h"
 #include "ui/Chrome.h"
 
 namespace
@@ -348,4 +349,35 @@ TEST_CASE("frames in flight is a sane triple-buffer value", "[shader][contract]"
 {
     REQUIRE(kFramesInFlight >= 2);
     REQUIRE(kFramesInFlight <= 4);
+}
+
+// ---- the VNC particle desktop --------------------------------------------------
+// DesktopCB lives in shaders/desktop_common.hlsli at register b1 and is
+// mirrored by DesktopCB in src/render/desktop.h. Same rule as FrameCB: the
+// HLSL body's scalar count times four must equal the C++ size.
+TEST_CASE("DesktopCB C++ size matches its HLSL scalar count", "[shader][contract][vnc]")
+{
+    const std::string src = ReadShader("desktop_common.hlsli");
+    REQUIRE_FALSE(src.empty());
+    const size_t begin = src.find("cbuffer DesktopCB");
+    REQUIRE(begin != std::string::npos);
+    const size_t open = src.find('{', begin);
+    const size_t close = src.find("};", open);
+    REQUIRE(open != std::string::npos);
+    REQUIRE(close != std::string::npos);
+    const std::string body = src.substr(open + 1, close - open - 1);
+    const size_t scalars = CountScalars(body);
+    REQUIRE(scalars * 4 == sizeof(DesktopCB));
+    REQUIRE(sizeof(DesktopCB) % 16 == 0);
+}
+
+TEST_CASE("the desktop shaders are present and include the shared contract", "[shader][contract][vnc]")
+{
+    for (const char* name : { "desktop_common.hlsli", "motion_fields.hlsli", "desktop_energy.hlsl",
+                              "desktop_sim.hlsl", "desktop_draw.hlsl" })
+        REQUIRE_FALSE(ReadShader(name).empty());
+    // every motion style in kMotionStyles has a field: the switch covers 0..count-1
+    const std::string fields = ReadShader("motion_fields.hlsli");
+    for (int i = 0; i < kMotionStyleCount; ++i)
+        REQUIRE(fields.find("case " + std::to_string(i) + ":") != std::string::npos);
 }

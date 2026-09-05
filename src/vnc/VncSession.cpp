@@ -638,9 +638,10 @@ void VncSession::Publish(RfbClient& client)
         for (const Rect& r : dirty.rects)
         {
             const size_t px = static_cast<size_t>(r.w) * r.h;
-            if (m_pending.pixels.size() + px > area * 2)
+            if (m_pending.pixels.size() + px > area)
             {
-                // too much unclaimed: one copy of everything is the bound
+                // too much unclaimed: one copy of everything is the bound,
+                // and it is also what the renderer's staging is sized for
                 m_pending.rects.clear();
                 m_pending.pixels.assign(fb.px.begin(), fb.px.end());
                 m_pending.rects.push_back({ 0, 0, static_cast<uint16_t>(fb.width), static_cast<uint16_t>(fb.height) });

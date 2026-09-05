@@ -35,6 +35,7 @@ set(AMBER_SOURCES
     src/dx/frame.h         src/dx/frame.cpp
     src/dx/shaders.h       src/dx/shaders.cpp
     src/render/particles.h src/render/particles.cpp
+    src/render/desktop.h   src/render/desktop.cpp
     src/render/bloom.h     src/render/bloom.cpp
     src/render/composite.h src/render/composite.cpp
     src/render/prims.h     src/render/prims.cpp
@@ -157,6 +158,11 @@ endfunction()
 amber_shader(particle_sim.hlsl   CSMain      cs_6_0)
 amber_shader(particle_draw.hlsl  VSMain      vs_6_0)
 amber_shader(particle_draw.hlsl  PSMain      ps_6_0)
+# the VNC particle desktop (shaders/desktop_*.hlsl, motion_fields.hlsli)
+amber_shader(desktop_energy.hlsl CSMain      cs_6_0)
+amber_shader(desktop_sim.hlsl    CSMain      cs_6_0)
+amber_shader(desktop_draw.hlsl   VSMain      vs_6_0)
+amber_shader(desktop_draw.hlsl   PSMain      ps_6_0)
 amber_shader(bloom_down.hlsl     CSPrefilter cs_6_0)
 amber_shader(bloom_down.hlsl     CSDown      cs_6_0)
 amber_shader(bloom_up.hlsl       CSUp        cs_6_0)
