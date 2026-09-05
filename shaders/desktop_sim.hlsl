@@ -129,31 +129,34 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
             // Every style is an impulse: a hard kick over a few frames, then
             // the spring brings the particles straight back. Nothing keeps
             // rippling — a pattern that lingers reads as LCD ghosting.
+            // ... and a distortion, not a drawing: every field is broad and
+            // smooth, so many particles shift a little and the picture
+            // bulges — never a thin front that reads as a drawn line, never
+            // a centre emptied into a dark hole with an edge.
             const int style = int(shockStyle + 0.5);
             const float kick = exp(-age * 9.0);   // gone in about a third of a second
             if (style == 1)
             {
-                // water drop: the plop — a dimple's worth of particles thrown
-                // outward from the point, hardest at the centre
-                shock = away * 16000.0 * shockAmp * exp(-sd / 90.0) * kick;
+                // water drop: a soft dimple pushing outward, widest at the point
+                shock = away * 7000.0 * shockAmp * exp(-sd * sd / 60000.0) * kick;
             }
             else if (style == 2)
             {
                 // splash: the same, leaning upward
                 const float2 lean = normalize(away + float2(0.0, -0.8));
-                shock = lean * 16000.0 * shockAmp * exp(-sd / 140.0) * kick;
+                shock = lean * 7000.0 * shockAmp * exp(-sd * sd / 80000.0) * kick;
             }
             else if (style == 3)
             {
-                // vortex: one brief twist around the point
+                // vortex: one brief soft twist around the point
                 const float2 tangent = float2(-away.y, away.x);
-                shock = (tangent * 14000.0 - away * 3000.0) * shockAmp * exp(-sd / 160.0) * kick;
+                shock = (tangent * 6000.0 - away * 1500.0) * shockAmp * exp(-sd * sd / 90000.0) * kick;
             }
             else
             {
-                // ring: one fast wave out from the point, 2400 px/s, thin
-                const float ring = age * 2400.0;
-                shock = away * 14000.0 * shockAmp * exp(-(sd - ring) * (sd - ring) / 1600.0) * exp(-age * 6.0);
+                // ring: a wide soft bulge travelling out at 1600 px/s
+                const float ring = age * 1600.0;
+                shock = away * 6000.0 * shockAmp * exp(-(sd - ring) * (sd - ring) / 20000.0) * exp(-age * 6.0);
             }
         }
 
