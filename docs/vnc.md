@@ -8,11 +8,12 @@ and the same particle field the terminal is made of.
 This file says what is implemented, what has been verified and how, and what
 has not. The two are kept apart throughout.
 
-**Status (2026-09-04):** Phase 1 (RFB client and transport) and Phase 2 (the
-D3D12 particle desktop) are implemented and verified as described below.
-Phase 3 — the connection dialog's VNC page, VeNCrypt/TLS, palette entries,
-the clipboard's outbound direction, Tight — is not yet done; where this file
-mentions one of those it says so.
+**Status (2026-09-05):** Phase 1 (RFB client and transport), Phase 2 (the
+D3D12 particle desktop) and Phase 3 (VeNCrypt/TLS, the connection dialog's
+VNC page, palette commands, clipboard both ways, SSH-closure handling) are
+implemented. What is verified, and by what, is the table under
+*Status: implemented vs verified* near the end; interoperability with a
+real server remains unverified and Tight is not implemented.
 
 ## Architecture
 
@@ -37,8 +38,9 @@ mentions one of those it says so.
 | DES / VNC authentication | `src/vnc/RfbDes.*` | the FIPS 46-3 core and the reversed-key variant |
 | wire format | `src/vnc/RfbProtocol.*` | RFC 6143 codecs, a reader that consumes nothing on a short read |
 | decoders | `src/vnc/RfbDecoders.*` | Raw, CopyRect, ZRLE, Hextile, Cursor; the framebuffer and dirty region |
-| state machine | `src/vnc/RfbClient.*` | RFB 3.3 / 3.7 / 3.8, security None and VNC Authentication, updates, pseudo-encodings |
-| worker | `src/vnc/VncSession.*` | the socket, the client, reconnect, the damage hand-off |
+| state machine | `src/vnc/RfbClient.*` | RFB 3.3 / 3.7 / 3.8, security None, VNC Authentication and VeNCrypt's steps, updates, pseudo-encodings |
+| TLS | `src/vnc/RfbTls.*` | the VeNCrypt subtype policy, the OpenSSL client, certificate verdicts and the pin store |
+| worker | `src/vnc/VncSession.*` | the socket, the client, the TLS layer and the certificate question, reconnect, the damage hand-off |
 | keys | `src/vnc/Keysyms.*` | Windows virtual keys and code points to X11 keysyms |
 | renderer | `src/render/desktop.*`, `shaders/desktop_*.hlsl`, `shaders/motion_fields.hlsli` | the particle desktop |
 | the tab | `src/sessions/VncTab.h`, `src/app_vnc.cpp` | the tab's state, events, input, overlay |
