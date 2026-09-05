@@ -21,6 +21,50 @@ Texture2D<float4>              gFrame     : register(t1);   // B8G8R8A8_UNORM: s
 Texture2D<float4>              gCursor    : register(t2);   // the pointer's shape, premultiplied alpha
 Texture2D<float>               gEnergy    : register(t3);   // disturbance energy, sampled resolution
 
+// The shockwave as a refraction: a particle stays on its pixel and takes
+// its colour from a displaced source pixel, so the picture itself ripples
+// — the way a surface under water does — with no gap and no drawn edge,
+// because nothing moves except where the colour is read from. Returns the
+// displacement in framebuffer pixels for a pixel at fb position `fp`.
+// Every style is brief: gone in under half a second.
+float2 ShockRefraction(float2 fp)
+{
+    if (shockTime < 0.0 || fxShock <= 0.0)
+        return float2(0.0, 0.0);
+    const float age = time - shockTime;
+    if (age < 0.0 || age > 0.6)
+        return float2(0.0, 0.0);
+    // the click, in framebuffer pixels
+    const float2 centre = (float2(shockX, shockY) - float2(dstX, dstY)) / max(scale, 1e-3);
+    const float2 ds = fp - centre;
+    const float sd = max(length(ds), 1.0);
+    const float2 away = ds / sd;
+    const float amp = 7.0 * shockAmp * fxShock;   // pixels of displacement at full strength
+    const int style = int(shockStyle + 0.5);
+    if (style == 1)
+    {
+        // water drop: concentric ripples running outward and dying fast
+        const float wave = sin(sd * 0.09 - age * 34.0);
+        return away * wave * amp * exp(-sd / 260.0) * exp(-age * 6.0);
+    }
+    if (style == 2)
+    {
+        // splash: a bulge that leans upward
+        const float2 lean = normalize(away + float2(0.0, -0.8));
+        return lean * amp * 1.4 * exp(-sd * sd / 50000.0) * exp(-age * 8.0);
+    }
+    if (style == 3)
+    {
+        // vortex: a swirl that unwinds
+        const float2 tangent = float2(-away.y, away.x);
+        return tangent * amp * 1.6 * exp(-sd * sd / 70000.0) * exp(-age * 6.0);
+    }
+    // ring: one wave travelling out at 1400 px/s, a refractive crest and trough
+    const float ring = age * 1400.0;
+    const float band = exp(-(sd - ring) * (sd - ring) / 9000.0);
+    return away * sin((sd - ring) * 0.07) * amp * 1.2 * band * exp(-age * 5.0);
+}
+
 // Luminance of the framebuffer at a clamped pixel, from the sRGB bytes:
 // the edge effect wants contrast as the eye sees it, not linear light.
 float LumaAt(int2 p)
@@ -80,9 +124,12 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
         float2 home;
         uint sub;
         HomeOf(iid, src, home, sub);
+        // the shockwave refracts: the colour comes from a displaced pixel
+        const float2 refract = ShockRefraction(float2(src) + 0.5);
+        const int2 at = clamp(int2(floor(float2(src) + 0.5 + refract)), int2(0, 0), int2(int(fbW) - 1, int(fbH) - 1));
         // B8G8R8A8_UNORM reads as (b,g,r,a) in .rgba order already swizzled
         // by the format: .rgb is red, green, blue
-        const float4 c = gFrame.Load(int3(src, 0));
+        const float4 c = gFrame.Load(int3(at, 0));
         rgb = SrgbToLinearExact(c.rgb);
 
         // Edge glow: the luminance gradient at this pixel, from its four
@@ -93,7 +140,7 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
         // 1 first and only the edge's own boost can cross the bloom threshold)
         if (fxEdge > 0.0)
         {
-            const int2 sp = int2(src);
+            const int2 sp = at;   // the glow follows the refracted picture
             const float gx = LumaAt(sp + int2(1, 0)) - LumaAt(sp - int2(1, 0));
             const float gy = LumaAt(sp + int2(0, 1)) - LumaAt(sp - int2(0, 1));
             edge = saturate(sqrt(gx * gx + gy * gy) * edgeGain);

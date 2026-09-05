@@ -118,46 +118,16 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
         if (mouseForce > 0.0 && md < mouseRadius)
             field += dm / max(md, 1.0) * mouseForce * (1.0 - md / mouseRadius);
 
-        // a shockwave: a ring leaving the click at 900 px/s, pushing (or,
-        // with a negative shockAmp, pulling) what it passes, fading in 1 s
-        if (shockTime >= 0.0)
+        // The click's shockwave is a refraction of the picture, drawn in
+        // desktop_draw.hlsl (ShockRefraction): the particles stay on their
+        // pixels and read their colour from displaced ones. Below solidity
+        // 1 the swarm still feels a soft push from it, so the two agree.
+        if (shockTime >= 0.0 && loose > 0.0)
         {
             const float age = time - shockTime;
             const float2 ds = pos - float2(shockX, shockY);
             const float sd = max(length(ds), 1.0);
-            const float2 away = ds / sd;
-            // Every style is an impulse: a hard kick over a few frames, then
-            // the spring brings the particles straight back. Nothing keeps
-            // rippling — a pattern that lingers reads as LCD ghosting.
-            // ... and a distortion, not a drawing: every field is broad and
-            // smooth, so many particles shift a little and the picture
-            // bulges — never a thin front that reads as a drawn line, never
-            // a centre emptied into a dark hole with an edge.
-            const int style = int(shockStyle + 0.5);
-            const float kick = exp(-age * 9.0);   // gone in about a third of a second
-            if (style == 1)
-            {
-                // water drop: a soft dimple pushing outward, widest at the point
-                shock = away * 7000.0 * shockAmp * exp(-sd * sd / 60000.0) * kick;
-            }
-            else if (style == 2)
-            {
-                // splash: the same, leaning upward
-                const float2 lean = normalize(away + float2(0.0, -0.8));
-                shock = lean * 7000.0 * shockAmp * exp(-sd * sd / 80000.0) * kick;
-            }
-            else if (style == 3)
-            {
-                // vortex: one brief soft twist around the point
-                const float2 tangent = float2(-away.y, away.x);
-                shock = (tangent * 6000.0 - away * 1500.0) * shockAmp * exp(-sd * sd / 90000.0) * kick;
-            }
-            else
-            {
-                // ring: a wide soft bulge travelling out at 1600 px/s
-                const float ring = age * 1600.0;
-                shock = away * 6000.0 * shockAmp * exp(-(sd - ring) * (sd - ring) / 20000.0) * exp(-age * 6.0);
-            }
+            shock = ds / sd * 3000.0 * shockAmp * exp(-sd * sd / 80000.0) * exp(-age * 8.0);
         }
 
         // disturbance: this pixel changed — burst outward, with a lean the
@@ -174,7 +144,7 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
     if (materialising)
         a = (home - pos) * 30.0 - vel * 11.0;   // critically damped, about a second's flight
     else
-        a += (field * loose + shock * max(loose, fxShock) + burst * max(loose, fxHeat * 0.35)) * motion;
+        a += (field * loose + shock * loose + burst * max(loose, fxHeat * 0.35)) * motion;
 
     // --- integrate ------------------------------------------------------------
     const float h = min(dt, 1.0 / 30.0);

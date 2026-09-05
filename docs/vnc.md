@@ -305,17 +305,21 @@ starts from.
 Shockwave styles, all driven by a button press inside the picture (a right
 click reverses the amplitude):
 
-Every style is an impulse, not a pattern: a hard kick over a few frames
-(gone in about a third of a second), and the spring — twice as stiff at
-solidity 100 — brings the particles straight back with no overshoot. A
-pattern that lingers reads as the ghosting of an old passive-matrix LCD,
-which is exactly the look this avoids. The heat effect's energy decays
-on the same principle (a third gone in a tenth of a second).
+The shockwave is a **refraction of the picture**, not a movement of
+particles: every particle stays on its pixel and, for the half second the
+wave lasts, reads its colour from a displaced source pixel
+(`ShockRefraction` in `desktop_draw.hlsl`). The interface itself ripples
+the way a surface under water does, with no gap and no drawn edge, because
+nothing moves except where the colour is read from. Below solidity 100 the
+swarm also feels a soft push from the click, so the two agree. Everything
+is brief — gone in under half a second — because a pattern that lingers
+reads as the ghosting of an old passive-matrix LCD. The heat effect's
+energy decays on the same principle (a third gone in a tenth of a second).
 
-* **Ring** — one thin fast wave out from the click at 2400 px/s.
-* **Water drop** — the plop: a dimple's worth of particles thrown outward, hardest at the centre.
-* **Splash** — the same with an upward lean.
-* **Vortex** — one brief twist around the point.
+* **Ring** — one refractive crest and trough travelling out at 1400 px/s.
+* **Water drop** — concentric ripples running outward and dying fast.
+* **Splash** — a bulge that leans upward.
+* **Vortex** — a swirl that unwinds.
 
 A desktop resize is reported on the status line for 1.5 s, not as a notice
 that stays.
