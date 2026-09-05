@@ -35,6 +35,10 @@ public:
         // backbuffer aspect, colour of the void behind the cube.
         float cubeAngle = 0.0f, cubeDir = 1.0f, aspect = 1.0f;
         float cubeBgR = 0.0f, cubeBgG = 0.0f, cubeBgB = 0.0f;
+        // A remote desktop tab: no filmic curve, no scanlines, no vignette,
+        // an exact sRGB encode — a document window is not a glowing tube.
+        // Bloom still adds, at whatever strength the caller scaled it to.
+        float desktopMode = 0.0f;
     };
     static_assert(sizeof(Params) % 4 == 0 && sizeof(Params) / 4 <= 64,
                   "composite root constants must fit in 64 DWORDs");

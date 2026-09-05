@@ -13,6 +13,7 @@
 
 #include <zlib.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -495,4 +496,133 @@ TEST_CASE("nothing is sent before the connection is ready", "[vnc][client]")
     c.SendPointer(0, 0, 0);
     c.RequestUpdate(true);
     CHECK(Take(c).empty());
+}
+
+// ---- ExtendedDesktopSize ----------------------------------------------------------
+namespace
+{
+// An ExtendedDesktopSize rectangle: header (x = reason, y = status, w x h)
+// and one screen covering it.
+Bytes ExtendedSizeRect(uint16_t reason, uint16_t status, uint16_t w, uint16_t h, uint32_t screenId)
+{
+    Bytes v = Server::RectHeader(reason, status, w, h, EncPseudoExtendedDesktopSize);
+    v.push_back(1);
+    v.insert(v.end(), { 0, 0, 0 });
+    fakerfb::U32(v, screenId);
+    fakerfb::U16(v, 0);
+    fakerfb::U16(v, 0);
+    fakerfb::U16(v, w);
+    fakerfb::U16(v, h);
+    fakerfb::U32(v, 0);
+    return v;
+}
+} // namespace
+
+TEST_CASE("SetDesktopSize is laid out as the extension specifies", "[vnc][protocol]")
+{
+    Screen s;
+    s.id = 0x11223344;
+    s.flags = 7;
+    const Bytes m = MsgSetDesktopSize(1600, 900, s);
+    const Bytes want = { 251, 0, 0x06, 0x40, 0x03, 0x84, 1, 0,
+                         0x11, 0x22, 0x33, 0x44, 0, 0, 0, 0, 0x06, 0x40, 0x03, 0x84, 0, 0, 0, 7 };
+    REQUIRE(m == want);
+}
+
+TEST_CASE("ExtendedDesktopSize is offered ahead of DesktopSize, and the layout is learned", "[vnc][client]")
+{
+    Server s;
+    RfbClient c({});
+    const Bytes out = Connect(c, s);
+    size_t off = 0;
+    const auto msgs = fakerfb::ParseClientMessages(out, off);
+    bool ordered = false;
+    for (const auto& m : msgs)
+        if (m.type == CSetEncodings)
+        {
+            const auto ext = std::find(m.encodings.begin(), m.encodings.end(), EncPseudoExtendedDesktopSize);
+            const auto plain = std::find(m.encodings.begin(), m.encodings.end(), EncPseudoDesktopSize);
+            ordered = ext != m.encodings.end() && plain != m.encodings.end() && ext < plain;
+        }
+    REQUIRE(ordered);
+    REQUIRE_FALSE(c.SupportsSetDesktopSize());
+
+    // the server's initial layout: its own reason, the current size
+    REQUIRE(Feed(c, Server::UpdateHeader(1)));
+    REQUIRE(Feed(c, ExtendedSizeRect(ResizeByServer, ResizeOk, s.width, s.height, 42)));
+    REQUIRE(c.SupportsSetDesktopSize());
+    REQUIRE(c.Screens().size() == 1);
+    REQUIRE(c.Screens()[0].id == 42);
+    REQUIRE_FALSE(c.TakeResized());   // same size: not a resize
+    REQUIRE(c.TakeResizeStatus() == -1);
+}
+
+TEST_CASE("a size asked before the layout is known goes out when it is, with the server's screen id", "[vnc][client]")
+{
+    Server s;
+    RfbClient c({});
+    Connect(c, s);
+    c.RequestDesktopSize(800, 600);
+    REQUIRE(Take(c).empty());   // held
+    REQUIRE(Feed(c, Server::UpdateHeader(1)));
+    REQUIRE(Feed(c, ExtendedSizeRect(ResizeByServer, ResizeOk, s.width, s.height, 42)));
+    const Bytes out = Take(c);
+    Screen want;
+    want.id = 42;
+    const Bytes msg = MsgSetDesktopSize(800, 600, want);
+    REQUIRE(std::search(out.begin(), out.end(), msg.begin(), msg.end()) != out.end());
+
+    SECTION("granted: the framebuffer resizes and a full picture is asked for")
+    {
+        REQUIRE(Feed(c, Server::UpdateHeader(1)));
+        REQUIRE(Feed(c, ExtendedSizeRect(ResizeByThisClient, ResizeOk, 800, 600, 42)));
+        REQUIRE(c.Fb().width == 800);
+        REQUIRE(c.Fb().height == 600);
+        REQUIRE(c.TakeResized());
+        REQUIRE(c.TakeResizeStatus() == ResizeOk);
+        size_t off = 0;
+        const auto msgs = fakerfb::ParseClientMessages(Take(c), off);
+        bool full = false;
+        for (const auto& m : msgs)
+            if (m.type == CFramebufferUpdateRequest && !m.incremental && m.w == 800 && m.h == 600)
+                full = true;
+        REQUIRE(full);
+    }
+    SECTION("refused: the size stays, the status is reported once")
+    {
+        REQUIRE(Feed(c, Server::UpdateHeader(1)));
+        REQUIRE(Feed(c, ExtendedSizeRect(ResizeByThisClient, ResizeProhibited, s.width, s.height, 42)));
+        REQUIRE(c.Fb().width == s.width);
+        REQUIRE_FALSE(c.TakeResized());
+        REQUIRE(c.TakeResizeStatus() == ResizeProhibited);
+        REQUIRE(c.TakeResizeStatus() == -1);
+        REQUIRE(std::string(ResizeStatusName(ResizeProhibited)).find("prohibits") != std::string::npos);
+    }
+    SECTION("the same size again is not asked for")
+    {
+        REQUIRE(Feed(c, Server::UpdateHeader(1)));
+        REQUIRE(Feed(c, ExtendedSizeRect(ResizeByThisClient, ResizeOk, 800, 600, 42)));
+        Take(c);
+        c.RequestDesktopSize(800, 600);
+        REQUIRE(Take(c).empty());
+    }
+}
+
+TEST_CASE("a screen layout that does not fit its desktop, or is empty, ends the stream", "[vnc][client]")
+{
+    Server s;
+    RfbClient c({});
+    Connect(c, s);
+    REQUIRE(Feed(c, Server::UpdateHeader(1)));
+    Bytes bad = Server::RectHeader(0, 0, 100, 100, EncPseudoExtendedDesktopSize);
+    bad.push_back(1);
+    bad.insert(bad.end(), { 0, 0, 0 });
+    fakerfb::U32(bad, 1);
+    fakerfb::U16(bad, 50);
+    fakerfb::U16(bad, 0);
+    fakerfb::U16(bad, 100);   // 50 + 100 > 100
+    fakerfb::U16(bad, 100);
+    fakerfb::U32(bad, 0);
+    REQUIRE_FALSE(Feed(c, bad));
+    REQUIRE(c.State() == ClientState::Failed);
 }

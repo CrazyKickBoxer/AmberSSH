@@ -213,6 +213,22 @@ void VncSession::RequestFullUpdate()
         SetEvent(m_wake);
 }
 
+void VncSession::RequestDesktopSize(uint16_t w, uint16_t h)
+{
+    Command c{ Command::Kind::Resize };
+    c.x = w;
+    c.y = h;
+    {
+        std::lock_guard<std::mutex> lk(m_cmdMu);
+        // only the newest size matters: a window being dragged asks many times
+        for (auto it = m_cmds.begin(); it != m_cmds.end();)
+            it = it->kind == Command::Kind::Resize ? m_cmds.erase(it) : it + 1;
+        m_cmds.push_back(std::move(c));
+    }
+    if (m_wake)
+        SetEvent(m_wake);
+}
+
 void VncSession::AnswerCertificate(bool accept)
 {
     {
@@ -262,6 +278,7 @@ VncStats VncSession::GetStats() const
     s.rfbMinor = m_minor.load();
     s.encrypted = m_encrypted.load();
     s.venSubtype = m_venSubtype.load();
+    s.canResize = m_canResize.load();
     {
         std::lock_guard<std::mutex> lk(m_damageMu);
         s.pendingRects = static_cast<uint32_t>(m_pending.rects.size());
@@ -598,6 +615,7 @@ bool VncSession::Pump(RfbClient& client, int timeoutMs, bool& closed)
             case Command::Kind::Pointer: client.SendPointer(c.buttons, c.x, c.y); break;
             case Command::Kind::CutText: client.SendCutText(c.text); break;
             case Command::Kind::Refresh: client.RequestUpdate(false, true); break;
+            case Command::Kind::Resize:  client.RequestDesktopSize(c.x, c.y); break;
             }
         }
     }
@@ -842,6 +860,10 @@ void VncSession::Publish(RfbClient& client)
         Post(VncEvent::Type::Bell);
     m_updates.fetch_add(client.TakeUpdatesCompleted());
     m_continuous.store(client.ContinuousUpdates());
+    m_canResize.store(client.SupportsSetDesktopSize());
+    const int rs = client.TakeResizeStatus();
+    if (rs > 0)
+        Post(VncEvent::Type::ResizeRefused, ResizeStatusName(static_cast<uint16_t>(rs)));
 }
 
 std::string VncSession::Loop(RfbClient& client)

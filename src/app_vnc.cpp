@@ -64,6 +64,32 @@ void SetClipboardUtf8(HWND owner, const std::string& utf8)
     CloseClipboard();
 }
 
+// The desktop size a profile asks for, given the content area. False for
+// "the server's own". Even sizes: every server likes them, some insist.
+bool DesiredDesktopSize(const amber::ConnectionProfile& p, uint32_t availW, uint32_t availH, uint16_t& w,
+                        uint16_t& h)
+{
+    static const uint16_t kPresets[][2] = { { 1280, 720 }, { 1366, 768 }, { 1600, 900 }, { 1920, 1080 }, { 2560, 1440 } };
+    int rw = 0, rh = 0;
+    switch (p.vncDesktopSize)
+    {
+    case 0: return false;
+    case 1: rw = static_cast<int>(availW); rh = static_cast<int>(availH); break;
+    case 7: rw = p.vncCustomW; rh = p.vncCustomH; break;
+    default:
+        if (p.vncDesktopSize < 2 || p.vncDesktopSize > 6)
+            return false;
+        rw = kPresets[p.vncDesktopSize - 2][0];
+        rh = kPresets[p.vncDesktopSize - 2][1];
+        break;
+    }
+    rw = std::clamp(rw, 320, 8192) & ~1;
+    rh = std::clamp(rh, 200, 8192) & ~1;
+    w = static_cast<uint16_t>(rw);
+    h = static_cast<uint16_t>(rh);
+    return true;
+}
+
 } // namespace
 
 amber::VncTab* App::VncActive()
@@ -168,6 +194,27 @@ void App::PumpVncEvents()
                 t.heldButtons = 0;
                 if (HasSession() && &s == &Cur())
                     SetWindowTextW(m_hwnd, WideFromUtf8(TitleFor(s)).c_str());
+                {
+                    // the profile's desktop size, asked as soon as we are in;
+                    // the worker holds it until the server's layout is known
+                    uint16_t w, h;
+                    const uint32_t availW = m_device.Width();
+                    const uint32_t availH = m_device.Height() > static_cast<uint32_t>(m_titleBarH)
+                                                ? m_device.Height() - static_cast<uint32_t>(m_titleBarH)
+                                                : m_device.Height();
+                    if (DesiredDesktopSize(s.profile, availW, availH, w, h))
+                    {
+                        t.session->RequestDesktopSize(w, h);
+                        t.requestedW = w;
+                        t.requestedH = h;
+                    }
+                    t.lastAvailW = availW;
+                    t.lastAvailH = availH;
+                    t.resizeDueAt = -1.0;
+                }
+                break;
+            case vnc::VncEvent::Type::ResizeRefused:
+                AddNotice(s, 1, "VNC: the server declined the desktop size: " + ev.text);
                 break;
             case vnc::VncEvent::Type::Resized:
                 AddNotice(s, 0, "desktop resized to " + ev.text);
@@ -231,6 +278,12 @@ void App::PumpVncEvents()
         // the approximate input-to-picture figure: the next completed update
         // after an input was sent
         const vnc::VncStats st = t.session->GetStats();
+        // a size was asked of a server that cannot take one: say so, once
+        if (t.requestedW && st.updates > 0 && !st.canResize && !t.resizeUnsupportedSaid)
+        {
+            t.resizeUnsupportedSaid = true;
+            AddNotice(s, 1, "VNC: this server does not take a desktop size from the client (no ExtendedDesktopSize)");
+        }
         if (st.updates != t.updatesSeen)
         {
             if (t.lastInputSentAt >= 0.0)
@@ -270,6 +323,33 @@ void App::RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame)
             t.fbH = fbH;
             if (!d.full)
                 t.session->RequestFullUpdate();   // a partial picture on a fresh buffer
+        }
+    }
+
+    // "Fit the window": when the content area changes, ask the server for
+    // the new size after a pause, so a drag asks once at the end
+    if (prof.vncDesktopSize == 1 && t.session->State() == vnc::VncState::Connected)
+    {
+        const uint32_t availW = m_device.Width();
+        const uint32_t availH = m_device.Height() > static_cast<uint32_t>(m_titleBarH)
+                                    ? m_device.Height() - static_cast<uint32_t>(m_titleBarH)
+                                    : m_device.Height();
+        if (availW != t.lastAvailW || availH != t.lastAvailH)
+        {
+            t.lastAvailW = availW;
+            t.lastAvailH = availH;
+            t.resizeDueAt = m_time + 0.4;
+        }
+        if (t.resizeDueAt >= 0.0 && m_time >= t.resizeDueAt)
+        {
+            t.resizeDueAt = -1.0;
+            uint16_t w, h;
+            if (DesiredDesktopSize(prof, availW, availH, w, h) && (w != t.fbW || h != t.fbH))
+            {
+                t.session->RequestDesktopSize(w, h);
+                t.requestedW = w;
+                t.requestedH = h;
+            }
         }
     }
 

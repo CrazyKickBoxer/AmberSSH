@@ -214,6 +214,9 @@ username there is what X509Plain would send.
 | `vncEncodings` | Encodings | ZRLE first / Hextile first / Raw only | ZRLE first |
 | `vncCursorMode` | Cursor | local particle cluster in the server's shape / server-drawn | local |
 | `vncClipboard` | Clipboard | Disabled / Ask each transfer / Remote → local / Local → remote / Bidirectional | Ask |
+| `vncDesktopSize` | Desktop size | the size asked of the server (below): the server's own / fit this window and follow it / 1280×720 / 1366×768 / 1600×900 / 1920×1080 / 2560×1440 / custom | fit the window |
+| `vncCustomW`, `vncCustomH` | Custom width / height | for the custom choice | 1600 × 900 |
+| `vncGlow` | Glow % | bloom on the desktop; the terminal's is 100 | 40 |
 | `vncVividness` | Vividness % | saturation about each pixel's luminance and contrast about mid grey, in linear light; 100 = the decoded colours, and faithful mode pins it there | 130 |
 | `vncMotion` | Motion speed % | the tempo of the swarm's drift, the motion style's field and the effects | 200 |
 | `vncFxShock`, `vncFxEdge`, `vncFxHeat`, `vncFxMaterialise` | Effect: … | the four effects below; any on = not pixel-exact | on |
@@ -227,6 +230,37 @@ pixel. Without that a scaled desktop washes out.
 Numbers typed outside their range are clamped where they are used. The
 tab's copies of View only and the placement follow the palette toggles
 below without changing the saved profile.
+
+## Desktop size
+
+The client offers **ExtendedDesktopSize** (−308) ahead of DesktopSize. A
+server that speaks it (TigerVNC's Xvnc does; RealVNC and most others do
+not) answers with its screen layout, which is also the sign that it takes
+**SetDesktopSize** (message 251). The profile's Desktop size is then asked
+for as soon as the connection is up, held until that layout is known, and
+sent with the server's own first screen id and flags so the request is the
+one the server expects. "Fit this window" asks for the content area's size
+and asks again, after a 0.4 s pause, whenever the window's size changes, so
+a drag asks once at its end. The answer is an ExtendedDesktopSize
+rectangle: granted, the framebuffer resizes and a full picture is
+requested; refused, the status is named on the notice strip (prohibited by
+the administrator, out of resources, invalid layout) and the size stays. A
+server without the extension gets one notice saying so; the picture is then
+scaled to fit as before. Sizes are clamped to 320–8192 and made even.
+
+## The composite for a desktop
+
+The terminal's composite pass is tuned for glowing particles on black: a
+partial filmic curve above 0.75, scanlines, a vignette, an exposure, and a
+gamma-2.2 encode. Through it a document window's white comes out a dull
+0.9 grey — the "washed out" look. A desktop tab takes its own path in the
+same shader (`desktopMode`): bloom at the profile's Glow, then the colour
+is clipped and encoded with the exact sRGB transfer function; no filmic
+curve, scanlines or vignette, exposure 1. At faithful settings the back
+buffer therefore holds the server's bytes, not only the scene target. The
+draw clips every particle's base colour to 1 before the effects add to it,
+so a white window cannot bloom on its own; only an edge's boost (×1.35 at
+most) and the heat tint can cross the bloom threshold.
 
 ## Effects
 

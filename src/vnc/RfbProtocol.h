@@ -65,6 +65,11 @@ enum Encoding : int32_t
     EncPseudoCursor = -239,
     EncPseudoDesktopSize = -223,
     EncPseudoContinuousUpdates = -313,
+    // ExtendedDesktopSize (community RFB extension, TigerVNC's): the server
+    // announces its screen layout, and a client may ask for a new size with
+    // SetDesktopSize. Offered before DesktopSize; a server that speaks it
+    // sends the extended form instead.
+    EncPseudoExtendedDesktopSize = -308,
 };
 
 // ---- security types (§7.1.2) -------------------------------------------------
@@ -86,6 +91,7 @@ enum ClientMsg : uint8_t
     CPointerEvent = 5,
     CClientCutText = 6,
     CEnableContinuousUpdates = 150,   // ContinuousUpdates extension
+    CSetDesktopSize = 251,            // ExtendedDesktopSize extension
 };
 enum ServerMsg : uint8_t
 {
@@ -170,6 +176,26 @@ std::vector<uint8_t> MsgPointerEvent(uint8_t buttonMask, uint16_t x, uint16_t y)
 std::vector<uint8_t> MsgClientCutText(std::string_view latin1);
 std::vector<uint8_t> MsgEnableContinuousUpdates(bool enable, uint16_t x, uint16_t y,
                                                 uint16_t w, uint16_t h);
+
+// ---- ExtendedDesktopSize -------------------------------------------------------
+// One screen of the server's layout: id, its rectangle in the framebuffer,
+// and flags the server defines. A SetDesktopSize request names the screens
+// it wants; this client keeps one, the server's first, resized to fit.
+struct Screen
+{
+    uint32_t id = 0;
+    uint16_t x = 0, y = 0, w = 0, h = 0;
+    uint32_t flags = 0;
+};
+// The rectangle body: u8 count, 3 padding, count x 16 bytes. Consumes
+// nothing on a short read; Bad on a count of zero or a screen outside w x h.
+Parse ParseScreenLayout(Reader& r, uint16_t w, uint16_t h, std::vector<Screen>& out);
+// SetDesktopSize (type 251): the requested size and one screen covering it.
+std::vector<uint8_t> MsgSetDesktopSize(uint16_t w, uint16_t h, const Screen& screen);
+// ExtendedDesktopSize rectangle header semantics: x = why, y = how it went.
+enum ResizeReason : uint16_t { ResizeByServer = 0, ResizeByThisClient = 1, ResizeByOtherClient = 2 };
+enum ResizeStatus : uint16_t { ResizeOk = 0, ResizeProhibited = 1, ResizeOutOfResources = 2, ResizeInvalidLayout = 3 };
+const char* ResizeStatusName(uint16_t status);
 
 // ---- server → client messages ------------------------------------------------
 struct ServerInit

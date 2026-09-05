@@ -21,7 +21,21 @@ cbuffer CompositeCB : register(b0)
     // backbuffer aspect, and the colour of the void behind the cube.
     float cubeAngle, cubeDir, aspect;
     float cubeBgR, cubeBgG, cubeBgB;
+    // A remote desktop tab: no filmic curve, scanlines or vignette, an
+    // exact sRGB encode (mirrored in composite.h; keep it last)
+    float desktopMode;
 };
+
+// The sRGB transfer function, exact: the desktop's colours were decoded
+// with the exact inverse, and what went in must come out.
+float3 SrgbEncodeExact(float3 c)
+{
+    const float3 lo = c * 12.92;
+    const float3 hi = 1.055 * pow(max(c, 1e-6), 1.0 / 2.4) - 0.055;
+    return float3(c.r <= 0.0031308 ? lo.r : hi.r,
+                  c.g <= 0.0031308 ? lo.g : hi.g,
+                  c.b <= 0.0031308 ? lo.b : hi.b);
+}
 
 Texture2D<float4> gScene : register(t0);
 Texture2D<float4> gBloom : register(t1);
@@ -193,13 +207,16 @@ float4 PSMain(VSOut i) : SV_Target
     if (grayscale > 0.5)
         c = dot(c, float3(0.2126, 0.7152, 0.0722)) * float3(1.07, 0.99, 0.72);
 
-    // Faint scanlines: 2px period, barely visible.
-    c *= 1.0 + scanAmp * sin(i.pos.y * 3.14159265);
+    if (desktopMode < 0.5)
+    {
+        // Faint scanlines: 2px period, barely visible.
+        c *= 1.0 + scanAmp * sin(i.pos.y * 3.14159265);
 
-    // Edge vignette.
-    float2 q = i.uv * 2.0 - 1.0;
-    float  v = pow(saturate(dot(q, q) * 0.5), 1.6);
-    c *= 1.0 - vignetteAmt * v;
+        // Edge vignette.
+        float2 q = i.uv * 2.0 - 1.0;
+        float  v = pow(saturate(dot(q, q) * 0.5), 1.6);
+        c *= 1.0 - vignetteAmt * v;
+    }
 
     if (hdrMode != 0)
     {
@@ -218,11 +235,20 @@ float4 PSMain(VSOut i) : SV_Target
         // SDR: in-range colors pass through untouched so ANSI/truecolor stays
         // exact; the filmic curve only takes over where particle/bloom energy
         // exceeds the displayable range.
-        float m = max(c.r, max(c.g, c.b));
-        float3 filmic = ACESFilm(c);
-        c = lerp(c, filmic, smoothstep(0.75, 1.35, m));
-        c = saturate(c);
-        c = pow(c, 1.0 / 2.2);
+        if (desktopMode > 0.5)
+        {
+            // the desktop's own colours, clipped, encoded exactly: at
+            // faithful settings the back buffer holds the server's bytes
+            c = SrgbEncodeExact(saturate(c));
+        }
+        else
+        {
+            float m = max(c.r, max(c.g, c.b));
+            float3 filmic = ACESFilm(c);
+            c = lerp(c, filmic, smoothstep(0.75, 1.35, m));
+            c = saturate(c);
+            c = pow(c, 1.0 / 2.2);
+        }
         // Snap to the 16-colour palette (in display/sRGB space) for the
         // cartoony pixel-art look.
         if (pixelBlock > 0.5)

@@ -461,6 +461,8 @@ void RfbClient::OfferEncodings()
     std::vector<int32_t> enc = m_opt.encodings;
     if (m_opt.wantCursor)
         enc.push_back(EncPseudoCursor);
+    if (m_opt.wantExtendedDesktopSize)
+        enc.push_back(EncPseudoExtendedDesktopSize);   // preferred: it can be asked for a size
     if (m_opt.wantDesktopSize)
         enc.push_back(EncPseudoDesktopSize);
     if (m_opt.wantContinuousUpdates)
@@ -484,6 +486,49 @@ void RfbClient::SendKey(bool down, uint32_t keysym)
 {
     if (m_state == ClientState::Ready)
         Send(MsgKeyEvent(down, keysym));
+}
+
+void RfbClient::ApplyDesktopSize(uint16_t w, uint16_t h)
+{
+    m_init.width = w;
+    m_init.height = h;
+    m_resized = true;
+    m_dirty.Clear();
+    m_dirty.Add({ 0, 0, w, h });
+    // the contents are black until a full picture arrives; ask for one
+    RequestUpdate(false, true);
+    if (m_continuous)
+        Send(MsgEnableContinuousUpdates(true, 0, 0, w, h));
+}
+
+void RfbClient::SendDesktopSize(uint16_t w, uint16_t h)
+{
+    Screen s;
+    if (!m_screens.empty())
+        s = m_screens.front();   // keep the server's screen id and flags
+    Send(MsgSetDesktopSize(w, h, s));
+}
+
+void RfbClient::RequestDesktopSize(uint16_t w, uint16_t h)
+{
+    if (w == 0 || h == 0 || w > kMaxDimension || h > kMaxDimension)
+        return;
+    if (m_state != ClientState::Ready || !m_extendedDesktopSize)
+    {
+        m_pendingW = w;   // sent when the server's layout arrives
+        m_pendingH = h;
+        return;
+    }
+    if (w == m_fb.width && h == m_fb.height)
+        return;
+    SendDesktopSize(w, h);
+}
+
+int RfbClient::TakeResizeStatus()
+{
+    const int s = m_resizeStatus;
+    m_resizeStatus = -1;
+    return s;
 }
 
 void RfbClient::SendPointer(uint8_t buttons, uint16_t x, uint16_t y)
@@ -623,18 +668,43 @@ Parse RfbClient::StepRectangle(Reader& r)
         {
         case EncPseudoDesktopSize:
             // Before the bounds check: the new size is outside the old buffer
-            if (!m_fb.Resize(m_rect.w, m_rect.h))
+            if (m_fb.width == 0 || !m_fb.Resize(m_rect.w, m_rect.h))
                 return Parse::Bad;
-            m_init.width = m_rect.w;
-            m_init.height = m_rect.h;
-            m_resized = true;
-            m_dirty.Clear();
-            m_dirty.Add({ 0, 0, m_rect.w, m_rect.h });
-            // the contents are black until a full picture arrives; ask for one
-            RequestUpdate(false, true);
-            if (m_continuous)
-                Send(MsgEnableContinuousUpdates(true, 0, 0, m_rect.w, m_rect.h));
+            ApplyDesktopSize(m_rect.w, m_rect.h);
             break;
+        case EncPseudoExtendedDesktopSize:
+        {
+            // x = why, y = status; the body is the screen layout. Before the
+            // bounds check for the same reason as DesktopSize.
+            std::vector<Screen> screens;
+            const Parse p = ParseScreenLayout(r, m_rect.w, m_rect.h, screens);
+            if (p == Parse::NeedMore)
+                return Parse::NeedMore;
+            if (p == Parse::Bad)
+                return Parse::Bad;
+            m_extendedDesktopSize = true;
+            m_screens = std::move(screens);
+            const bool ours = m_rect.x == ResizeByThisClient;
+            if (ours)
+                m_resizeStatus = m_rect.y;
+            // a refused request carries the unchanged size; anything else
+            // that differs from the framebuffer is a resize
+            if (!(ours && m_rect.y != ResizeOk) && (m_rect.w != m_fb.width || m_rect.h != m_fb.height))
+            {
+                if (!m_fb.Resize(m_rect.w, m_rect.h))
+                    return Parse::Bad;
+                ApplyDesktopSize(m_rect.w, m_rect.h);
+            }
+            if (m_pendingW && m_pendingH)
+            {
+                // the size asked for before the layout was known
+                const uint16_t w = m_pendingW, h = m_pendingH;
+                m_pendingW = m_pendingH = 0;
+                if (w != m_fb.width || h != m_fb.height)
+                    SendDesktopSize(w, h);
+            }
+            break;
+        }
         case EncPseudoCursor:
             d = DecodeCursor(r, m_rect, m_cursor);
             if (d == Decode::Ok)

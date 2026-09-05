@@ -91,6 +91,7 @@ struct VncEvent
         // did not verify, one per line; flag = a pinned certificate differs
         // (the alarm case). The worker waits for AnswerCertificate.
         CertPrompt,
+        ResizeRefused,   // text = why the server declined our desktop size
     };
     Type type;
     std::string text;
@@ -119,6 +120,7 @@ struct VncStats
     uint32_t fbWidth = 0, fbHeight = 0;
     bool continuous = false;        // ContinuousUpdates in effect
     int rfbMinor = 0;
+    bool canResize = false;         // the server sent its screen layout: SetDesktopSize works
     bool encrypted = false;         // VeNCrypt: the stream is inside TLS
     uint32_t venSubtype = 0;        // VeNCryptSubtype, 0 when not VeNCrypt
     std::string tlsProtocol;        // e.g. "TLSv1.3", "" when plaintext
@@ -147,6 +149,10 @@ public:
     void SendPointer(uint8_t buttons, uint16_t x, uint16_t y);
     void SendCutText(std::string utf8);
     void RequestFullUpdate();
+    // Ask the server for a desktop of this size (ExtendedDesktopSize). Held
+    // until the server's layout is known; a refusal comes back as a
+    // ResizeRefused event. Not dropped in view-only: it is not input.
+    void RequestDesktopSize(uint16_t w, uint16_t h);
     bool ViewOnly() const { return m_viewOnly.load(); }
     void SetViewOnly(bool v) { m_viewOnly.store(v); }
     // The answer to a CertPrompt. Reject (or Disconnect) ends the attempt;
@@ -164,7 +170,7 @@ public:
 private:
     struct Command
     {
-        enum class Kind { Key, Pointer, CutText, Refresh } kind;
+        enum class Kind { Key, Pointer, CutText, Refresh, Resize } kind;
         bool down = false;
         uint32_t keysym = 0;
         uint8_t buttons = 0;
@@ -239,6 +245,7 @@ private:
     std::atomic<bool> m_continuous{ false };
     std::atomic<int> m_minor{ 0 };
     std::atomic<bool> m_encrypted{ false };
+    std::atomic<bool> m_canResize{ false };
     std::atomic<uint32_t> m_venSubtype{ 0 };
     std::string m_tlsProtocol;    // under m_damageMu, like the pending damage
     double m_decodeAccum = 0.0;   // worker thread only: decode CPU ms this window

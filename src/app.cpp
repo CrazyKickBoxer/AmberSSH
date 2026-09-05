@@ -2007,6 +2007,14 @@ void App::RenderFrame()
             }
         }
     }
+    if (const amber::VncTab* vt = VncActive(); vt && vt->session)
+    {
+        // a desktop tab: its own composite path (composite.h), and bloom at
+        // the profile's glow, not the terminal's
+        cp.desktopMode = 1.0f;
+        cp.bloomStrength *= static_cast<float>(std::clamp(Cur().profile.vncGlow, 0, 200)) / 100.0f;
+        cp.exposure = 1.0f;
+    }
     cl->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
     m_composite.Record(cl, m_device.BackBufferRTV(),
                        m_device.SrvGpu(m_sceneSrvSlot), m_bloom.ResultSrvGpu(),

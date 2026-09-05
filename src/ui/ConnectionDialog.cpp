@@ -1358,6 +1358,13 @@ void ConnectionDialog::DefineFields()
     choice(Page::Vnc, Kind::Combo, &P::vncCursorMode, L"Cursor",
            { L"Local particle cursor, in the server's shape", L"The server draws the cursor into the picture" },
            0, 300);
+    choice(Page::Vnc, Kind::Combo, &P::vncDesktopSize, L"Desktop size (asked of the server; it must allow it)",
+           { L"The server's own", L"Fit this window, and follow it when it resizes", L"1280 \x00d7 720",
+             L"1366 \x00d7 768", L"1600 \x00d7 900", L"1920 \x00d7 1080", L"2560 \x00d7 1440", L"Custom (below)" },
+           0, 300);
+    num(Page::Vnc, &P::vncCustomW, L"Custom width", 90);
+    num(Page::Vnc, &P::vncCustomH, L"Custom height", 90);
+    num(Page::Vnc, &P::vncGlow, L"Glow % (bloom on the desktop; the terminal's is 100)", 90);
     num(Page::Vnc, &P::vncVividness, L"Vividness % (saturation and contrast; 100 = the decoded colours)", 90);
     num(Page::Vnc, &P::vncMotion, L"Motion speed % (the swarm's drift, the motion style and the effects)", 90);
     chk(Page::Vnc, &P::vncFxShock, L"Effect: a click sends a shockwave (right click pulls inward)");

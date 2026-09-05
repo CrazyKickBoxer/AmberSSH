@@ -58,6 +58,14 @@ struct VncTab
     double shockTime = -1.0;
     float shockAmp = 1.0f;            // +1 a click pushes out, -0.5 a right click pulls in
 
+    // ---- the desktop's size (ExtendedDesktopSize) --------------------------
+    // "Fit the window" asks the server for the content area's size, again
+    // whenever it changes, after a pause so a drag asks once, not per frame.
+    uint32_t lastAvailW = 0, lastAvailH = 0;
+    double resizeDueAt = -1.0;
+    uint16_t requestedW = 0, requestedH = 0;
+    bool resizeUnsupportedSaid = false;
+
     // ---- clipboard loop guard --------------------------------------------
     // Text we last put on the Windows clipboard from the server, and the
     // text we last sent the server from Windows: a change that equals either

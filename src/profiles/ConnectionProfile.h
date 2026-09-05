@@ -311,6 +311,12 @@ struct ConnectionProfile
     bool        vncFxMaterialise = true; // connect and resize assemble the picture from a scatter
     int         vncVividness = 130;      // saturation + contrast %, 100 = as decoded; pinned to 100 in faithful mode
     int         vncMotion = 200;         // tempo % of the swarm and the effects
+    int         vncGlow = 40;            // bloom % applied to the desktop (the terminal's is 100)
+    // The desktop's size, asked of the server (ExtendedDesktopSize): 0 the
+    // server's own, 1 fit the window (and follow it), 2.. a preset from
+    // kVncDesktopSizes, the last = custom below.
+    int         vncDesktopSize = 1;
+    int         vncCustomW = 1600, vncCustomH = 900;
     // Where remote windows appear: 0 native Windows windows, 1 AmberSSH tabs,
     // 2 AmberSSH panes, 3 ask per application. Only 0 is implemented; the
     // others are accepted, reported, and fall back to native (see PHASE-7-GATE).

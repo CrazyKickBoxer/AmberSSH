@@ -53,6 +53,8 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     float3 rgb;
     float alpha = 1.0;
     float lift = 0.0;   // screen px upward, the heat effect
+    float edge = 0.0;   // 0..1 luminance-gradient strength, the edge effect
+    float heat = 0.0;   // 0..1 disturbance energy, the heat effect
     if (isCursor)
     {
         // the cluster's particles sample the cursor shape by their seed
@@ -87,13 +89,14 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
         // neighbours. Window frames, title bars and text outlines are where
         // it is large; flat fills are where it is zero. The boost pushes the
         // scene above 1, which is what the bloom pass turns into a halo.
+        // (applied after vividness below, so the base colour is clipped to
+        // 1 first and only the edge's own boost can cross the bloom threshold)
         if (fxEdge > 0.0)
         {
             const int2 sp = int2(src);
             const float gx = LumaAt(sp + int2(1, 0)) - LumaAt(sp - int2(1, 0));
             const float gy = LumaAt(sp + int2(0, 1)) - LumaAt(sp - int2(0, 1));
-            const float edge = saturate(sqrt(gx * gx + gy * gy) * edgeGain);
-            rgb *= 1.0 + edge * fxEdge * 1.2;
+            edge = saturate(sqrt(gx * gx + gy * gy) * edgeGain);
         }
         // Heat: a pixel that just changed runs warm and lifts a few pixels,
         // cooling with the energy texture; a repaint looks re-etched, a
@@ -101,9 +104,8 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
         // particle's own state is untouched and it settles with the energy.
         if (fxHeat > 0.0)
         {
-            const float e = gEnergy.Load(int3(src / max(stride, 1u), 0));
-            rgb += float3(1.0, 0.55, 0.15) * e * fxHeat * 0.9;
-            lift = e * fxHeat * 3.0 * scale;
+            heat = gEnergy.Load(int3(src / max(stride, 1u), 0)) * fxHeat;
+            lift = heat * 3.0 * scale;
         }
     }
 
@@ -114,9 +116,14 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     {
         const float l = dot(rgb, float3(0.2126, 0.7152, 0.0722));
         rgb = lerp(l.xxx, rgb, vivid);
-        const float contrast = 1.0 + (vivid - 1.0) * 0.6;
-        rgb = max((rgb - 0.18) * contrast + 0.18, 0.0);
+        const float contrast = 1.0 + (vivid - 1.0) * 0.4;
+        rgb = (rgb - 0.18) * contrast + 0.18;
     }
+    // The base colour never exceeds 1: a white window must not bloom. Only
+    // the effects' own additions may, and they are bounded.
+    rgb = clamp(rgb, 0.0, 1.0);
+    rgb *= 1.0 + edge * 0.35;                              // edges: a little past 1, so bloom finds them
+    rgb += float3(1.0, 0.55, 0.15) * heat * 0.6;            // heat: an amber tint that cools away
 
     // size: a hard pixel at solidity 1, growing into a soft glow disc; never
     // under one screen pixel, or a scaled-down desktop turns to speckle

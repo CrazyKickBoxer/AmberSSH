@@ -410,3 +410,70 @@ std::string Utf8FromLatin1(std::string_view latin1)
 }
 
 } // namespace amber::vnc
+
+// ---- ExtendedDesktopSize -------------------------------------------------------
+namespace amber::vnc
+{
+
+Parse ParseScreenLayout(Reader& r, uint16_t w, uint16_t h, std::vector<Screen>& out)
+{
+    const size_t start = r.Consumed();
+    uint8_t n;
+    if (!r.U8(n))
+        return Parse::NeedMore;
+    if (n == 0)
+        return Parse::Bad;
+    if (!r.Peek(3 + static_cast<size_t>(n) * 16))
+    {
+        r.Rewind(start);
+        return Parse::NeedMore;
+    }
+    r.Skip(3);
+    out.clear();
+    for (uint8_t i = 0; i < n; ++i)
+    {
+        Screen s;
+        r.U32(s.id);
+        r.U16(s.x);
+        r.U16(s.y);
+        r.U16(s.w);
+        r.U16(s.h);
+        r.U32(s.flags);
+        if (s.w == 0 || s.h == 0 || static_cast<uint32_t>(s.x) + s.w > w || static_cast<uint32_t>(s.y) + s.h > h)
+            return Parse::Bad;
+        out.push_back(s);
+    }
+    return Parse::Ok;
+}
+
+std::vector<uint8_t> MsgSetDesktopSize(uint16_t w, uint16_t h, const Screen& screen)
+{
+    std::vector<uint8_t> m = { CSetDesktopSize, 0 };
+    auto put16 = [&](uint16_t v) { m.push_back(static_cast<uint8_t>(v >> 8)); m.push_back(static_cast<uint8_t>(v)); };
+    auto put32 = [&](uint32_t v) { put16(static_cast<uint16_t>(v >> 16)); put16(static_cast<uint16_t>(v)); };
+    put16(w);
+    put16(h);
+    m.push_back(1);   // one screen, covering the whole desktop
+    m.push_back(0);
+    put32(screen.id);
+    put16(0);
+    put16(0);
+    put16(w);
+    put16(h);
+    put32(screen.flags);
+    return m;
+}
+
+const char* ResizeStatusName(uint16_t status)
+{
+    switch (status)
+    {
+    case ResizeOk:             return "ok";
+    case ResizeProhibited:     return "the server's administrator prohibits it";
+    case ResizeOutOfResources: return "the server is out of resources";
+    case ResizeInvalidLayout:  return "the server called the layout invalid";
+    }
+    return "unknown status";
+}
+
+} // namespace amber::vnc

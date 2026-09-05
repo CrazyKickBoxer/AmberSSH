@@ -44,6 +44,7 @@ struct ClientOptions
     bool wantCursor = true;            // offer CursorShape
     bool wantDesktopSize = true;       // offer DesktopSize
     bool wantContinuousUpdates = true; // offer ContinuousUpdates
+    bool wantExtendedDesktopSize = true; // offer ExtendedDesktopSize (client-requested sizes)
     bool allowNone = true;             // accept security type None
     bool allowVncAuth = true;          // accept VNC Authentication
     // VeNCrypt (RfbTls.h). With `tls` set the client takes security type
@@ -130,6 +131,18 @@ public:
     DirtyRegion& Dirty() { return m_dirty; }
     // The framebuffer was resized by DesktopSize since the flag was last read.
     bool TakeResized();
+    // ---- ExtendedDesktopSize --------------------------------------------------
+    // True once the server has sent its screen layout: it takes
+    // SetDesktopSize. Before that a request is held and sent when it does.
+    bool SupportsSetDesktopSize() const { return m_extendedDesktopSize; }
+    // Ask the server for a w x h desktop (one screen). A no-op for the size
+    // it already is. The answer arrives as an ExtendedDesktopSize rectangle:
+    // a resize if granted, otherwise a status TakeResizeStatus() reports.
+    void RequestDesktopSize(uint16_t w, uint16_t h);
+    // The status of the last answer to OUR request (ResizeStatus), or -1 when
+    // none has arrived since last read. 0 means it was granted.
+    int TakeResizeStatus();
+    const std::vector<Screen>& Screens() const { return m_screens; }
     const CursorShape& Cursor() const { return m_cursor; }
     bool TakeCursorChanged();
     std::vector<std::string> TakeCutTexts();   // UTF-8, converted from Latin-1
@@ -192,6 +205,14 @@ private:
     int m_outstanding = 0;        // FramebufferUpdateRequests not yet answered
     bool m_continuous = false;    // the server accepted EnableContinuousUpdates
     bool m_continuousAsked = false;
+
+    // ExtendedDesktopSize
+    bool m_extendedDesktopSize = false;
+    std::vector<Screen> m_screens;
+    uint16_t m_pendingW = 0, m_pendingH = 0;   // a request made before the layout arrived
+    int m_resizeStatus = -1;
+    void SendDesktopSize(uint16_t w, uint16_t h);
+    void ApplyDesktopSize(uint16_t w, uint16_t h);   // what DesktopSize does, shared
 };
 
 } // namespace amber::vnc
