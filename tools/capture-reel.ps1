@@ -214,5 +214,26 @@ if ($Assemble) {
          "-c:v","libx264","-preset","slow","-crf","17","-pix_fmt","yuv420p",
          "-c:a","aac","-b:a","192k","-movflags","+faststart",$final)
   & $ff @a
-  if (Test-Path $final) { "reel: $final  ($([math]::Round((Get-Item $final).Length/1MB,1)) MB, $([math]::Round($length,1)) s)" }
+  if (-not (Test-Path $final)) { return }
+  "reel: $final  ($([math]::Round((Get-Item $final).Length/1MB,1)) MB, $([math]::Round($length,1)) s)"
+
+  # The master is the window's own shape, which is not 16:9 and is far too
+  # big to send anywhere. These two are: padded to a standard frame so no
+  # player has to guess, H.264 High at level 4.0 in yuv420p, AAC-LC stereo
+  # at 48 kHz, BT.709 tagged, and the index at the front so they start
+  # playing before they finish downloading.
+  foreach ($v in @(@{n='1080p'; w=1920; h=1080; rate=8}, @{n='720p'; w=1280; h=720; rate=3})) {
+    $innerH = [int]([math]::Floor($v.w * $ch / $cw / 2) * 2)
+    $pad = [int](($v.h - $innerH) / 2)
+    if ($pad -lt 0) { continue }
+    $share = "$out\AmberSSH-reel-$($v.n).mp4"
+    $sa = @("-hide_banner","-loglevel","error","-y","-i",$final,
+            "-vf","scale=$($v.w):${innerH}:flags=lanczos,pad=$($v.w):$($v.h):0:${pad}:black,format=yuv420p",
+            "-c:v","libx264","-profile:v","high","-level","4.0","-preset","slow","-crf","25",
+            "-maxrate","$($v.rate)M","-bufsize","$($v.rate * 2)M","-g","60",
+            "-color_primaries","bt709","-color_trc","bt709","-colorspace","bt709",
+            "-c:a","aac","-b:a","128k","-ar","48000","-ac","2","-movflags","+faststart",$share)
+    & $ff @sa
+    if (Test-Path $share) { "  $($v.n): $share  ($([math]::Round((Get-Item $share).Length/1MB,1)) MB)" }
+  }
 }
