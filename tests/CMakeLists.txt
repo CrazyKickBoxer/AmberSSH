@@ -33,7 +33,9 @@ add_executable(AmberTests
     VncProtocolTests.cpp
     VncClientTests.cpp
     VncSessionTests.cpp
+    VncKeysymTests.cpp
 
+    ${CMAKE_SOURCE_DIR}/src/vnc/Keysyms.cpp
     ${CMAKE_SOURCE_DIR}/src/vnc/RfbDes.cpp
     ${CMAKE_SOURCE_DIR}/src/vnc/RfbProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/vnc/RfbDecoders.cpp

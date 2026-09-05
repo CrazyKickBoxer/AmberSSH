@@ -163,6 +163,24 @@ private:
     void PreviewRemoteFileAt(int row, int col);   // Ctrl+click file → SFTP open
     void SftpNewTab();                 // "+" in the SFTP browser
 
+    // ---- VNC tabs (app_vnc.cpp) ------------------------------------------------
+    // A VNC tab is a Session carrying a VncTab; these are the places the
+    // desktop diverges from the terminal: how it starts, how its worker's
+    // events reach the tab, how it is drawn, and where input goes.
+    bool StartVncSession(amber::Session& s, amber::ConnectionRequest& req);
+    void PumpVncEvents();
+    amber::VncTab* VncActive();        // the active tab's desktop, or null
+    void RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame);
+    void DrawVncScene(ID3D12GraphicsCommandList* cl, FrameContext& frame,
+                      D3D12_GPU_VIRTUAL_ADDRESS cb);
+    bool VncKey(WPARAM vk, bool down);           // true when consumed
+    bool VncChar(wchar_t wc);
+    bool VncMouseButton(bool down, int px, int py, bool right, bool middle);
+    bool VncMouseMove(int px, int py);
+    bool VncWheel(int delta);
+    void VncReleaseAll();                        // held keys and buttons up
+    void VncStatusLines(const amber::Session& s, float y);
+
     // sessions --------------------------------------------------------------
     bool HasSession() const
     {

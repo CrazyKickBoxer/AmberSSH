@@ -77,6 +77,8 @@ set(AMBER_SOURCES
     src/vnc/RfbDecoders.h  src/vnc/RfbDecoders.cpp
     src/vnc/RfbClient.h    src/vnc/RfbClient.cpp
     src/vnc/VncSession.h   src/vnc/VncSession.cpp
+    src/vnc/Keysyms.h      src/vnc/Keysyms.cpp
+    src/sessions/VncTab.h  src/app_vnc.cpp
     src/glyphs/sampler.h   src/glyphs/sampler.cpp
     ${AMBER_CORE_SOURCES}
 )

@@ -17,6 +17,7 @@
 #include "../term/grid.h"
 #include "../term/vtparser.h"
 #include "../utility/SecureString.h"
+#include "VncTab.h"
 
 namespace amber
 {
@@ -267,6 +268,13 @@ struct Session
     // ids rather than "all panes" so a pane opened later is never swept in.
     std::vector<PaneId> broadcast;
 
+    // --- VNC (sessions/VncTab.h) ----------------------------------------------
+    // Set when this tab is a remote desktop rather than a terminal: the grid
+    // above is then unused and the tab draws its particle desktop instead.
+    // Only a tab's root session carries it.
+    std::unique_ptr<VncTab> vnc;
+    bool IsVnc() const { return vnc != nullptr; }
+
     // --- read-only -----------------------------------------------------------
     // A read-only pane still receives output, and can still be selected,
     // copied and searched; it just refuses keyboard input. For watching a
@@ -280,6 +288,11 @@ struct Session
     ~Session()
     {
         ssh.Disconnect();
+        // The worker is joined before the renderer it feeds is destroyed:
+        // VncTab's members go in declaration order, and the session comes
+        // first, but the explicit call keeps that from being a coincidence.
+        if (vnc && vnc->session)
+            vnc->session->Disconnect();
         if (logFile)
         {
             fclose(logFile);

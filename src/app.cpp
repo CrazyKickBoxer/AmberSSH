@@ -803,6 +803,7 @@ void App::Tick()
         // Minimized: zero GPU dispatches; keep draining the network so the
         // ring buffer never backs up.
         PumpSshEvents();
+        PumpVncEvents();
         ForEachSession([&](amber::Session& s) { DrainSessionOutput(s, 64); });
         Sleep(30);
         return;
@@ -948,6 +949,15 @@ void App::PumpSshEvents()
                         (coe == amber::CloseOnExit::CleanOnly && s.ssh.CleanClose()))
                         s.closeRequested = true;
                 }
+                break;
+
+            case SshEventType::ForwardUp:
+                // "bound:host:port". A VNC tab tunnelling through this session
+                // is waiting for exactly this; every one that asked gets it
+                // and keeps it only if it is its own.
+                for (auto& vp : m_sessions)
+                    if (vp->vnc && vp->vnc->session && vp->vnc->viaProfileId == s.profile.id)
+                        vp->vnc->session->OnForwardUp(ev.text);
                 break;
 
             case SshEventType::ClipboardText:
@@ -1493,10 +1503,37 @@ bool App::StartSession(amber::ConnectionRequest& req)
                                  ? pr.host + ":" + std::to_string(pr.port)
                                  : pr.username + "@" + pr.host;
             break;
+        case amber::Protocol::Vnc:
+            // a desktop has no user; the display number is what people know
+            session->label = pr.name.empty()
+                                 ? pr.host + ":" + std::to_string(pr.port > 0 ? pr.port : 5900)
+                                 : pr.name;
+            break;
         default:
             session->label = pr.username + "@" + pr.host;
             break;
         }
+    }
+
+    // A VNC tab diverges here: no grid to size, no SSH config to build, no
+    // shell. It still takes the theme rule and joins the tab list the same way.
+    if (req.profile.protocol == amber::Protocol::Vnc)
+    {
+        session->bornAt = m_time;
+        session->grid.Init(req.profile.cols > 0 ? req.profile.cols : 80,
+                           req.profile.rows > 0 ? req.profile.rows : 24);
+        session->themeOverride = req.profile.themeId >= 0
+                                     ? req.profile.themeId
+                                     : MatchHostTheme(req.profile.host);
+        const bool started = StartVncSession(*session, req);
+        req.password.Clear();
+        req.passphrase.Clear();
+        req.proxyPassword.Clear();
+        m_sessions.push_back(std::move(session));
+        m_active = static_cast<int>(m_sessions.size()) - 1;
+        if (Cur().themeOverride >= 0)
+            ApplyTheme();
+        return started;
     }
     session->state = amber::SessionState::Connecting;
     session->status = "connecting...";
@@ -1582,6 +1619,13 @@ void App::CloseSessionNow(int index)
     if (index < 0 || index >= static_cast<int>(m_sessions.size()))
         return;
     m_sessions[static_cast<size_t>(index)]->ssh.Disconnect();
+    if (auto& vt = m_sessions[static_cast<size_t>(index)]->vnc; vt && vt->session)
+    {
+        // held input up first, then the worker joined, then the GPU
+        // resources go with the session — after the frame that used them
+        vt->session->Disconnect();
+        m_device.WaitIdle();
+    }
     m_sessions.erase(m_sessions.begin() + index);
 
     if (m_sessions.empty())
@@ -1840,11 +1884,16 @@ void App::RenderFrame()
     // The time dial scales the simulation's own clock as well as the style
     // tempo, so slowing it down actually slows the springs rather than just
     // stretching the choreography over the same integration.
-    m_particles.Simulate(cl, frame, m_visuals, cursorIndex, m_time,
-                         m_dt * m_timeDial, m_gm,
-                         static_cast<float>(m_device.Width()),
-                         static_cast<float>(m_device.Height()),
-                         m_device.HdrActive());
+    if (VncActive())
+        // a desktop tab: upload its damage, run its energy and particle
+        // passes; the glyph field is not simulated for a grid nobody draws
+        RenderVncPasses(cl, frame);
+    else
+        m_particles.Simulate(cl, frame, m_visuals, cursorIndex, m_time,
+                             m_dt * m_timeDial, m_gm,
+                             static_cast<float>(m_device.Width()),
+                             static_cast<float>(m_device.Height()),
+                             m_device.HdrActive());
 
     RecordScene(cl);
 
@@ -2026,6 +2075,14 @@ void App::RecordScene(ID3D12GraphicsCommandList* cl)
 
     FrameContext& frame = m_device.Frame();
     D3D12_GPU_VIRTUAL_ADDRESS cb = m_particles.FrameCbGpu();
+    if (VncActive())
+    {
+        // a desktop tab: the particle desktop, then the overlays that any
+        // tab has (palette, notices), and none of the terminal's layers
+        DrawVncScene(cl, frame, cb);
+    }
+    else
+    {
     // Order matters for legibility: ANSI backgrounds and the selection
     // gradient first, then the crisp glyph cores (sharp, no blur), then the
     // additive particle field, then UI chrome on top.
@@ -2048,6 +2105,7 @@ void App::RecordScene(ID3D12GraphicsCommandList* cl)
     m_prims.RecordColor(cl, frame, cb);   // full-colour emoji over the field
     m_prims.RecordOverBlend(cl, frame, cb);   // darkening panels (palette)
     m_prims.RecordOver(cl, frame, cb);
+    }
 
     // Scene → readable by bloom (compute) and composite (pixel).
     {
@@ -4266,6 +4324,10 @@ void App::DrawStatusLine()
             m_prims.AddText(m_gm.originX, m_titleBarH + 2.0f + m_gm.cellH * 2.0f,
                             line, 0.6f, m_sampler);
 
+            // A desktop tab: its own two lines, in app_vnc.cpp.
+            if (S.IsVnc())
+                VncStatusLines(S, m_titleBarH + 2.0f + m_gm.cellH * 3.0f);
+
             // AmberX, when this session has a host. Two lines: what the
             // server is holding, and what the transport is doing. Only
             // counts appear here — no titles, no window contents, and the
@@ -4379,6 +4441,8 @@ void App::OnChar(wchar_t wc, bool alt)
         m_swallowChar = false;
         return;
     }
+    if (VncChar(wc))
+        return;
 
     // Surrogate pairs → full codepoint.
     char32_t cp;
@@ -4447,6 +4511,10 @@ void App::OnChar(wchar_t wc, bool alt)
 bool App::OnKeyDown(WPARAM vk)
 {
     m_lastInputTime = m_time;
+    // A desktop tab takes the keys a terminal would turn into bytes; the
+    // application's own shortcuts (palette, tabs) stay ahead of it inside.
+    if (VncKey(vk, true))
+        return true;
     KeyMods mods;
     mods.ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     mods.shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -4852,6 +4920,8 @@ void App::OnMouseButton(bool down, int px, int py, bool rightButton, bool middle
     m_lastInputTime = m_time;
     if (!HasSession())
         return;
+    if (VncMouseButton(down, px, py, rightButton, middleButton))
+        return;
 
     if (down)
     {
@@ -5065,6 +5135,8 @@ void App::OnMouseMove(int px, int py)
     // with no session open.
     m_sbHover = StatusChipAt(px, py);
     if (!HasSession())
+        return;
+    if (VncMouseMove(px, py))
         return;
 
     if (m_forceDrag)
@@ -14279,6 +14351,14 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
         handled = false;
         return 0;
 
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+        // Only a desktop tab cares about releases: a terminal sends bytes on
+        // the press. A key that went down on the far side must come up.
+        if (VncKey(wParam, false))
+            return 0;
+        handled = false;
+        return 0;
     case WM_LBUTTONDOWN:
     {
         int mx = GET_X_LPARAM(lParam), my = GET_Y_LPARAM(lParam);
@@ -14336,6 +14416,8 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
         return 0;
     }
     case WM_MOUSEWHEEL:
+        if (VncWheel(GET_WHEEL_DELTA_WPARAM(wParam)))
+            return 0;
         OnWheel(GET_WHEEL_DELTA_WPARAM(wParam),
                 (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) != 0);
         return 0;
@@ -14345,6 +14427,9 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
         return 0;
     case WM_KILLFOCUS:
         m_focused = false;
+        // whatever a desktop tab was holding down comes up: a Shift stuck on
+        // the far side is the classic VNC failure
+        VncReleaseAll();
         return 0;
 
     case WM_SIZING:
