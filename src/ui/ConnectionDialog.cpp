@@ -2219,9 +2219,16 @@ void ConnectionDialog::SyncRememberPassword(ConnectionProfile& p) const
 {
     // Two check boxes share one flag (SSH > Auth and VNC); the one on the
     // page that applies to the protocol is the one that counts.
+    // The check boxes are owner-drawn and keep their state in a window
+    // property, not in BM_GETCHECK (which always says unchecked for them):
+    // read it the way every other field is read.
     const int id = p.protocol == Protocol::Vnc ? IdRememberVncPassword : IdRememberPassword;
-    if (HWND h = GetDlgItem(m_dlg, id))
-        p.rememberPassword = SendMessageW(h, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    for (const Field& f : m_fields)
+        if (f.id == id)
+        {
+            p.rememberPassword = FieldValue(f) == L"1";
+            return;
+        }
 }
 
 void ConnectionDialog::SyncAuthEnabled()
