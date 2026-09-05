@@ -96,11 +96,42 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
     const float bornAge = time - bornTime;
     const bool materialising = fxMaterialise > 0.0 && !isCursor && bornAge >= 0.0 && bornAge < kMaterialiseSeconds;
 
+    // Shear plates (redraw style 6): the pixels of an eight-by-eight block
+    // move as one rigid plate — a slide and a small turn about the block's
+    // centre that settles — so the eye reads whole surfaces moving rather
+    // than a cloud of dots. Every particle works its block's transform out
+    // for itself from the block's own coordinates, so nothing has to be
+    // shared between them.
+    if (transition > 5.5 && !isCursor && !materialising && !resetFlag)
+    {
+        const uint2 blk = src / 8u;
+        const uint2 mid = blk * 8u + 4u;
+        const float plateAge = time - gStamp[mid / max(stride, 1u)];
+        if (plateAge >= 0.0 && plateAge < transitionSecs)
+        {
+            const float k = 1.0 - plateAge / transitionSecs;
+            const float k2 = k * k;
+            const uint h = blk.x * 73856093u ^ blk.y * 19349663u;
+            const float ang = (HashU(h) - 0.5) * 0.9 * k2;
+            const float2 slide = (float2(HashU(h + 7u), HashU(h + 13u)) - 0.5) * 34.0 * k2;
+            const float2 centre = float2(dstX, dstY) + (float2(mid) + 0.5) * scale;
+            const float2 off = home - centre;
+            const float ca = cos(ang), sa = sin(ang);
+            const float2 turned = float2(off.x * ca - off.y * sa, off.x * sa + off.y * ca);
+            const float2 target = centre + turned * (1.0 + 0.12 * k2) + slide;
+            const float step = max(dt, 1.0 / 240.0);
+            p.pos = target;
+            p.velPacked = PackVel((target - pos0) / step);
+            gParticles[i] = p;
+            return;
+        }
+    }
+
     // Light speed (redraw style 5): this pixel changed, so its particle
     // flies in from far out along a curved path and lands on it. The
     // particles themselves move; nothing resolves in place.
     float warpT = -1.0;
-    if (transition > 4.5 && !isCursor && !materialising && !resetFlag)
+    if (transition > 4.5 && transition < 5.5 && !isCursor && !materialising && !resetFlag)
     {
         const float changeAge = time - gStamp[src / max(stride, 1u)];
         if (changeAge >= 0.0 && changeAge < transitionSecs)

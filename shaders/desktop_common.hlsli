@@ -52,6 +52,12 @@ cbuffer DesktopCB : register(b1)
     // adds to SV_InstanceID (the cursor is a second draw call, so that its
     // dark outline can darken a white desktop — see DesktopParticles::Draw).
     float cursorHotX, cursorHotY, cursorGrid, instanceBase;
+    // How motion is drawn (docs/vnc.md, "Drawing motion"):
+    //   ignite  the energy field propagates as a front instead of decaying
+    //   trails  sub-positions per particle per frame (1 = off, else 3)
+    //   prism   red and blue split along the velocity, 0 = off
+    //   tails   the streak's tail bends by the curl field it flew through
+    float ignite, trails, prism, tails;
 };
 
 // materialise runs this long after bornTime: the flight home, then exact

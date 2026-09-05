@@ -307,14 +307,61 @@ pixel-exact during those 0.32 s, and the self-check runs with None.
 | Emboss flash | the new region appears as its edges alone, a bright relief, then the flat colour floods in behind them |
 | Light speed | **the particles themselves move** (the default): each changed pixel's particle is thrown far out along the ray from the screen's centre, turned by its own seed so the swarm arrives on curves rather than spokes, and flies back into its pixel in a quarter of a second, decelerating hard |
 
-Light speed is the one style that is not a recolour: nothing resolves in
-place. The sim reads the change stamp, places the particle on its flight
-path and writes the velocity that flight implies; the draw then stretches
-every moving particle along its velocity and adds a blue-white glow in
-proportion to its speed, so the flight is drawn as a streak rather than
-implied. That streak applies to any fast movement — the shockwave's push
-and the materialise flight get it too — and costs nothing at rest, where
-the velocity is zero.
+| Shear plates | the pixels of an eight-by-eight block move as one rigid plate, sliding and turning about the block's centre and settling, so the eye reads whole surfaces moving rather than a cloud of dots |
+
+Light speed and shear plates are the two styles that are not recolours:
+nothing resolves in place. The sim reads the change stamp, moves the
+particle, and writes the velocity that movement implies; the draw then
+draws the motion (below). Every particle works a plate's transform out for
+itself from the block's own coordinates, so no particle ever has to know
+what another is doing.
+
+## Drawing motion
+
+Five mechanisms, each independent, each switchable on the VNC page and in
+the menu, and each free while nothing is moving. They apply to every kind
+of movement the desktop has: a redraw's flight, the shockwave's push
+below solidity 100, and the materialise arrival.
+
+**Streaks.** A moving particle is no longer a square: its sprite is a
+spine from where it was to where it is, tapered towards the tail, and it
+gains a blue-white glow in proportion to its speed. At rest the velocity
+is zero and the sprite is the plain pixel again.
+
+**Prism split** (`vncFxPrism`). Red and blue separate along the direction
+of travel inside the pixel shader, so a fast particle leads blue and
+trails red instead of smearing towards grey. The motion is carried by the
+colour rather than by the length, which keeps it bright at any speed and
+costs two multiplies per pixel.
+
+**Curved tails** (`vncFxTails`). The tail end of that spine is displaced
+sideways by the curl field evaluated at the tail's own position, which is
+the field the particle just flew through. Nothing is stored, so there is
+no history buffer, and the streak curves the way the flight actually
+curved. A swarm in flight reads as tracer fire rather than a field of
+dashes.
+
+**Exposure trails** (`vncFxTrails`). Each moving particle is drawn three
+times a frame at sub-positions back along its own path, each sprite
+covering a third of it. That is an exposure rather than one stretched
+blob, so a streak stays smooth and evenly lit however fast the particle
+is going. The copies collapse to no area when the particle is not moving,
+so the cost at rest is vertices only.
+
+**Ignition fronts** (`vncFxIgnite`). The energy field stops decaying where
+it was lit and travels instead: each cell takes the most its neighbours
+four cells away held last frame, damped by how unlike them the picture is
+there. A change therefore propagates as a bright front at around 240 px a
+second, running through a window's fill and stopping at its border, so
+the interface's own structure conducts the light. Last frame's energy is
+copied aside before the pass rather than ping-ponged, so the descriptors
+the sim and the draw hold never change; the copy only happens while the
+front is switched on.
+
+The front is the one mechanism that changes the energy texture itself,
+which is what `--vnc-selfcheck` measures when it asserts that unchanged
+pixels were given no energy. The check therefore runs with it off, as it
+does with every other effect.
 
 ## The pointer
 

@@ -1369,7 +1369,11 @@ void ConnectionDialog::DefineFields()
     num(Page::Vnc, &P::vncMotion, L"Motion speed % (25-800; the swarm's drift, the motion style and the effects)", 90);
     choice(Page::Vnc, Kind::Combo, &P::vncTransition, L"Redraw style (how a changed region appears)",
            { L"None: the new pixels at once", L"Burn", L"Dissolve", L"Scan wipe", L"Emboss flash",
-             L"Light speed: the particles fly in" }, 0, 240);
+             L"Light speed: the particles fly in", L"Shear plates: blocks slide and turn as one" }, 0, 260);
+    chk(Page::Vnc, &P::vncFxPrism, L"Motion: red and blue separate along a moving particle (prism)");
+    chk(Page::Vnc, &P::vncFxTails, L"Motion: a streak's tail bends by the field it flew through");
+    chk(Page::Vnc, &P::vncFxTrails, L"Motion: three sub-positions a frame (exposure, not a smear)");
+    chk(Page::Vnc, &P::vncFxIgnite, L"Motion: energy travels as a front, conducted by the picture");
     chk(Page::Vnc, &P::vncFxShock, L"Effect: a click sends a shockwave (right click pulls inward)");
     choice(Page::Vnc, Kind::Combo, &P::vncShockStyle, L"Shockwave style",
            { L"Ring", L"Water drop (ripples)", L"Splash", L"Vortex" }, 0, 200);

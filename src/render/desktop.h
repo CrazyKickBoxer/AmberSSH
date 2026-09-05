@@ -56,8 +56,9 @@ struct DesktopCB
     float bornTime = -1e6f, shockAmp = 1, edgeGain = 4, vivid = 1;
     float shockStyle = 0, transition = 0, transitionSecs = 0.32f, streak = 0;
     float cursorHotX = 0, cursorHotY = 0, cursorGrid = 16, instanceBase = 0;
+    float ignite = 0, trails = 1, prism = 0, tails = 0;
 };
-static_assert(sizeof(DesktopCB) == 64 * 4, "DesktopCB must stay 64 scalars, mirrored in HLSL");
+static_assert(sizeof(DesktopCB) == 68 * 4, "DesktopCB must stay 68 scalars, mirrored in HLSL");
 static_assert(sizeof(DesktopCB) % 16 == 0, "constant buffers are 16-byte aligned");
 
 // The largest desktop the particle field takes at full density. 3840x2160
@@ -111,6 +112,12 @@ public:
         // with their own speed. Anything but 0 is an effect (not pixel-exact).
         int transition = 0;
         float transitionSecs = 0.32f;
+        // How motion is drawn. Each is independent of the others and of the
+        // transition; all four cost nothing while nothing is moving.
+        bool prism = false;      // red and blue separate along the velocity
+        bool tails = false;      // the streak's tail bends by the field it flew through
+        bool trails = false;     // three sub-positions a frame: real exposure, not a smear
+        bool ignite = false;     // energy propagates as a front, conducted by the picture
         // The effects, 0 off .. 1 full (docs/vnc.md, "Effects"). Any of them
         // above 0 takes the desktop out of faithful mode: the picture is
         // exact only once they have settled, and edge glow never settles.
@@ -191,6 +198,11 @@ private:
     // and when it changed (seconds, written by the energy pass)
     ComPtr<ID3D12Resource> m_prev;        // B8G8R8A8_UNORM fbW x fbH
     ComPtr<ID3D12Resource> m_stamp;       // R32_FLOAT sampledW x sampledH
+    // Last frame's energy, so the ignition front can read its neighbours
+    // while this frame's is being written: copied, not ping-ponged, so the
+    // descriptors the sim and draw hold never have to change.
+    ComPtr<ID3D12Resource> m_energyPrev;  // R16_FLOAT sampledW x sampledH
+    D3D12_RESOURCE_STATES m_energyPrevState = D3D12_RESOURCE_STATE_COPY_DEST;
     D3D12_RESOURCE_STATES m_prevState = D3D12_RESOURCE_STATE_COPY_DEST;
     D3D12_RESOURCE_STATES m_stampState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES m_particleState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -207,6 +219,9 @@ private:
     uint32_t m_slotFrameSrv = UINT32_MAX, m_slotCursorSrv = UINT32_MAX, m_slotEnergySrv = UINT32_MAX;
     uint32_t m_slotPrevSrv = UINT32_MAX, m_slotStampSrv = UINT32_MAX;
     uint32_t m_slotEnergyUav = UINT32_MAX, m_slotInjectUav = UINT32_MAX, m_slotStampUav = UINT32_MAX;
+    // the energy pass's own reads: last frame's energy and the framebuffer
+    // (whose local contrast decides what the front conducts through)
+    uint32_t m_slotEnergyPrevSrv = UINT32_MAX, m_slotFrameSrv2 = UINT32_MAX;
     double m_bornTime = -1e6;                     // Params::time at the last reset
 
     // the CPU shadow of the framebuffer, for colour deltas
@@ -226,5 +241,6 @@ private:
     bool m_lastFaithful = true, m_lastLight = false;
     uint32_t m_lastInstances = 0;                 // particles + cursor cluster, as simulated
     uint32_t m_lastCursorCount = 0;               // ... of which the pointer's
+    uint32_t m_lastTrails = 1;                    // exposure copies per particle this frame
     D3D12_GPU_VIRTUAL_ADDRESS m_cbCursorGpu = 0;  // the same constants with instanceBase set
 };

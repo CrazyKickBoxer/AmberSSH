@@ -86,15 +86,24 @@ bool DesktopParticles::Init(Device& dev, ShaderCompiler& sc)
         range.NumDescriptors = 3;
         range.BaseShaderRegister = 0;
         range.OffsetInDescriptorsFromTableStart = 0;
-        D3D12_ROOT_PARAMETER params[2] = {};
+        // ... and what it reads: last frame's energy and the picture
+        D3D12_DESCRIPTOR_RANGE reads = {};
+        reads.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        reads.NumDescriptors = 2;
+        reads.BaseShaderRegister = 0;
+        reads.OffsetInDescriptorsFromTableStart = 0;
+        D3D12_ROOT_PARAMETER params[3] = {};
         params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         params[0].Descriptor = { 1, 0 };
         params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         params[1].DescriptorTable = { 1, &range };
         params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[2].DescriptorTable = { 1, &reads };
+        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         D3D12_ROOT_SIGNATURE_DESC rs = {};
-        rs.NumParameters = 2;
+        rs.NumParameters = 3;
         rs.pParameters = params;
         m_energyRS = MakeRS(d, rs, "desktop energy RS");
         ShaderBlob cs = sc.Load(L"desktop_energy", L"CSMain", L"cs_6_0");
@@ -205,6 +214,16 @@ bool DesktopParticles::Init(Device& dev, ShaderCompiler& sc)
             m_slotPrevSrv == m_slotFrameSrv + 3 && m_slotStampSrv == m_slotFrameSrv + 4)
             break;
     }
+    // ... and the energy pass's own reads
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        m_slotEnergyPrevSrv = dev.AllocSrv();
+        m_slotFrameSrv2 = dev.AllocSrv();
+        if (m_slotFrameSrv2 == m_slotEnergyPrevSrv + 1)
+            break;
+    }
+    if (m_slotFrameSrv2 != m_slotEnergyPrevSrv + 1)
+        return false;
     if (m_slotInjectUav != m_slotEnergyUav + 1 || m_slotStampUav != m_slotEnergyUav + 2 ||
         m_slotCursorSrv != m_slotFrameSrv + 1 || m_slotEnergySrv != m_slotFrameSrv + 2 ||
         m_slotPrevSrv != m_slotFrameSrv + 3 || m_slotStampSrv != m_slotFrameSrv + 4)
@@ -292,6 +311,23 @@ bool DesktopParticles::Configure(uint32_t fbW, uint32_t fbH, uint32_t density)
                           D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                           L"desktop change stamp");
     m_stampState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    m_energyPrev = MakeTexture(d, DXGI_FORMAT_R16_FLOAT, L.sampledW, L.sampledH, D3D12_RESOURCE_FLAG_NONE,
+                               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, L"desktop energy (last frame)");
+    m_energyPrevState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC sep = {};
+        sep.Format = DXGI_FORMAT_R16_FLOAT;
+        sep.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        sep.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sep.Texture2D.MipLevels = 1;
+        d->CreateShaderResourceView(m_energyPrev.Get(), &sep, m_dev->SrvCpu(m_slotEnergyPrevSrv));
+        D3D12_SHADER_RESOURCE_VIEW_DESC sf2 = {};
+        sf2.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        sf2.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        sf2.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sf2.Texture2D.MipLevels = 1;
+        d->CreateShaderResourceView(m_frame.Get(), &sf2, m_dev->SrvCpu(m_slotFrameSrv2));
+    }
     {
         D3D12_UNORDERED_ACCESS_VIEW_DESC us = {};
         us.Format = DXGI_FORMAT_R32_FLOAT;
@@ -605,6 +641,15 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
     // a moving particle stretches along its velocity and glows: the motion
     // is drawn, not implied. Nothing moves in faithful mode, so it is free.
     cb.streak = cb.faithful ? 0.0f : 1.0f;
+    // How that motion is drawn. All four are free at rest: the prism and
+    // the tail bend only apply to a stretched sprite, the extra exposure
+    // copies collapse to no area, and the front only runs where there is
+    // energy to carry.
+    cb.prism = (p.prism && !cb.faithful) ? 0.65f : 0.0f;
+    cb.tails = (p.tails && !cb.faithful) ? 1.0f : 0.0f;
+    cb.trails = (p.trails && !cb.faithful) ? 3.0f : 1.0f;
+    cb.ignite = p.ignite ? 1.0f : 0.0f;
+    m_lastTrails = static_cast<uint32_t>(cb.trails);
     cb.resetFlag = m_needReset ? 1u : 0u;
     cb.sampledW = m_layout.sampledW;
     cb.sampledH = m_layout.sampledH;
@@ -649,13 +694,25 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
     }
 
     // ---- energy: decay + inject ----------------------------------------------
+    if (cb.ignite > 0.0f)
+    {
+        // the front reads its neighbours' energy as it was last frame, so
+        // this frame's writes cannot race it
+        Transition(cl, m_energy.Get(), m_energyState, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        Transition(cl, m_energyPrev.Get(), m_energyPrevState, D3D12_RESOURCE_STATE_COPY_DEST);
+        cl->CopyResource(m_energyPrev.Get(), m_energy.Get());
+        Transition(cl, m_energyPrev.Get(), m_energyPrevState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }
     Transition(cl, m_inject.Get(), m_injectState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     Transition(cl, m_energy.Get(), m_energyState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     Transition(cl, m_stamp.Get(), m_stampState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Transition(cl, m_frame.Get(), m_frameState,
+               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     cl->SetComputeRootSignature(m_energyRS.Get());
     cl->SetPipelineState(m_energyPSO.Get());
     cl->SetComputeRootConstantBufferView(0, m_cbGpu);
     cl->SetComputeRootDescriptorTable(1, m_dev->SrvGpu(m_slotEnergyUav));
+    cl->SetComputeRootDescriptorTable(2, m_dev->SrvGpu(m_slotEnergyPrevSrv));
     cl->Dispatch((m_layout.sampledW + 15) / 16, (m_layout.sampledH + 15) / 16, 1);
     {
         D3D12_RESOURCE_BARRIER b[2] = {};
@@ -705,9 +762,11 @@ void DesktopParticles::Draw(ID3D12GraphicsCommandList* cl)
     cl->SetGraphicsRootShaderResourceView(1, m_particles->GetGPUVirtualAddress());
     cl->SetGraphicsRootDescriptorTable(2, m_dev->SrvGpu(m_slotFrameSrv));
     cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    // exposure trails draw each particle more than once: the copies tile
+    // the path it covered this frame
     const uint32_t field = m_lastInstances - m_lastCursorCount;
     if (field)
-        cl->DrawInstanced(6, field, 0, 0);
+        cl->DrawInstanced(6, field * std::max(m_lastTrails, 1u), 0, 0);
     // The pointer, second and always over-blended: an additive cursor cannot
     // darken anything, so on a white desktop it would be invisible. Its own
     // constants carry the instance offset (SV_InstanceID starts at 0 here).

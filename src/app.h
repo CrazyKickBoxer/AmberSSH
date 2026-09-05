@@ -52,8 +52,8 @@ enum VncMenuId : int
     IdmVncMotionLast = IdmVncMotionFirst + 5,
     IdmVncShockFirst = 41810,      // +0..3 -> ring / water drop / splash / vortex
     IdmVncShockLast = IdmVncShockFirst + 3,
-    IdmVncFxFirst = 41820,         // +0..3 -> shock / edge / heat / materialise toggles
-    IdmVncFxLast = IdmVncFxFirst + 3,
+    IdmVncFxFirst = 41820,         // +0..7 -> shock / edge / heat / materialise / prism / tails / trails / ignite
+    IdmVncFxLast = IdmVncFxFirst + 7,
     IdmVncSizeFirst = 41830,       // +0..7 -> the Desktop size choices
     IdmVncSizeLast = IdmVncSizeFirst + 7,
     IdmVncRedrawFirst = 41840,     // +0..5 -> none / burn / dissolve / scan wipe / emboss / light speed

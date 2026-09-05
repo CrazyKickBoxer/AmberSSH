@@ -145,10 +145,11 @@ float LumaAt(int2 p)
 struct VSOut
 {
     float4 pos : SV_Position;
-    float2 uv  : TEXCOORD0;    // -1..1 across the quad
+    float2 uv  : TEXCOORD0;    // -1..1 across the sprite, x along the motion
     float3 rgb : COLOR0;       // linear light
     float  alpha : COLOR1;
     float  soft : COLOR2;      // 0 = hard pixel, 1 = soft disc
+    float  split : COLOR3;     // prism: how far red and blue separate along x
 };
 
 static const float2 kCorners[6] = {
@@ -159,9 +160,16 @@ static const float2 kCorners[6] = {
 VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
 {
     VSOut o;
+    // Exposure trails: a moving particle is drawn `trails` times a frame at
+    // sub-positions back along its own path, each covering its share of it.
+    // That is an exposure rather than one stretched blob, so a streak stays
+    // smooth and evenly lit however fast the particle is going. At rest the
+    // extra copies collapse to nothing (see `degenerate` below).
+    const uint mult = max(uint(trails), 1u);
+    const uint sub = iid % mult;
     // The pointer is a second draw call whose instance ids start at 0;
     // instanceBase says where its particles are (DesktopParticles::Draw).
-    const uint idx = uint(instanceBase) + iid;
+    const uint idx = uint(instanceBase) + iid / mult;
     const DeskParticle p = gParticles[idx];
     const bool isCursor = idx >= particleCount;
     const float loose = 1.0 - solidity;
@@ -291,15 +299,23 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     // speed is zero and nothing here does anything.
     float2 axis = float2(1.0, 0.0), across = float2(0.0, 1.0);
     float stretch = 0.0;
+    float split = 0.0;
+    float2 subOff = float2(0.0, 0.0);
+    bool degenerate = sub > 0u;   // an extra exposure copy draws only if there is motion
     if (streak > 0.0 && !isCursor)
     {
         const float2 vel = UnpackVel(p.velPacked);
         const float sp = length(vel);
         if (sp > 60.0)
         {
+            degenerate = false;
             axis = vel / sp;
             across = float2(-axis.y, axis.x);
-            stretch = min(sp * max(dt, 1.0 / 240.0) * 0.5, 40.0) * streak;
+            // the path covered this frame, shared out among the copies
+            const float path = min(sp * max(dt, 1.0 / 240.0), 90.0) * streak;
+            stretch = path * 0.5 / float(mult);
+            subOff = -axis * path * (float(sub) / float(mult));
+            split = prism;
             rgb += float3(0.22, 0.5, 1.35) * saturate(sp / 1400.0) * streak;
         }
     }
@@ -327,9 +343,32 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     if (fxMaterialise > 0.0 && !isCursor)
         o.rgb *= smoothstep(0.0, kMaterialiseSeconds, time - bornTime);
 
+    // The sprite is a spine from where the particle was to where it is,
+    // tapered towards the tail, and — with tails on — bent sideways by the
+    // curl field at the tail's own position, which is the field it just
+    // flew through. A still particle keeps the plain square.
     const float2 corner = kCorners[vid];
-    const float2 px = p.pos + axis * (corner.x * (half + stretch)) + across * (corner.y * half) -
-                      float2(0.0, lift);
+    const float halfLong = half + stretch;
+    const float2 centre = p.pos + subOff;
+    float2 headPt = centre + axis * halfLong;
+    float2 tailPt = centre - axis * halfLong;
+    float taper = 1.0;
+    if (stretch > 0.0)
+    {
+        taper = 0.35;
+        if (tails > 0.0)
+        {
+            const float2 c2 = Curl2(float3(tailPt * curlScale, time * 0.3));
+            tailPt += across * dot(c2, across) * curlAmp * tails * 2.0;
+        }
+    }
+    const float along = corner.x * 0.5 + 0.5;      // 0 at the tail, 1 at the head
+    const float2 spine = lerp(tailPt, headPt, along);
+    const float wide = lerp(half * taper, half, along);
+    float2 px = spine + across * (corner.y * wide) - float2(0.0, lift);
+    if (degenerate)
+        px = centre;                               // no motion: this copy has no area
+    o.split = split;
     o.uv = corner;
     o.pos = float4(px.x / screenW * 2.0 - 1.0, 1.0 - px.y / screenH * 2.0, 0.0, 1.0);
     return o;
@@ -341,8 +380,19 @@ float4 PSMain(VSOut i) : SV_Target
     const float d = length(i.uv);
     const float hard = 1.0;
     const float disc = saturate(1.0 - d) * saturate(1.0 - d);
-    const float cov = lerp(hard, disc, i.soft) * i.alpha;
+    float cov = lerp(hard, disc, i.soft) * i.alpha;
+    // Prism: red and blue separate along the direction of travel, so a fast
+    // particle leads blue and trails red instead of smearing to grey. The
+    // motion is carried by the colour, which stays bright at any speed.
+    float3 rgb = i.rgb;
+    if (i.split > 0.0)
+    {
+        const float g = clamp(i.uv.x, -1.0, 1.0) * i.split;
+        rgb.r *= 1.0 - g;
+        rgb.b *= 1.0 + g;
+        rgb.g *= 1.0 - 0.22 * abs(g);
+    }
     if (lightMode > 0.5 || faithful)
-        return float4(i.rgb * cov, cov);       // over: premultiplied
-    return float4(i.rgb * cov, cov);           // additive: alpha ignored by the blend
+        return float4(rgb * cov, cov);         // over: premultiplied
+    return float4(rgb * cov, cov);             // additive: alpha ignored by the blend
 }

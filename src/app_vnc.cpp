@@ -425,8 +425,12 @@ void App::RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame)
     p.fxMaterialise = prof.vncFxMaterialise ? 1.0f : 0.0f;
     p.vivid = static_cast<float>(std::clamp(prof.vncVividness, 50, 200)) / 100.0f;
     p.motion = static_cast<float>(std::clamp(prof.vncMotion, 25, 800)) / 100.0f;
-    p.transition = std::clamp(prof.vncTransition, 0, 5);
+    p.transition = std::clamp(prof.vncTransition, 0, 6);
     p.transitionSecs = 0.32f;
+    p.prism = prof.vncFxPrism;
+    p.tails = prof.vncFxTails;
+    p.trails = prof.vncFxTrails;
+    p.ignite = prof.vncFxIgnite;
     p.dstX = t.dstX;
     p.dstY = t.dstY;
     p.scale = t.scale;
@@ -695,10 +699,14 @@ const wchar_t* const kVncMotionLabels[] = { L"&Slow (50%)", L"&Normal (100%)", L
                                             L"F&astest (800%)", L"&Custom..." };
 const int kVncMotionValues[] = { 50, 100, 200, 400, 800 };   // the sixth entry prompts
 const wchar_t* const kVncRedrawLabels[] = { L"&None (the new pixels at once)", L"&Burn", L"&Dissolve", L"&Scan Wipe",
-                                            L"&Emboss Flash", L"&Light Speed (the particles fly in)" };
+                                            L"&Emboss Flash", L"&Light Speed (the particles fly in)",
+                                            L"Shear &Plates (blocks move as one)" };
 const wchar_t* const kVncShockLabels[] = { L"&Ring", L"&Water Drop", L"&Splash", L"&Vortex" };
-const wchar_t* const kVncFxLabels[] = { L"&Shockwave on Click", L"&Edge Glow", L"&Heat on Change",
-                                        L"&Materialise on Connect" };
+const wchar_t* const kVncFxLabels[] = { L"&Shockwave on Click", L"&Edge Glow",  L"&Heat on Change",
+                                        L"&Materialise on Connect", L"Motion: &Prism Split",
+                                        L"Motion: Curved &Tails", L"Motion: E&xposure Trails",
+                                        L"Motion: &Ignition Fronts" };
+constexpr int kVncFxCount = 8;
 const wchar_t* const kVncSizeLabels[] = { L"The &Server's Own", L"&Fit This Window", L"1280 \x00d7 720",
                                           L"1366 \x00d7 768", L"1600 \x00d7 900", L"1920 \x00d7 1080",
                                           L"2560 \x00d7 1440", L"&Custom (from the profile)" };
@@ -713,7 +721,7 @@ void App::BuildVncMenu(HMENU bar)
     for (int i = 0; i < 4; ++i)
         AppendMenuW(shock, MF_STRING, IdmVncShockFirst + i, kVncShockLabels[i]);
     HMENU redraw = CreatePopupMenu();
-    for (int i = 0; i < 6; ++i)
+    for (int i = 0; i < 7; ++i)
         AppendMenuW(redraw, MF_STRING, IdmVncRedrawFirst + i, kVncRedrawLabels[i]);
     HMENU size = CreatePopupMenu();
     for (int i = 0; i < 8; ++i)
@@ -723,8 +731,12 @@ void App::BuildVncMenu(HMENU bar)
     AppendMenuW(m, MF_POPUP, reinterpret_cast<UINT_PTR>(motion), L"Particle &Speed");
     AppendMenuW(m, MF_POPUP, reinterpret_cast<UINT_PTR>(shock), L"Shock&wave Style");
     AppendMenuW(m, MF_POPUP, reinterpret_cast<UINT_PTR>(redraw), L"&Redraw Style");
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < kVncFxCount; ++i)
+    {
+        if (i == 4)
+            AppendMenuW(m, MF_SEPARATOR, 0, nullptr);   // the four above are events; these are how motion is drawn
         AppendMenuW(m, MF_STRING, IdmVncFxFirst + i, kVncFxLabels[i]);
+    }
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_POPUP, reinterpret_cast<UINT_PTR>(size), L"&Desktop Size");
     AppendMenuW(m, MF_STRING, IdmVncRefresh, L"&Refresh Screen");
@@ -749,14 +761,16 @@ void App::UpdateVncMenuChecks()
             motionIdx = i;
     CheckMenuRadioItem(m_menu, IdmVncMotionFirst, IdmVncMotionLast, IdmVncMotionFirst + motionIdx, MF_BYCOMMAND);
     CheckMenuRadioItem(m_menu, IdmVncRedrawFirst, IdmVncRedrawLast,
-                       IdmVncRedrawFirst + std::clamp(p ? p->vncTransition : 5, 0, 5), MF_BYCOMMAND);
+                       IdmVncRedrawFirst + std::clamp(p ? p->vncTransition : 5, 0, 6), MF_BYCOMMAND);
     CheckMenuRadioItem(m_menu, IdmVncShockFirst, IdmVncShockLast,
                        IdmVncShockFirst + std::clamp(p ? p->vncShockStyle : 0, 0, 3), MF_BYCOMMAND);
     CheckMenuRadioItem(m_menu, IdmVncSizeFirst, IdmVncSizeLast,
                        IdmVncSizeFirst + std::clamp(p ? p->vncDesktopSize : 1, 0, 7), MF_BYCOMMAND);
-    const bool fx[4] = { p ? p->vncFxShock : true, p ? p->vncFxEdge : true, p ? p->vncFxHeat : true,
-                         p ? p->vncFxMaterialise : true };
-    for (int i = 0; i < 4; ++i)
+    const bool fx[kVncFxCount] = { p ? p->vncFxShock : true,  p ? p->vncFxEdge : true,
+                                   p ? p->vncFxHeat : true,   p ? p->vncFxMaterialise : true,
+                                   p ? p->vncFxPrism : true,  p ? p->vncFxTails : true,
+                                   p ? p->vncFxTrails : true, p ? p->vncFxIgnite : true };
+    for (int i = 0; i < kVncFxCount; ++i)
         CheckMenuItem(m_menu, IdmVncFxFirst + i, MF_BYCOMMAND | (fx[i] ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(m_menu, IdmVncViewOnly,
                   MF_BYCOMMAND | (t && t->session && t->session->ViewOnly() ? MF_CHECKED : MF_UNCHECKED));
@@ -799,10 +813,12 @@ bool App::VncMenuCommand(int id)
     }
     else if (id >= IdmVncFxFirst && id <= IdmVncFxLast)
     {
-        bool* flags[4] = { &p.vncFxShock, &p.vncFxEdge, &p.vncFxHeat, &p.vncFxMaterialise };
+        bool* flags[kVncFxCount] = { &p.vncFxShock, &p.vncFxEdge,   &p.vncFxHeat,   &p.vncFxMaterialise,
+                                     &p.vncFxPrism, &p.vncFxTails, &p.vncFxTrails, &p.vncFxIgnite };
         bool& f = *flags[id - IdmVncFxFirst];
         f = !f;
-        static const char* names[] = { "shockwave", "edge glow", "heat", "materialise" };
+        static const char* names[] = { "shockwave", "edge glow", "heat",            "materialise",
+                                       "prism",     "tails",     "exposure trails", "ignition fronts" };
         SetStatus(std::string("VNC: ") + names[id - IdmVncFxFirst] + (f ? " on" : " off"));
     }
     else if (id >= IdmVncSizeFirst && id <= IdmVncSizeLast)
@@ -925,9 +941,14 @@ void App::VncStatusLines(const Session& s, float y)
     if (s.profile.vncFxHeat) fx += " heat";
     if (s.profile.vncFxMaterialise) fx += " materialise";
     {
-        static const char* redraw[] = { "",           " redraw:burn",   " redraw:dissolve",
-                                        " redraw:scan", " redraw:emboss", " redraw:lightspeed" };
-        fx += redraw[std::clamp(s.profile.vncTransition, 0, 5)];
+        static const char* redraw[] = { "",             " redraw:burn",      " redraw:dissolve",
+                                        " redraw:scan", " redraw:emboss",    " redraw:lightspeed",
+                                        " redraw:plates" };
+        fx += redraw[std::clamp(s.profile.vncTransition, 0, 6)];
+        if (s.profile.vncFxPrism) fx += " prism";
+        if (s.profile.vncFxTails) fx += " tails";
+        if (s.profile.vncFxTrails) fx += " exposure";
+        if (s.profile.vncFxIgnite) fx += " ignite";
     }
     const std::string contract = fx.empty() ? (s.profile.vncSolidity >= 100 && t.nativeScale ? "faithful" : "swarm")
                                             : "FX:" + fx;
