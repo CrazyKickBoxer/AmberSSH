@@ -39,7 +39,10 @@ struct DesktopCB
 {
     float time = 0, dt = 0, effectSpeed = 1, solidity = 1;
     float springK = 400, damping = 24, curlAmp = 1, curlScale = 0.004f;
-    float particleSize = 1, glowSize = 3, disturbance = 1, energyDecay = 0.15f;
+    // energyDecay: retention per second — 0.03 means a changed pixel's heat
+    // is a third gone in a tenth of a second and all but gone in half; a
+    // longer tail reads as ghosting on a desktop
+    float particleSize = 1, glowSize = 3, disturbance = 1, energyDecay = 0.03f;
     float dstX = 0, dstY = 0, scale = 1, jitter = 0;
     float screenW = 1, screenH = 1, mouseX = -1e6f, mouseY = -1e6f;
     float mouseRadius = 120, mouseForce = 0, shockX = 0, shockY = 0;

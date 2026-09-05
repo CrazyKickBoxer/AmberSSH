@@ -305,10 +305,17 @@ starts from.
 Shockwave styles, all driven by a button press inside the picture (a right
 click reverses the amplitude):
 
-* **Ring** — one wave leaving the click at 900 px/s, pushing what it passes, gone in a second.
-* **Water drop** — concentric ripples spreading at 600 px/s, each a push out and back, the train fading with distance.
-* **Splash** — a short hard burst close to the click with an upward lean.
-* **Vortex** — a swirl around the click that also draws inward, unwinding over about a second and a half.
+Every style is an impulse, not a pattern: a hard kick over a few frames
+(gone in about a third of a second), and the spring — twice as stiff at
+solidity 100 — brings the particles straight back with no overshoot. A
+pattern that lingers reads as the ghosting of an old passive-matrix LCD,
+which is exactly the look this avoids. The heat effect's energy decays
+on the same principle (a third gone in a tenth of a second).
+
+* **Ring** — one thin fast wave out from the click at 2400 px/s.
+* **Water drop** — the plop: a dimple's worth of particles thrown outward, hardest at the centre.
+* **Splash** — the same with an upward lean.
+* **Vortex** — one brief twist around the point.
 
 A desktop resize is reported on the status line for 1.5 s, not as a notice
 that stays.

@@ -406,7 +406,7 @@ void App::RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame)
     // the tab's own shockwave (a click), not the terminal's
     p.shockX = t.shockX;
     p.shockY = t.shockY;
-    p.shockTime = t.shockTime >= 0.0 && m_time - t.shockTime < 1.5 ? static_cast<float>(t.shockTime) : -1.0f;
+    p.shockTime = t.shockTime >= 0.0 && m_time - t.shockTime < 0.6 ? static_cast<float>(t.shockTime) : -1.0f;
     p.shockAmp = t.shockAmp;
     p.shockStyle = prof.vncShockStyle;
     p.fxShock = prof.vncFxShock ? 1.0f : 0.0f;
