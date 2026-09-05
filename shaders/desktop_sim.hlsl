@@ -115,10 +115,12 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
         const float2 centre = float2(screenW, screenH) * 0.5;
         const float2 ray = home - centre;
         const float2 dir = normalize(ray + float2(1e-3, 1e-3));
-        const float spin = (1.0 - e) * (2.4 * seed - 1.2) + (1.0 - e) * (1.0 - e) * 1.1;
+        const float spin = (1.0 - e) * (1.0 * seed - 0.5) + (1.0 - e) * (1.0 - e) * 0.45;
         const float ca = cos(spin), sa = sin(spin);
         const float2 turned = float2(dir.x * ca - dir.y * sa, dir.x * sa + dir.y * ca);
-        const float far = (700.0 + 900.0 * HashU(i * 13u + 29u)) * (1.0 - e);
+        // a short launch: the region snaps back into place rather than
+        // travelling across the screen
+        const float far = (110.0 + 170.0 * HashU(i * 13u + 29u)) * (1.0 - e);
         const float2 target = home + turned * far;
         const float step = max(dt, 1.0 / 240.0);
         p.pos = target;

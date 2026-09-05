@@ -305,7 +305,7 @@ pixel-exact during those 0.32 s, and the self-check runs with None.
 | Dissolve | each pixel flips from old to new at its own moment |
 | Scan wipe | a bright line sweeps down each 48-row band with the new picture behind it |
 | Emboss flash | the new region appears as its edges alone, a bright relief, then the flat colour floods in behind them |
-| Light speed | **the particles themselves move** (the default): each changed pixel's particle is thrown far out along the ray from the screen's centre, turned by its own seed so the swarm arrives on curves rather than spokes, and flies back into its pixel over 0.55 s, decelerating hard |
+| Light speed | **the particles themselves move** (the default): each changed pixel's particle is thrown far out along the ray from the screen's centre, turned by its own seed so the swarm arrives on curves rather than spokes, and flies back into its pixel in a quarter of a second, decelerating hard |
 
 Light speed is the one style that is not a recolour: nothing resolves in
 place. The sim reads the change stamp, places the particle on its flight

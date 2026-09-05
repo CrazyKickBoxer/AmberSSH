@@ -580,9 +580,9 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
     cb.bornTime = static_cast<float>(m_bornTime);
     cb.transition = static_cast<float>(std::clamp(p.transition, 0, 5));
     cb.transitionSecs = std::clamp(p.transitionSecs, 0.05f, 2.0f);
-    // light speed needs longer than a recolour: the flight is the effect
+    // light speed is a short flight, not a journey: quicker than a recolour
     if (cb.transition > 4.5f)
-        cb.transitionSecs = std::max(cb.transitionSecs, 0.55f);
+        cb.transitionSecs = 0.26f;
     const bool anyFx = cb.fxShock > 0.0f || cb.fxEdge > 0.0f || cb.fxHeat > 0.0f || cb.fxMaterialise > 0.0f ||
                        cb.transition > 0.0f;
     cb.motion = std::clamp(p.motion, 0.25f, 4.0f);
