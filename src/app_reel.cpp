@@ -649,40 +649,40 @@ void App::ReelBuild()
     // walked. Every arrow is a real key on the far side and every highlight
     // is a real repaint coming back over RFB: the whole menu redraws in
     // particles five times a second.
-    at(2.60, [chord] { chord(amber::vnc::XK_Alt_L, kF1); });
-    for (int i = 0; i < 13; ++i)
-        at(3.00 + i * 0.3, [tap] { tap(kDown); });
-    at(6.90, [tap] { tap(kRight); });                                   // into a submenu
+    at(2.40, [chord] { chord(amber::vnc::XK_Alt_L, kF1); });
+    for (int i = 0; i < 11; ++i)
+        at(2.80 + i * 0.28, [tap] { tap(kDown); });
+    at(6.10, [tap] { tap(kRight); });                                   // into a submenu
     for (int i = 0; i < 4; ++i)
-        at(7.20 + i * 0.3, [tap] { tap(kDown); });
-    at(8.40, [tap] { tap(kEscape); });
-    at(8.60, [tap] { tap(kEscape); });
-    at(9.00, [shock] { shock(1, 0.45f, 0.50f); });                      // water drop
+        at(6.40 + i * 0.28, [tap] { tap(kDown); });
+    at(7.70, [tap] { tap(kEscape); });
+    at(7.90, [tap] { tap(kEscape); });
+    at(8.30, [shock] { shock(1, 0.45f, 0.50f); });                      // water drop
 
     // The file manager, opened with Super+E, put through its three views and
     // sent somewhere else, then closed. A window opening and closing is the
     // hardest thing to draw in particles and the best thing to watch.
-    at(9.60, [chord] { chord(amber::vnc::XK_Super_L, amber::vnc::KeysymFromCodePoint(U'e')); });
-    at(10.8, [chord] { chord(amber::vnc::XK_Control_L, amber::vnc::KeysymFromCodePoint(U'2')); });
+    at(8.50, [chord] { chord(amber::vnc::XK_Super_L, amber::vnc::KeysymFromCodePoint(U'e')); });
+    at(11.6, [chord] { chord(amber::vnc::XK_Control_L, amber::vnc::KeysymFromCodePoint(U'2')); });
     for (int i = 0; i < 5; ++i)
-        at(11.2 + i * 0.3, [tap] { tap(kDown); });
-    at(12.8, [chord] { chord(amber::vnc::XK_Control_L, amber::vnc::KeysymFromCodePoint(U'3')); });
+        at(12.0 + i * 0.28, [tap] { tap(kDown); });
+    at(13.5, [chord] { chord(amber::vnc::XK_Control_L, amber::vnc::KeysymFromCodePoint(U'3')); });
     for (int i = 0; i < 4; ++i)
-        at(13.2 + i * 0.3, [tap] { tap(kRight); });
-    at(14.5, [chord] { chord(amber::vnc::XK_Control_L, amber::vnc::KeysymFromCodePoint(U'1')); });
-    for (int i = 0; i < 6; ++i)
-        at(15.0 + i * 0.3, [tap] { tap(kRight); });
+        at(13.9 + i * 0.28, [tap] { tap(kRight); });
+    at(15.1, [chord] { chord(amber::vnc::XK_Control_L, amber::vnc::KeysymFromCodePoint(U'1')); });
+    for (int i = 0; i < 5; ++i)
+        at(15.5 + i * 0.28, [tap] { tap(kRight); });
     // Alt+F4, not the application's own quit: it goes to the window manager,
     // so it lands wherever the keyboard focus happens to be inside the window.
     // Ctrl+W, the window's own close. Neither Alt+F4 nor Ctrl+Q reaches it
     // through this server — tried both, and only this one lands.
-    at(16.9, [chord] { chord(amber::vnc::XK_Control_L, amber::vnc::KeysymFromCodePoint(U'w')); });
-    at(17.9, [shock] { shock(2, 0.75f, 0.42f); });                      // splash
+    at(17.0, [chord] { chord(amber::vnc::XK_Control_L, amber::vnc::KeysymFromCodePoint(U'w')); });
+    at(17.8, [shock] { shock(2, 0.75f, 0.42f); });                      // splash
 
     // A terminal on the far side, opened with the desktop's own Ctrl+Alt+T,
     // then real commands on the real machine two beats apart, each one
     // rematerialising in a style of its own.
-    at(18.8, [key] {
+    at(18.4, [key] {
         key(amber::vnc::XK_Control_L, true);
         key(amber::vnc::XK_Alt_L, true);
         key(amber::vnc::KeysymFromCodePoint(U't'), true);
@@ -690,23 +690,21 @@ void App::ReelBuild()
         key(amber::vnc::XK_Alt_L, false);
         key(amber::vnc::XK_Control_L, false);
     });
-    at(20.5, [redraw, type] { redraw(7);  type("uname -srm"); });                             // iris
-    at(22.5, [redraw, type] { redraw(8);  type("free -h"); });                                // sonic boom
-    at(24.5, [redraw, type] { redraw(9);  type("ls -la /etc | head -18"); });                 // shatter
-    at(26.5, [redraw, type] { redraw(10); type("df -h /"); });                                // odometer
-    at(28.5, [redraw, type] { redraw(6);  type("systemctl is-active sshd vncserver@:1"); });  // shear plates
-    at(30.5, [redraw, type] { redraw(5);  type("ip -br a"); });                               // light speed
-    at(32.5, [redraw, type] { redraw(7);  type("ls /usr/bin | wc -l"); });                    // iris
-    at(34.5, [redraw, type] { redraw(8);  type("journalctl -n 6 --no-pager"); });             // sonic boom
-    at(36.5, [redraw, type] { redraw(9);  type("top -b -n1 | head -12"); });                  // shatter
-    at(38.5, [redraw, type] { redraw(1);  type("exit"); });                                   // burn
-    at(40.0, [shock] { shock(1, 0.50f, 0.50f); });
-    at(41.0, [shock] { shock(3, 0.50f, 0.50f); });                      // vortex
+    at(20.4, [redraw, type] { redraw(7);  type("uname -srm"); });                             // iris
+    at(22.6, [redraw, type] { redraw(8);  type("free -h"); });                                // sonic boom
+    at(24.8, [redraw, type] { redraw(9);  type("ls -la /etc | head -18"); });                 // shatter
+    at(27.0, [redraw, type] { redraw(10); type("df -h /"); });                                // odometer
+    at(29.2, [redraw, type] { redraw(6);  type("systemctl is-active sshd vncserver@:1"); });  // shear plates
+    at(31.4, [redraw, type] { redraw(5);  type("ip -br a"); });                               // light speed
+    at(33.6, [redraw, type] { redraw(8);  type("top -b -n1 | head -12"); });                  // sonic boom
+    at(35.8, [redraw, type] { redraw(1);  type("exit"); });                                   // burn
+    at(36.9, [shock] { shock(1, 0.50f, 0.50f); });
+    at(37.7, [shock] { shock(3, 0.50f, 0.50f); });                      // vortex
 
     // ---- the terminal: the cut is a bang, not a fade --------------------------------
     // Beat 43 lands on the downbeat: the picture goes white for a sixth of a
     // beat, and what comes back is the other half of the application.
-    at(43.0, [this, &r, showTerminal, appearance] {
+    at(38.5, [this, &r, showTerminal, appearance] {
         appearance(1);               // the flash
         showTerminal();
         r.cascade = m_fxCascade;
@@ -723,59 +721,61 @@ void App::ReelBuild()
                 "\x1b[0m\r\n\x1b[1ma particle terminal\x1b[0m"
                 "   \x1b[2m(recorded; the figures are this machine's own)\x1b[0m\r\n";
     });
-    at(43.16, [appearance] { appearance(0); });
+    at(38.66, [appearance] { appearance(0); });
 
     // The whole machine's /usr/bin, edge to edge, and then six fields in
     // three beats: a montage on the half-beat before the paced demonstration
     // starts. Every one of these is two thousand glyphs re-forming at once.
-    at(44.0, [fillScreen] { fillScreen(0); });
+    at(39.5, [fillScreen] { fillScreen(0); });
     {
         const int kRush[] = { 5, 20, 8, 16, 2, 12 };
         for (int i = 0; i < 6; ++i)
-            at(44.75 + i * 0.5, [styleDemo, kRush, i] { styleDemo(kRush[i]); });
+            at(40.25 + i * 0.5, [styleDemo, kRush, i] { styleDemo(kRush[i]); });
     }
     // one more flash to close the montage and open the paced act
-    at(47.7, [appearance] { appearance(1); });
-    at(47.85, [appearance] { appearance(0); });
+    at(43.2, [appearance] { appearance(1); });
+    at(43.35, [appearance] { appearance(0); });
 
     // The showcase: nine slots of two and a half beats, and every one of
     // them is a different screen off the same machine arriving under a
     // different motion field. Four wide listings, two long ones, two
     // transfers with every file's bar moving at once, and the big one last.
-    at(48.5, [styleDir]    { styleDir(2, 1); });                        // digital rain — /etc
-    at(51.0, [styleDir]    { styleDir(4, 2); });                        // sonic boom — /usr/lib64
-    at(53.5, [this, longScreen] { m_motionStyle = 5; longScreen();      // magnetic assemble — ls -lhA
-                                  SetStatus("Motion: " + std::string(MotionStyleAt(5).name), 2.2); });
-    // The first transfer: the block is reprinted five times a beat, so the
+    at(44.00, [styleDir]   { styleDir(2, 1); });                        // digital rain — /etc
+    at(46.65, [styleDir]   { styleDir(4, 2); });                        // sonic boom — /usr/lib64
+    at(49.30, [this, longScreen] { m_motionStyle = 5; longScreen();     // magnetic assemble — ls -lhA
+                                   SetStatus("Motion: " + std::string(MotionStyleAt(5).name), 2.2); });
+    // The first transfer: the block is reprinted six times a beat, so the
     // bars are never in the same place two frames running.
-    at(56.0, [this] { m_motionStyle = 6;
-                      SetStatus("Motion: " + std::string(MotionStyleAt(6).name), 2.2); });
-    for (int i = 0; i <= 11; ++i)
-        at(56.0 + i * 0.2, [transferScreen, i] { transferScreen(i / 11.0, true); });
-    at(58.5, [styleDir]    { styleDir(8, 3); });                        // glitch — /usr/share
-    at(61.0, [styleDir]    { styleDir(12, 0); });                       // starwake — /usr/bin
-    at(63.5, [this] { m_motionStyle = 16;
-                      SetStatus("Motion: " + std::string(MotionStyleAt(16).name), 2.2); });
-    for (int i = 0; i <= 11; ++i)
-        at(63.5 + i * 0.2, [transferScreen, i] { transferScreen(i / 11.0, false); });
-    at(66.0, [this, longScreen] { m_motionStyle = 19; longScreen();     // murmuration — ls -lhA
-                                  SetStatus("Motion: " + std::string(MotionStyleAt(19).name), 2.2); });
-    at(68.5, [styleDir]    { styleDir(20, 2); });                       // hammer — /usr/lib64
-    at(71.0, [styleDemo] { styleDemo(0); });
+    at(51.95, [this] { m_motionStyle = 6;
+                       SetStatus("Motion: " + std::string(MotionStyleAt(6).name), 2.2); });
+    for (int i = 0; i <= 13; ++i)
+        at(51.95 + i * 0.18, [transferScreen, i] { transferScreen(i / 13.0, true); });
+    at(54.60, [styleDir]   { styleDir(8, 3); });                        // glitch — /usr/share
+    at(57.25, [styleDir]   { styleDir(12, 0); });                       // starwake — /usr/bin
+    at(59.90, [this] { m_motionStyle = 16;
+                       SetStatus("Motion: " + std::string(MotionStyleAt(16).name), 2.2); });
+    for (int i = 0; i <= 13; ++i)
+        at(59.90 + i * 0.18, [transferScreen, i] { transferScreen(i / 13.0, false); });
+    at(62.55, [this, longScreen] { m_motionStyle = 19; longScreen();    // murmuration — ls -lhA
+                                   SetStatus("Motion: " + std::string(MotionStyleAt(19).name), 2.2); });
+    at(65.20, [styleDir]   { styleDir(20, 2); });                       // hammer — /usr/lib64
+    at(67.85, [styleDemo] { styleDemo(0); });
 
     // ---- the interface styles, over the same screen -------------------------------
+    // Fifteen of them, a little over half a beat each: fast enough to read
+    // as one run through the set rather than fifteen separate looks.
     for (int i = 0; i < amber::kChromeCount; ++i)
-        at(73 + i, [skin, i] { skin(i); });
-    at(73 + amber::kChromeCount, [skin, &r] { skin(r.chrome); });
+        at(68.5 + i * 0.55, [skin, i] { skin(i); });
+    at(68.5 + amber::kChromeCount * 0.55, [skin, &r] { skin(r.chrome); });
 
     // ---- the appearances ----------------------------------------------------------
-    at(89, [appearance] { appearance(1); });
-    at(90, [appearance] { appearance(2); });
-    at(91, [appearance] { appearance(3); });
-    at(92, [appearance] { appearance(0); });
+    at(77.5, [appearance] { appearance(1); });
+    at(78.3, [appearance] { appearance(2); });
+    at(79.1, [appearance] { appearance(3); });
+    at(79.9, [appearance] { appearance(0); });
 
     // ---- out ----------------------------------------------------------------------
-    at(94, [this, &r] {
+    at(82.0, [this, &r] {
         if (r.cascadeBorrowed)
         {
             m_fxCascade = r.cascade;
@@ -796,8 +796,8 @@ void App::ReelBuild()
                 "  \x1b[2mssh   telnet   rlogin   raw   serial   local   vnc\x1b[0m\r\n";
         r.screen.clear();
     });
-    at(101, [appearance] { appearance(1); });   // the end marker
-    at(101.15, [this] {
+    at(90.0, [appearance] { appearance(1); });   // the end marker
+    at(90.15, [this] {
         ApplyAppearance();
         m_reel->done = true;
     });
