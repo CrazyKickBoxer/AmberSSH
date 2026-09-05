@@ -311,10 +311,10 @@ struct ConnectionProfile
     bool        vncFxHeat = true;        // changed pixels run hot and lift until they cool
     bool        vncFxMaterialise = true; // connect and resize assemble the picture from a scatter
     // How motion itself is drawn (docs/vnc.md, "Drawing motion")
-    bool        vncFxPrism = true;       // red and blue separate along a particle's velocity
-    bool        vncFxTails = true;       // a streak's tail bends by the field it flew through
-    bool        vncFxTrails = true;      // three sub-positions a frame: exposure, not a smear
-    bool        vncFxIgnite = true;      // energy travels as a front, conducted by the picture
+    bool        vncFxPrism = false;      // red and blue separate along a particle's velocity
+    bool        vncFxTails = false;      // a streak's tail bends by the field it flew through
+    bool        vncFxTrails = false;     // three sub-positions a frame: exposure, not a smear
+    bool        vncFxIgnite = false;     // energy travels as a front, conducted by the picture
     int         vncVividness = 130;      // saturation + contrast %, 100 = as decoded; pinned to 100 in faithful mode
     int         vncMotion = 200;         // tempo % of the swarm and the effects, 25..800
     // how a changed region redraws: 0 the new pixels at once, 1 burn,

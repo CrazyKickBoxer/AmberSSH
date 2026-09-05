@@ -422,10 +422,10 @@ bool FromJson(const json& j, ConnectionProfile& out)
     out.vncFxEdge = Get<bool>(j, "vncFxEdge", true);
     out.vncFxHeat = Get<bool>(j, "vncFxHeat", true);
     out.vncFxMaterialise = Get<bool>(j, "vncFxMaterialise", true);
-    out.vncFxPrism = Get<bool>(j, "vncFxPrism", true);
-    out.vncFxTails = Get<bool>(j, "vncFxTails", true);
-    out.vncFxTrails = Get<bool>(j, "vncFxTrails", true);
-    out.vncFxIgnite = Get<bool>(j, "vncFxIgnite", true);
+    out.vncFxPrism = Get<bool>(j, "vncFxPrism", false);
+    out.vncFxTails = Get<bool>(j, "vncFxTails", false);
+    out.vncFxTrails = Get<bool>(j, "vncFxTrails", false);
+    out.vncFxIgnite = Get<bool>(j, "vncFxIgnite", false);
     out.vncVividness = std::clamp(Get<int>(j, "vncVividness", 130), 50, 200);
     out.vncMotion = std::clamp(Get<int>(j, "vncMotion", 200), 25, 800);
     out.vncTransition = std::clamp(Get<int>(j, "vncTransition", 5), 0, 10);

@@ -85,6 +85,15 @@ public:
     // contacts nothing; the desktop one connects to an RFB server inside
     // this process. Also on the View menu and in the palette.
     void RequestDemo(bool vnc) { m_demoRequested = true; m_demoVnc = vnc; }
+    // --reel (app_reel.cpp): the demo reel, a timed performance for a screen
+    // grab, cut to a beat. Environment: AMBER_REEL_BPM, AMBER_REEL_PROFILE,
+    // AMBER_REEL_STRETCH. Borrows the style, skin, appearance and fullscreen
+    // state and puts them back; never saves settings.
+    void RequestReel() { m_reelRequested = true; }
+    // AmberSSH opens maximized: the whole work area, with its own title bar
+    // and tab strip still on show. --windowed keeps the restored window (the
+    // tests' captures and the dialog previews use it).
+    void RequestWindowed() { m_maximizeAtStart = false; }
     // --vnc-bench: the same harness serving a 3840x2160 desktop, measuring
     // frame times over three loads; report in %TEMP%\vnc-bench.txt.
     void RequestVncBench() { m_vncSelfCheckRequested = true; m_vncBenchRequested = true; }
@@ -255,6 +264,15 @@ private:
     void DemoTickSsh();
     void DemoTickVnc();
     void DemoStop();                             // ends it and puts back what it borrowed
+
+    // ---- the demo reel (app_reel.cpp) -----------------------------------------------
+    struct Reel;
+    Reel* m_reel = nullptr;
+    bool m_reelRequested = false;
+    bool m_maximizeAtStart = true;               // consumed on the first Tick
+    void ReelTick();
+    void ReelBuild();
+    void ReelStop();
 
     // sessions --------------------------------------------------------------
     bool HasSession() const

@@ -153,6 +153,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int nCmdSho
     // loopback from inside this process. Both are also on the View menu.
     if (lpCmdLine && wcsstr(lpCmdLine, L"--demo"))
         app.RequestDemo(wcsstr(lpCmdLine, L"--demo-vnc") != nullptr);
+    // --reel: the demo reel, a timed performance for a screen grab (app_reel.cpp)
+    if (lpCmdLine && wcsstr(lpCmdLine, L"--reel"))
+        app.RequestReel();
+    // --windowed: the ordinary window instead of the full screen the app
+    // otherwise takes from its first frame
+    if (lpCmdLine && wcsstr(lpCmdLine, L"--windowed"))
+        app.RequestWindowed();
     g_app = &app;
     // Route messages to the app BEFORE Init so the custom-frame WM_NCCALCSIZE
     // that Init triggers (SWP_FRAMECHANGED) reaches App::WndProc.

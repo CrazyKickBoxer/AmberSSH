@@ -524,7 +524,7 @@ bool App::Init(HWND hwnd, bool diagMode, const std::string& connectId,
     // jump-list launch named a profile to connect to directly.
     // --vnc-selfcheck opens its own tab on the first Tick; the modal dialog
     // here would sit in front of the loop that Tick belongs to.
-    bool started = (m_vncSelfCheckRequested || m_demoRequested) ? true
+    bool started = (m_vncSelfCheckRequested || m_demoRequested || m_reelRequested) ? true
                  : connectId.empty()       ? ShowConnectionDialog()
                                      : ConnectProfileById(connectId);
     if (!started)
@@ -782,10 +782,20 @@ void App::HandleColorSpaceChange()
 // ---------------------------------------------------------------------- tick
 void App::Tick()
 {
+    if (m_maximizeAtStart)
+    {
+        // Maximized from the first frame: the work area, keeping the title
+        // bar and the tab strip in view. Not fullscreen — that hides both.
+        m_maximizeAtStart = false;
+        if (!m_fullscreen && !IsZoomed(m_hwnd))
+            ShowWindow(m_hwnd, SW_MAXIMIZE);
+    }
     if (m_vncSelfCheckRequested || m_vncCheck)
         VncSelfCheckTick();
     if (m_demoRequested || m_demo)
         DemoTick();
+    if (m_reelRequested || m_reel)
+        ReelTick();
     // --preview-safety: open both safety boxes once, on the frame after the
     // window is up, with sample content and nothing connected. It exists so
     // the two modals can be reviewed on every interface skin without a server
