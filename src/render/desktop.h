@@ -51,8 +51,9 @@ struct DesktopCB
     float cursorScale = 0, cursorW = 0, cursorH = 0, motion = 1;
     float fxShock = 0, fxEdge = 0, fxHeat = 0, fxMaterialise = 0;
     float bornTime = -1e6f, shockAmp = 1, edgeGain = 4, vivid = 1;
+    float shockStyle = 0, pad5 = 0, pad6 = 0, pad7 = 0;
 };
-static_assert(sizeof(DesktopCB) == 56 * 4, "DesktopCB must stay 56 scalars, mirrored in HLSL");
+static_assert(sizeof(DesktopCB) == 60 * 4, "DesktopCB must stay 60 scalars, mirrored in HLSL");
 static_assert(sizeof(DesktopCB) % 16 == 0, "constant buffers are 16-byte aligned");
 
 // The largest desktop the particle field takes at full density. 3840x2160
@@ -93,6 +94,7 @@ public:
         float mouseX = -1e6f, mouseY = -1e6f, mouseRadius = 120, mouseForce = 0;
         float shockX = 0, shockY = 0, shockTime = -1;
         float shockAmp = 1;             // +1 outward, negative inward
+        int shockStyle = 0;             // 0 ring, 1 water drop, 2 splash, 3 vortex
         // The effects, 0 off .. 1 full (docs/vnc.md, "Effects"). Any of them
         // above 0 takes the desktop out of faithful mode: the picture is
         // exact only once they have settled, and edge glow never settles.

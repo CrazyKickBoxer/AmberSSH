@@ -514,6 +514,7 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
     cb.shockY = p.shockY;
     cb.shockTime = p.shockTime;
     cb.shockAmp = p.shockAmp;
+    cb.shockStyle = static_cast<float>(std::clamp(p.shockStyle, 0, 3));
     cb.fxShock = std::clamp(p.fxShock, 0.0f, 1.0f);
     cb.fxEdge = std::clamp(p.fxEdge, 0.0f, 1.0f);
     cb.fxHeat = std::clamp(p.fxHeat, 0.0f, 1.0f);

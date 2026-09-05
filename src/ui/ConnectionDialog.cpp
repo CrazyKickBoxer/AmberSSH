@@ -1368,6 +1368,8 @@ void ConnectionDialog::DefineFields()
     num(Page::Vnc, &P::vncVividness, L"Vividness % (saturation and contrast; 100 = the decoded colours)", 90);
     num(Page::Vnc, &P::vncMotion, L"Motion speed % (the swarm's drift, the motion style and the effects)", 90);
     chk(Page::Vnc, &P::vncFxShock, L"Effect: a click sends a shockwave (right click pulls inward)");
+    choice(Page::Vnc, Kind::Combo, &P::vncShockStyle, L"Shockwave style",
+           { L"Ring", L"Water drop (ripples)", L"Splash", L"Vortex" }, 0, 200);
     chk(Page::Vnc, &P::vncFxEdge, L"Effect: edges glow (window borders, text outlines)");
     chk(Page::Vnc, &P::vncFxHeat, L"Effect: changed pixels run hot and lift until they cool");
     chk(Page::Vnc, &P::vncFxMaterialise, L"Effect: the picture materialises on connect and resize");

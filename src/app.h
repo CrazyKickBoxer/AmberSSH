@@ -45,6 +45,17 @@ enum VncMenuId : int
     IdmVncViewOnly = 40184,        // toggle view-only on the active desktop tab
     IdmVncCtrlAltDel = 40185,      // send Ctrl+Alt+Del (the local keyboard cannot)
     IdmVncSendClipboard = 40186,   // the Windows clipboard to the server, guard applied
+    // The VNC menu's ranges, above every other id (see menu-id ranges).
+    // These change the ACTIVE TAB's copy of its profile; the connection
+    // manager holds the defaults.
+    IdmVncMotionFirst = 41800,     // +0..4 -> 50 / 100 / 200 / 300 / 400 %
+    IdmVncMotionLast = IdmVncMotionFirst + 4,
+    IdmVncShockFirst = 41810,      // +0..3 -> ring / water drop / splash / vortex
+    IdmVncShockLast = IdmVncShockFirst + 3,
+    IdmVncFxFirst = 41820,         // +0..3 -> shock / edge / heat / materialise toggles
+    IdmVncFxLast = IdmVncFxFirst + 3,
+    IdmVncSizeFirst = 41830,       // +0..7 -> the Desktop size choices
+    IdmVncSizeLast = IdmVncSizeFirst + 7,
 };
 
 class App
@@ -201,6 +212,9 @@ private:
     void VncReleaseAll();                        // held keys and buttons up
     void VncStatusLines(const amber::Session& s, float y);
     void VncCommand(int id);                     // the palette / menu entries
+    bool VncMenuCommand(int id);                 // the VNC menu's ranges; true when taken
+    void BuildVncMenu(HMENU bar);                // the VNC menu, appended to the bar
+    void UpdateVncMenuChecks();
     // The Windows clipboard to the server, through the paste guard first.
     // `typeIt` also presses V afterwards (Ctrl is already held): Ctrl+V.
     void VncPaste(bool typeIt);

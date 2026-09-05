@@ -306,6 +306,7 @@ struct ConnectionProfile
     // The desktop's effects (docs/vnc.md, "Effects"). Any of them on takes
     // the desktop out of the exact-pixel contract; all off = faithful.
     bool        vncFxShock = true;       // a click sends a shockwave through the particles
+    int         vncShockStyle = 0;       // 0 ring, 1 water drop, 2 splash, 3 vortex
     bool        vncFxEdge = true;        // edges (window borders, text) glow
     bool        vncFxHeat = true;        // changed pixels run hot and lift until they cool
     bool        vncFxMaterialise = true; // connect and resize assemble the picture from a scatter

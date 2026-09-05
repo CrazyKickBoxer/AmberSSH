@@ -286,6 +286,33 @@ the swarm forces (curl, motion style, the pointer's push) stay scaled by
 (1 − solidity) and are zero there. Turn all four off for the pixel-exact
 picture the acceptance tests verify.
 
+## The VNC menu
+
+A **VNC** menu sits beside Effects on the menu bar (and takes every skin
+through the same owner-drawn menu path as the rest). Its entries change
+the **active desktop tab's copy** of its profile and take effect on the
+next frame; the connection manager holds the defaults that a new tab
+starts from.
+
+| entry | what it sets |
+|---|---|
+| Particle Speed: Slow / Normal / Fast / Faster / Frenzy | Motion speed 50 / 100 / 200 / 300 / 400 % |
+| Shockwave Style: Ring / Water Drop / Splash / Vortex | the click's shockwave (below) |
+| Shockwave on Click, Edge Glow, Heat on Change, Materialise on Connect | the four effect switches |
+| Desktop Size: the server's own / fit this window / presets / custom | asks the server at once; fit then follows the window |
+| Refresh Screen, View Only, Send Ctrl+Alt+Del, Send Clipboard to Server | as in the palette |
+
+Shockwave styles, all driven by a button press inside the picture (a right
+click reverses the amplitude):
+
+* **Ring** — one wave leaving the click at 900 px/s, pushing what it passes, gone in a second.
+* **Water drop** — concentric ripples spreading at 600 px/s, each a push out and back, the train fading with distance.
+* **Splash** — a short hard burst close to the click with an upward lean.
+* **Vortex** — a swirl around the click that also draws inward, unwinding over about a second and a half.
+
+A desktop resize is reported on the status line for 1.5 s, not as a notice
+that stays.
+
 ## Commands (palette and menu)
 
 | command | what it does |

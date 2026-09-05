@@ -217,7 +217,9 @@ void App::PumpVncEvents()
                 AddNotice(s, 1, "VNC: the server declined the desktop size: " + ev.text);
                 break;
             case vnc::VncEvent::Type::Resized:
-                AddNotice(s, 0, "desktop resized to " + ev.text);
+                // a moment on the status line, not a notice that stays
+                if (HasSession() && &s == &Cur())
+                    SetStatus("VNC: desktop resized to " + ev.text, 1.5);
                 break;
             case vnc::VncEvent::Type::CutText:
             {
@@ -406,6 +408,7 @@ void App::RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame)
     p.shockY = t.shockY;
     p.shockTime = t.shockTime >= 0.0 && m_time - t.shockTime < 1.5 ? static_cast<float>(t.shockTime) : -1.0f;
     p.shockAmp = t.shockAmp;
+    p.shockStyle = prof.vncShockStyle;
     p.fxShock = prof.vncFxShock ? 1.0f : 0.0f;
     p.fxEdge = prof.vncFxEdge ? 1.0f : 0.0f;
     p.fxHeat = prof.vncFxHeat ? 1.0f : 0.0f;
@@ -669,6 +672,130 @@ void App::VncCommand(int id)
     default:
         break;
     }
+}
+
+// ---- the VNC menu ------------------------------------------------------------------
+// Everything here changes the active tab's copy of its profile and takes
+// effect on the next frame; the connection manager holds the defaults.
+namespace
+{
+const wchar_t* const kVncMotionLabels[] = { L"&Slow (50%)", L"&Normal (100%)", L"&Fast (200%)", L"Fas&ter (300%)",
+                                            L"F&renzy (400%)" };
+const int kVncMotionValues[] = { 50, 100, 200, 300, 400 };
+const wchar_t* const kVncShockLabels[] = { L"&Ring", L"&Water Drop", L"&Splash", L"&Vortex" };
+const wchar_t* const kVncFxLabels[] = { L"&Shockwave on Click", L"&Edge Glow", L"&Heat on Change",
+                                        L"&Materialise on Connect" };
+const wchar_t* const kVncSizeLabels[] = { L"The &Server's Own", L"&Fit This Window", L"1280 \x00d7 720",
+                                          L"1366 \x00d7 768", L"1600 \x00d7 900", L"1920 \x00d7 1080",
+                                          L"2560 \x00d7 1440", L"&Custom (from the profile)" };
+} // namespace
+
+void App::BuildVncMenu(HMENU bar)
+{
+    HMENU motion = CreatePopupMenu();
+    for (int i = 0; i < 5; ++i)
+        AppendMenuW(motion, MF_STRING, IdmVncMotionFirst + i, kVncMotionLabels[i]);
+    HMENU shock = CreatePopupMenu();
+    for (int i = 0; i < 4; ++i)
+        AppendMenuW(shock, MF_STRING, IdmVncShockFirst + i, kVncShockLabels[i]);
+    HMENU size = CreatePopupMenu();
+    for (int i = 0; i < 8; ++i)
+        AppendMenuW(size, MF_STRING, IdmVncSizeFirst + i, kVncSizeLabels[i]);
+
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_POPUP, reinterpret_cast<UINT_PTR>(motion), L"Particle &Speed");
+    AppendMenuW(m, MF_POPUP, reinterpret_cast<UINT_PTR>(shock), L"Shock&wave Style");
+    for (int i = 0; i < 4; ++i)
+        AppendMenuW(m, MF_STRING, IdmVncFxFirst + i, kVncFxLabels[i]);
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_POPUP, reinterpret_cast<UINT_PTR>(size), L"&Desktop Size");
+    AppendMenuW(m, MF_STRING, IdmVncRefresh, L"&Refresh Screen");
+    AppendMenuW(m, MF_STRING, IdmVncViewOnly, L"View &Only");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, IdmVncCtrlAltDel, L"Send Ctrl+&Alt+Del");
+    AppendMenuW(m, MF_STRING, IdmVncSendClipboard, L"Send &Clipboard to Server");
+    AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(m), L"V&NC");
+}
+
+void App::UpdateVncMenuChecks()
+{
+    if (!m_menu)
+        return;
+    const VncTab* t = VncActive();
+    const amber::ConnectionProfile* p = t ? &Cur().profile : nullptr;
+    // the ranges show the active desktop tab's values; with no desktop tab
+    // they show the built-in defaults, and the commands say so when used
+    int motionIdx = 2;
+    if (p)
+        for (int i = 0; i < 5; ++i)
+            if (kVncMotionValues[i] == p->vncMotion)
+                motionIdx = i;
+    CheckMenuRadioItem(m_menu, IdmVncMotionFirst, IdmVncMotionLast, IdmVncMotionFirst + motionIdx, MF_BYCOMMAND);
+    CheckMenuRadioItem(m_menu, IdmVncShockFirst, IdmVncShockLast,
+                       IdmVncShockFirst + std::clamp(p ? p->vncShockStyle : 0, 0, 3), MF_BYCOMMAND);
+    CheckMenuRadioItem(m_menu, IdmVncSizeFirst, IdmVncSizeLast,
+                       IdmVncSizeFirst + std::clamp(p ? p->vncDesktopSize : 1, 0, 7), MF_BYCOMMAND);
+    const bool fx[4] = { p ? p->vncFxShock : true, p ? p->vncFxEdge : true, p ? p->vncFxHeat : true,
+                         p ? p->vncFxMaterialise : true };
+    for (int i = 0; i < 4; ++i)
+        CheckMenuItem(m_menu, IdmVncFxFirst + i, MF_BYCOMMAND | (fx[i] ? MF_CHECKED : MF_UNCHECKED));
+    CheckMenuItem(m_menu, IdmVncViewOnly,
+                  MF_BYCOMMAND | (t && t->session && t->session->ViewOnly() ? MF_CHECKED : MF_UNCHECKED));
+}
+
+bool App::VncMenuCommand(int id)
+{
+    VncTab* t = VncActive();
+    if (!t || !t->session)
+    {
+        SetStatus("VNC: these apply to the active remote desktop tab; open one first", 3.0);
+        return true;
+    }
+    amber::ConnectionProfile& p = Cur().profile;
+    if (id >= IdmVncMotionFirst && id <= IdmVncMotionLast)
+    {
+        p.vncMotion = kVncMotionValues[id - IdmVncMotionFirst];
+        SetStatus("VNC: particle speed " + std::to_string(p.vncMotion) + "%");
+    }
+    else if (id >= IdmVncShockFirst && id <= IdmVncShockLast)
+    {
+        p.vncShockStyle = id - IdmVncShockFirst;
+        static const char* names[] = { "ring", "water drop", "splash", "vortex" };
+        SetStatus(std::string("VNC: shockwave style ") + names[p.vncShockStyle]);
+    }
+    else if (id >= IdmVncFxFirst && id <= IdmVncFxLast)
+    {
+        bool* flags[4] = { &p.vncFxShock, &p.vncFxEdge, &p.vncFxHeat, &p.vncFxMaterialise };
+        bool& f = *flags[id - IdmVncFxFirst];
+        f = !f;
+        static const char* names[] = { "shockwave", "edge glow", "heat", "materialise" };
+        SetStatus(std::string("VNC: ") + names[id - IdmVncFxFirst] + (f ? " on" : " off"));
+    }
+    else if (id >= IdmVncSizeFirst && id <= IdmVncSizeLast)
+    {
+        p.vncDesktopSize = id - IdmVncSizeFirst;
+        // ask now: the fit path re-asks on its own when the window changes
+        const uint32_t availW = m_device.Width();
+        const uint32_t availH = m_device.Height() > static_cast<uint32_t>(m_titleBarH)
+                                    ? m_device.Height() - static_cast<uint32_t>(m_titleBarH)
+                                    : m_device.Height();
+        uint16_t w, h;
+        if (DesiredDesktopSize(p, availW, availH, w, h))
+        {
+            t->session->RequestDesktopSize(w, h);
+            t->requestedW = w;
+            t->requestedH = h;
+            t->lastAvailW = availW;
+            t->lastAvailH = availH;
+            SetStatus("VNC: asking the server for " + std::to_string(w) + "x" + std::to_string(h));
+        }
+        else
+            SetStatus("VNC: leaving the desktop at the server's own size (reconnect to apply)");
+    }
+    else
+        return false;
+    UpdateVncMenuChecks();
+    return true;
 }
 
 void App::VncPaste(bool typeIt)

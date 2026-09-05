@@ -224,6 +224,7 @@ json ToJson(const ConnectionProfile& p)
         {"vncTls", p.vncTls},
         {"vncClipboard", p.vncClipboard},
         {"vncFxShock", p.vncFxShock},
+        {"vncShockStyle", p.vncShockStyle},
         {"vncFxEdge", p.vncFxEdge},
         {"vncFxHeat", p.vncFxHeat},
         {"vncFxMaterialise", p.vncFxMaterialise},
@@ -412,6 +413,7 @@ bool FromJson(const json& j, ConnectionProfile& out)
     out.vncTls = std::clamp(Get<int>(j, "vncTls", 0), 0, 1);
     out.vncClipboard = std::clamp(Get<int>(j, "vncClipboard", 1), 0, 4);
     out.vncFxShock = Get<bool>(j, "vncFxShock", true);
+    out.vncShockStyle = std::clamp(Get<int>(j, "vncShockStyle", 0), 0, 3);
     out.vncFxEdge = Get<bool>(j, "vncFxEdge", true);
     out.vncFxHeat = Get<bool>(j, "vncFxHeat", true);
     out.vncFxMaterialise = Get<bool>(j, "vncFxMaterialise", true);

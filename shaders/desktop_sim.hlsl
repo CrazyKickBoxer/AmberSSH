@@ -120,10 +120,37 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
         {
             const float age = time - shockTime;
             const float2 ds = pos - float2(shockX, shockY);
-            const float sd = length(ds);
-            const float ring = age * 900.0;
-            shock = ds / max(sd, 1.0) * 6000.0 * shockAmp * exp(-(sd - ring) * (sd - ring) / 2500.0) *
-                    exp(-age * 2.5);
+            const float sd = max(length(ds), 1.0);
+            const float2 away = ds / sd;
+            const int style = int(shockStyle + 0.5);
+            if (style == 1)
+            {
+                // water drop: concentric ripples spreading from the click,
+                // each a push away then back, the train fading with distance
+                const float ring = age * 600.0;
+                const float wave = sin((sd - ring) * 0.055) * smoothstep(60.0, 0.0, sd - ring);
+                shock = away * wave * 3500.0 * shockAmp * exp(-sd / 450.0) * exp(-age * 1.6);
+            }
+            else if (style == 2)
+            {
+                // splash: a short hard burst that leans upward, close in
+                const float2 lean = normalize(away + float2(0.0, -0.7));
+                shock = lean * 9000.0 * shockAmp * exp(-sd / 220.0) * exp(-age * 4.0);
+            }
+            else if (style == 3)
+            {
+                // vortex: a swirl around the click that also draws inward,
+                // unwinding over a second and a half
+                const float2 tangent = float2(-away.y, away.x);
+                const float reach = exp(-sd / 320.0) * exp(-age * 1.4);
+                shock = (tangent * 5500.0 - away * 1500.0) * shockAmp * reach;
+            }
+            else
+            {
+                // ring: one wave leaving at 900 px/s, pushing what it passes
+                const float ring = age * 900.0;
+                shock = away * 6000.0 * shockAmp * exp(-(sd - ring) * (sd - ring) / 2500.0) * exp(-age * 2.5);
+            }
         }
 
         // disturbance: this pixel changed — burst outward, with a lean the

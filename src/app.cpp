@@ -6442,6 +6442,7 @@ void App::BuildMenus()
     AppendMenuW(m_menu, MF_POPUP, reinterpret_cast<UINT_PTR>(motion), L"&Motion");
     AppendMenuW(m_menu, MF_POPUP, reinterpret_cast<UINT_PTR>(density), L"&Density");
     AppendMenuW(m_menu, MF_POPUP, reinterpret_cast<UINT_PTR>(effects), L"&Effects");
+    BuildVncMenu(m_menu);   // the remote desktop's own menu, beside Effects (app_vnc.cpp)
     AppendMenuW(m_menu, MF_POPUP, reinterpret_cast<UINT_PTR>(view), L"&View");
     ThemeMenuBar(m_menu, 1);   // owner-draw every popup item (theme colours)
     ApplyTheme();
@@ -6465,6 +6466,7 @@ void App::UpdateMenuChecks()
 {
     if (!m_menu)
         return;
+    UpdateVncMenuChecks();
 
     uint32_t style = static_cast<uint32_t>(std::clamp(m_motionStyle, 0, kMotionStyleCount - 1));
     CheckMenuRadioItem(m_menu, IdmMotionFirst, IdmMotionLast,
@@ -6613,6 +6615,8 @@ void App::UpdateMenuChecks()
 
 bool App::HandleMenuCommand(int id)
 {
+    if (id >= IdmVncMotionFirst && id <= IdmVncSizeLast)
+        return VncMenuCommand(id);
     if (id >= IdmRiskFirst && id <= IdmRiskLast)
     {
         m_riskPolicy = static_cast<amber::RiskPolicy>(id - IdmRiskFirst);
