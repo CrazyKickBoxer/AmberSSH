@@ -32,7 +32,17 @@ cbuffer DesktopCB : register(b1)
     uint resetFlag, sampledW, sampledH, cursorCount;     // cursorCount: particles reserved for the pointer cluster
     float brightness, dragAmt, cursorX, cursorY;         // cursorX/Y: screen px of the local pointer
     float cursorScale, cursorW, cursorH, pad3;           // cursorW/H: the shape's size inside gCursor
+    // The effects (docs/vnc.md, "Effects"), each 0 = off .. 1 = full. Any of
+    // them on means the desktop is no longer pixel-exact: faithful is 0.
+    float fxShock, fxEdge, fxHeat, fxMaterialise;
+    // bornTime: when this particle buffer was (re)born, for materialise;
+    // shockAmp: +1 pushes outward (a click), negative pulls in (right click);
+    // edgeGain: gradient-to-glow scale for fxEdge
+    float bornTime, shockAmp, edgeGain, pad4;
 };
+
+// materialise runs this long after bornTime: the flight home, then exact
+static const float kMaterialiseSeconds = 1.4;
 
 struct DeskParticle
 {

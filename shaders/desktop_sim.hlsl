@@ -68,7 +68,23 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
         home += j * jitter * loose;
     }
 
-    if (resetFlag || (faithful && !isCursor))
+    // Materialise: for kMaterialiseSeconds after the buffer is born the
+    // particles fly home from wherever they were scattered, on a soft
+    // spring and nothing else; then the ordinary rules (faithful included)
+    // take over and place them exactly.
+    const float bornAge = time - bornTime;
+    const bool materialising = fxMaterialise > 0.0 && !isCursor && bornAge >= 0.0 && bornAge < kMaterialiseSeconds;
+
+    if (resetFlag)
+    {
+        p.pos = home;
+        if (materialising)
+            p.pos = float2(HashU(i * 7u + 3u) * screenW, HashU(i * 11u + 5u) * screenH);
+        p.velPacked = PackVel(float2(0.0, 0.0));
+        gParticles[i] = p;
+        return;
+    }
+    if (faithful && !isCursor && !materialising)
     {
         p.pos = home;
         p.velPacked = PackVel(float2(0.0, 0.0));
@@ -83,8 +99,10 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
     // --- forces ------------------------------------------------------------
     float2 a = (home - pos) * springK - vel * damping;
 
-    float2 field = float2(0.0, 0.0);
-    if (!isCursor)
+    float2 field = float2(0.0, 0.0);   // the swarm's forces, scaled by (1 - solidity)
+    float2 shock = float2(0.0, 0.0);   // the click shockwave: also at solidity 1 when fxShock
+    float2 burst = float2(0.0, 0.0);   // the changed-pixel burst: also at solidity 1 when fxHeat
+    if (!isCursor && !materialising)
     {
         field += Curl2(float3(pos * curlScale, ts * 0.3)) * curlAmp * (60.0 + 200.0 * audioWind);
         if (!reducedMotion)
@@ -96,14 +114,16 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
         if (mouseForce > 0.0 && md < mouseRadius)
             field += dm / max(md, 1.0) * mouseForce * (1.0 - md / mouseRadius);
 
-        // a shockwave
+        // a shockwave: a ring leaving the click at 900 px/s, pushing (or,
+        // with a negative shockAmp, pulling) what it passes, fading in 1 s
         if (shockTime >= 0.0)
         {
             const float age = time - shockTime;
             const float2 ds = pos - float2(shockX, shockY);
             const float sd = length(ds);
             const float ring = age * 900.0;
-            field += ds / max(sd, 1.0) * 4000.0 * exp(-(sd - ring) * (sd - ring) / 2500.0) * exp(-age * 2.0);
+            shock = ds / max(sd, 1.0) * 6000.0 * shockAmp * exp(-(sd - ring) * (sd - ring) / 2500.0) *
+                    exp(-age * 2.5);
         }
 
         // disturbance: this pixel changed — burst outward, with a lean the
@@ -113,21 +133,38 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
         {
             const float ang = seed * 6.2831853;
             const float2 dir = normalize(fromHomeOrRandom(pos - home, float2(cos(ang), sin(ang))));
-            field += dir * e * disturbance * 2500.0;
+            burst = dir * e * disturbance * 2500.0;
         }
     }
 
-    a += field * loose;
+    if (materialising)
+        a = (home - pos) * 30.0 - vel * 11.0;   // critically damped, about a second's flight
+    else
+        a += field * loose + shock * max(loose, fxShock) + burst * max(loose, fxHeat * 0.35);
 
     // --- integrate ------------------------------------------------------------
     const float h = min(dt, 1.0 / 30.0);
     vel += a * h;
-    vel *= lerp(0.985, 0.90, saturate(dragAmt));
+    if (!materialising)
+        vel *= lerp(0.985, 0.90, saturate(dragAmt));
     pos += vel * h;
 
     // stay on screen, softly
     const float2 lo = float2(-8.0, -8.0), hi = float2(screenW + 8.0, screenH + 8.0);
     pos = clamp(pos, lo, hi);
+
+    // At solidity 1 with an effect on, a particle that has all but come home
+    // is placed: the picture at rest is the picture, not a blur of
+    // sub-pixel remainders.
+    if (solidity >= 0.999 && !materialising)
+    {
+        const float2 rem = home - pos;
+        if (dot(rem, rem) < 0.0025 && dot(vel, vel) < 4.0)
+        {
+            pos = home;
+            vel = float2(0.0, 0.0);
+        }
+    }
 
     p.pos = pos;
     p.velPacked = PackVel(vel);

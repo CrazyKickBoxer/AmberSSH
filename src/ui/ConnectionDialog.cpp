@@ -1358,6 +1358,12 @@ void ConnectionDialog::DefineFields()
     choice(Page::Vnc, Kind::Combo, &P::vncCursorMode, L"Cursor",
            { L"Local particle cursor, in the server's shape", L"The server draws the cursor into the picture" },
            0, 300);
+    chk(Page::Vnc, &P::vncFxShock, L"Effect: a click sends a shockwave (right click pulls inward)");
+    chk(Page::Vnc, &P::vncFxEdge, L"Effect: edges glow (window borders, text outlines)");
+    chk(Page::Vnc, &P::vncFxHeat, L"Effect: changed pixels run hot and lift until they cool");
+    chk(Page::Vnc, &P::vncFxMaterialise, L"Effect: the picture materialises on connect and resize");
+    note(Page::Vnc, L"With any effect on the desktop is not pixel-exact even at solidity 100 (the overlay\r\n"
+                    L"says FX, not faithful). Turn all four off for the exact picture.");
     choice(Page::Vnc, Kind::Combo, &P::vncClipboard, L"Clipboard",
            { L"Disabled", L"Ask each transfer", L"Remote \x2192 local text", L"Local \x2192 remote text",
              L"Bidirectional text" }, 0, 200);

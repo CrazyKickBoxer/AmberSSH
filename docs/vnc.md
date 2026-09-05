@@ -214,10 +214,35 @@ username there is what X509Plain would send.
 | `vncEncodings` | Encodings | ZRLE first / Hextile first / Raw only | ZRLE first |
 | `vncCursorMode` | Cursor | local particle cluster in the server's shape / server-drawn | local |
 | `vncClipboard` | Clipboard | Disabled / Ask each transfer / Remote → local / Local → remote / Bidirectional | Ask |
+| `vncFxShock`, `vncFxEdge`, `vncFxHeat`, `vncFxMaterialise` | Effect: … | the four effects below; any on = not pixel-exact | on |
 
 Numbers typed outside their range are clamped where they are used. The
 tab's copies of View only and the placement follow the palette toggles
 below without changing the saved profile.
+
+## Effects
+
+Four effects, each a check box on the VNC page (all on by default), each
+driven by real signal — the input, the framebuffer, or the change in it —
+never by random sparkle. **Any effect on takes the desktop out of the
+exact-pixel contract**: the overlay's first line says `FX: shock edge
+heat materialise` instead of `faithful`, and `--vnc-selfcheck`, which
+measures that contract, runs with all four off (`AMBER_VNC_FX=1` leaves
+them on for a look; its pixel checks then fail, as they must).
+
+| effect | signal | what happens | where |
+|---|---|---|---|
+| shockwave | a button press inside the picture | a ring leaves the click at 900 px/s pushing particles as it passes, fading in about a second; a right click pulls inward instead | `VncTab::shock*` → `DesktopCB::shockX/Y/Time/Amp`, `desktop_sim.hlsl` |
+| edge glow | the luminance gradient at each pixel, from its four neighbours in the framebuffer texture | particles on edges (window frames, title bars, text outlines) are brightened past 1, which bloom turns into a halo; flat fills are untouched | `desktop_draw.hlsl`, vertex stage, four extra loads per particle |
+| heat | the disturbance energy texture, already injected from colour deltas | a changed pixel's particle runs warm (an amber tint) and lifts a few pixels, cooling with the energy; the sim also lets it burst a little even at solidity 100 | `desktop_draw.hlsl` reads energy as an SRV (t3); `desktop_sim.hlsl` |
+| materialise | a new particle buffer (connect, resize) | particles start scattered and dim, fly home on a critically damped spring for 1.4 s while brightening, then the ordinary rules place them | `bornTime` in the CB, `kMaterialiseSeconds` |
+
+At solidity 100 with an effect on, a particle that has all but returned
+home (within a twentieth of a pixel, nearly at rest) is placed exactly, so
+the desktop at rest is the desktop, not a blur of sub-pixel remainders;
+the swarm forces (curl, motion style, the pointer's push) stay scaled by
+(1 − solidity) and are zero there. Turn all four off for the pixel-exact
+picture the acceptance tests verify.
 
 ## Commands (palette and menu)
 

@@ -19,6 +19,15 @@
 StructuredBuffer<DeskParticle> gParticles : register(t0);
 Texture2D<float4>              gFrame     : register(t1);   // B8G8R8A8_UNORM: sRGB-encoded bytes
 Texture2D<float4>              gCursor    : register(t2);   // the pointer's shape, premultiplied alpha
+Texture2D<float>               gEnergy    : register(t3);   // disturbance energy, sampled resolution
+
+// Luminance of the framebuffer at a clamped pixel, from the sRGB bytes:
+// the edge effect wants contrast as the eye sees it, not linear light.
+float LumaAt(int2 p)
+{
+    p = clamp(p, int2(0, 0), int2(int(fbW) - 1, int(fbH) - 1));
+    return dot(gFrame.Load(int3(p, 0)).rgb, float3(0.299, 0.587, 0.114));
+}
 
 struct VSOut
 {
@@ -43,6 +52,7 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
 
     float3 rgb;
     float alpha = 1.0;
+    float lift = 0.0;   // screen px upward, the heat effect
     if (isCursor)
     {
         // the cluster's particles sample the cursor shape by their seed
@@ -72,6 +82,29 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
         // by the format: .rgb is red, green, blue
         const float4 c = gFrame.Load(int3(src, 0));
         rgb = SrgbToLinearExact(c.rgb);
+
+        // Edge glow: the luminance gradient at this pixel, from its four
+        // neighbours. Window frames, title bars and text outlines are where
+        // it is large; flat fills are where it is zero. The boost pushes the
+        // scene above 1, which is what the bloom pass turns into a halo.
+        if (fxEdge > 0.0)
+        {
+            const int2 sp = int2(src);
+            const float gx = LumaAt(sp + int2(1, 0)) - LumaAt(sp - int2(1, 0));
+            const float gy = LumaAt(sp + int2(0, 1)) - LumaAt(sp - int2(0, 1));
+            const float edge = saturate(sqrt(gx * gx + gy * gy) * edgeGain);
+            rgb *= 1.0 + edge * fxEdge * 1.2;
+        }
+        // Heat: a pixel that just changed runs warm and lifts a few pixels,
+        // cooling with the energy texture; a repaint looks re-etched, a
+        // video region simmers. The lift is drawn, not simulated, so the
+        // particle's own state is untouched and it settles with the energy.
+        if (fxHeat > 0.0)
+        {
+            const float e = gEnergy.Load(int3(src / max(stride, 1u), 0));
+            rgb += float3(1.0, 0.55, 0.15) * e * fxHeat * 0.9;
+            lift = e * fxHeat * 3.0 * scale;
+        }
     }
 
     // size: a hard pixel at solidity 1, growing into a soft glow disc
@@ -86,9 +119,13 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
         o.rgb /= max(float(density), 1.0);
         o.rgb *= 1.0 + hdrBoost * loose;
     }
+    // Materialise: the arriving particles brighten over the flight, so the
+    // desktop fades in as it assembles rather than popping.
+    if (fxMaterialise > 0.0 && !isCursor)
+        o.rgb *= smoothstep(0.0, kMaterialiseSeconds, time - bornTime);
 
     const float2 corner = kCorners[vid];
-    const float2 px = p.pos + corner * half;
+    const float2 px = p.pos + corner * half - float2(0.0, lift);
     o.uv = corner;
     o.pos = float4(px.x / screenW * 2.0 - 1.0, 1.0 - px.y / screenH * 2.0, 0.0, 1.0);
     return o;

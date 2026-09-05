@@ -303,6 +303,12 @@ struct ConnectionProfile
     // Same scale as x11Clipboard: 0 disabled, 1 ask each transfer,
     // 2 remote -> local, 3 local -> remote, 4 both. Latin-1 text only.
     int         vncClipboard = 1;
+    // The desktop's effects (docs/vnc.md, "Effects"). Any of them on takes
+    // the desktop out of the exact-pixel contract; all off = faithful.
+    bool        vncFxShock = true;       // a click sends a shockwave through the particles
+    bool        vncFxEdge = true;        // edges (window borders, text) glow
+    bool        vncFxHeat = true;        // changed pixels run hot and lift until they cool
+    bool        vncFxMaterialise = true; // connect and resize assemble the picture from a scatter
     // Where remote windows appear: 0 native Windows windows, 1 AmberSSH tabs,
     // 2 AmberSSH panes, 3 ask per application. Only 0 is implemented; the
     // others are accepted, reported, and fall back to native (see PHASE-7-GATE).

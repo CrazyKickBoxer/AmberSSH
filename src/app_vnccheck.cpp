@@ -201,6 +201,14 @@ void App::VncSelfCheckTick()
         req.profile.vncParticleSize = 1;
         req.profile.vncDisturbance = 100;
         req.profile.vncCursorMode = 2;
+        // the check measures the exact-pixel contract, which the effects
+        // break by design; they are verified by eye, not here. AMBER_VNC_FX=1
+        // leaves them on for a look (the pixel checks then fail, as they must).
+        const bool fxPreview = GetEnvironmentVariableW(L"AMBER_VNC_FX", nullptr, 0) > 0;
+        req.profile.vncFxShock = fxPreview;
+        req.profile.vncFxEdge = fxPreview;
+        req.profile.vncFxHeat = fxPreview;
+        req.profile.vncFxMaterialise = fxPreview;
         const bool started = StartSession(req);
         c.Check("VNC tab started", started);
         c.tabIndex = started ? m_active : -1;

@@ -52,6 +52,12 @@ struct VncTab
     bool pointerInside = false;
     wchar_t pendingHighSurrogate = 0; // WM_CHAR delivers a pair as two messages
 
+    // ---- the click shockwave (effect) ------------------------------------
+    // Set on a button press inside the picture; the sim fades it in a second.
+    float shockX = 0.0f, shockY = 0.0f;
+    double shockTime = -1.0;
+    float shockAmp = 1.0f;            // +1 a click pushes out, -0.5 a right click pulls in
+
     // ---- clipboard loop guard --------------------------------------------
     // Text we last put on the Windows clipboard from the server, and the
     // text we last sent the server from Windows: a change that equals either

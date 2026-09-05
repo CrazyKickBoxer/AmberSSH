@@ -321,9 +321,15 @@ void App::RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame)
     p.mouseY = tun.mouseY;
     p.mouseRadius = tun.mouseRadius;
     p.mouseForce = tun.mouseForce;
-    p.shockX = tun.shockX;
-    p.shockY = tun.shockY;
-    p.shockTime = tun.shockTime;
+    // the tab's own shockwave (a click), not the terminal's
+    p.shockX = t.shockX;
+    p.shockY = t.shockY;
+    p.shockTime = t.shockTime >= 0.0 && m_time - t.shockTime < 1.5 ? static_cast<float>(t.shockTime) : -1.0f;
+    p.shockAmp = t.shockAmp;
+    p.fxShock = prof.vncFxShock ? 1.0f : 0.0f;
+    p.fxEdge = prof.vncFxEdge ? 1.0f : 0.0f;
+    p.fxHeat = prof.vncFxHeat ? 1.0f : 0.0f;
+    p.fxMaterialise = prof.vncFxMaterialise ? 1.0f : 0.0f;
     p.dstX = t.dstX;
     p.dstY = t.dstY;
     p.scale = t.scale;
@@ -459,6 +465,14 @@ bool App::VncMouseButton(bool down, int px, int py, bool right, bool middle)
     const uint8_t bit = right ? vnc::kButtonRight : middle ? vnc::kButtonMiddle : vnc::kButtonLeft;
     if (down && !inside)
         return true;
+    if (down && Cur().profile.vncFxShock)
+    {
+        // the click's shockwave, from the click; a right click pulls inward
+        t->shockX = static_cast<float>(px);
+        t->shockY = static_cast<float>(py);
+        t->shockTime = m_time;
+        t->shockAmp = right ? -0.5f : 1.0f;
+    }
     if (down)
         t->heldButtons |= bit;
     else
@@ -662,12 +676,20 @@ void App::VncStatusLines(const Session& s, float y)
                                           : std::string("1:1");
     const std::string crypto = st.encrypted ? st.tlsProtocol + " " + vnc::VeNCryptSubtypeName(st.venSubtype)
                                             : std::string("plaintext");
+    // faithful means the exact-pixel contract; any effect on breaks it by design
+    std::string fx;
+    if (s.profile.vncFxShock) fx += " shock";
+    if (s.profile.vncFxEdge) fx += " edge";
+    if (s.profile.vncFxHeat) fx += " heat";
+    if (s.profile.vncFxMaterialise) fx += " materialise";
+    const std::string contract = fx.empty() ? (s.profile.vncSolidity >= 100 && t.nativeScale ? "faithful" : "swarm")
+                                            : "FX:" + fx;
     snprintf(line, sizeof line,
-             "VNC %s  RFB 3.%d  %s  %ux%u%s  particles %u  density %u%s  solidity %d%%  size %d px  %s  %s%s",
+             "VNC %s  RFB 3.%d  %s  %ux%u%s  particles %u  density %u%s  solidity %d%%  size %d px  %s  %s  %s%s",
              vnc::VncStateName(t.session->State()), st.rfbMinor, crypto.c_str(), t.fbW, t.fbH,
              t.nativeScale ? " native" : " scaled",
              L.particles, L.density, L.clamped ? " (clamped)" : "",
-             s.profile.vncSolidity, s.profile.vncParticleSize, sampled.c_str(),
+             s.profile.vncSolidity, s.profile.vncParticleSize, sampled.c_str(), contract.c_str(),
              st.continuous ? "continuous" : "requested", t.session->ViewOnly() ? "  VIEW ONLY" : "");
     m_prims.AddText(m_gm.originX, y, line, 0.6f, m_sampler);
     snprintf(line, sizeof line,

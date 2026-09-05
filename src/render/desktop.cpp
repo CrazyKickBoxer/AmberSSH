@@ -130,11 +130,11 @@ bool DesktopParticles::Init(Device& dev, ShaderCompiler& sc)
         pd.CS = cs.Bytecode();
         ThrowIfFailed(d->CreateComputePipelineState(&pd, IID_PPV_ARGS(&m_simPSO)), "desktop sim PSO");
     }
-    // ---- draw: CBV(b1) + SRV(t0 particles) + table { SRV t1 frame, t2 cursor }
+    // ---- draw: CBV(b1) + SRV(t0 particles) + table { SRV t1 frame, t2 cursor, t3 energy }
     {
         D3D12_DESCRIPTOR_RANGE range = {};
         range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        range.NumDescriptors = 2;
+        range.NumDescriptors = 3;
         range.BaseShaderRegister = 1;
         range.OffsetInDescriptorsFromTableStart = 0;
         D3D12_ROOT_PARAMETER params[3] = {};
@@ -190,14 +190,17 @@ bool DesktopParticles::Init(Device& dev, ShaderCompiler& sc)
         m_slotEnergyUav = dev.AllocSrv();
         m_slotInjectUav = dev.AllocSrv();
     }
-    m_slotFrameSrv = dev.AllocSrv();
-    m_slotCursorSrv = dev.AllocSrv();
-    if (m_slotCursorSrv != m_slotFrameSrv + 1)
+    // ... and the draw's triple
+    for (int attempt = 0; attempt < 2; ++attempt)
     {
         m_slotFrameSrv = dev.AllocSrv();
         m_slotCursorSrv = dev.AllocSrv();
+        m_slotEnergySrv = dev.AllocSrv();
+        if (m_slotCursorSrv == m_slotFrameSrv + 1 && m_slotEnergySrv == m_slotFrameSrv + 2)
+            break;
     }
-    if (m_slotInjectUav != m_slotEnergyUav + 1 || m_slotCursorSrv != m_slotFrameSrv + 1)
+    if (m_slotInjectUav != m_slotEnergyUav + 1 || m_slotCursorSrv != m_slotFrameSrv + 1 ||
+        m_slotEnergySrv != m_slotFrameSrv + 2)
         return false;
 
     // the cursor texture exists from the start, empty
@@ -270,6 +273,7 @@ bool DesktopParticles::Configure(uint32_t fbW, uint32_t fbH, uint32_t density)
     m_energy = MakeTexture(d, DXGI_FORMAT_R16_FLOAT, L.sampledW, L.sampledH,
                            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                            L"desktop energy");
+    m_energyState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     m_inject = MakeTexture(d, DXGI_FORMAT_R8_UNORM, L.sampledW, L.sampledH,
                            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST,
                            L"desktop inject");
@@ -289,6 +293,12 @@ bool DesktopParticles::Configure(uint32_t fbW, uint32_t fbH, uint32_t density)
     sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     sv.Texture2D.MipLevels = 1;
     d->CreateShaderResourceView(m_frame.Get(), &sv, m_dev->SrvCpu(m_slotFrameSrv));
+    D3D12_SHADER_RESOURCE_VIEW_DESC se = {};
+    se.Format = DXGI_FORMAT_R16_FLOAT;
+    se.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    se.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    se.Texture2D.MipLevels = 1;
+    d->CreateShaderResourceView(m_energy.Get(), &se, m_dev->SrvCpu(m_slotEnergySrv));
 
     m_shadow.assign(static_cast<size_t>(fbW) * fbH, 0xFF000000u);
     m_needReset = true;
@@ -503,6 +513,16 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
     cb.shockX = p.shockX;
     cb.shockY = p.shockY;
     cb.shockTime = p.shockTime;
+    cb.shockAmp = p.shockAmp;
+    cb.fxShock = std::clamp(p.fxShock, 0.0f, 1.0f);
+    cb.fxEdge = std::clamp(p.fxEdge, 0.0f, 1.0f);
+    cb.fxHeat = std::clamp(p.fxHeat, 0.0f, 1.0f);
+    cb.fxMaterialise = std::clamp(p.fxMaterialise, 0.0f, 1.0f);
+    cb.edgeGain = 4.0f;
+    if (m_needReset)
+        m_bornTime = p.time;
+    cb.bornTime = static_cast<float>(m_bornTime);
+    const bool anyFx = cb.fxShock > 0.0f || cb.fxEdge > 0.0f || cb.fxHeat > 0.0f || cb.fxMaterialise > 0.0f;
     cb.lightMode = p.lightMode ? 1.0f : 0.0f;
     cb.hdrBoost = p.hdrBoost;
     cb.audioWind = p.audioWind;
@@ -513,7 +533,9 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
     cb.particleCount = m_layout.particles;
     cb.animStyle = p.reducedMotion ? 0u : p.animStyle;
     cb.reducedMotion = p.reducedMotion ? 1u : 0u;
-    cb.faithful = cb.solidity >= 0.999f ? 1u : 0u;
+    // faithful — the exact-pixel contract — is solidity 1 with no effect on;
+    // an effect displaces or recolours particles by design
+    cb.faithful = (cb.solidity >= 0.999f && !anyFx) ? 1u : 0u;
     cb.resetFlag = m_needReset ? 1u : 0u;
     cb.sampledW = m_layout.sampledW;
     cb.sampledH = m_layout.sampledH;
@@ -537,6 +559,7 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
 
     // ---- energy: decay + inject ----------------------------------------------
     Transition(cl, m_inject.Get(), m_injectState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Transition(cl, m_energy.Get(), m_energyState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     cl->SetComputeRootSignature(m_energyRS.Get());
     cl->SetPipelineState(m_energyPSO.Get());
     cl->SetComputeRootConstantBufferView(0, m_cbGpu);
@@ -566,7 +589,8 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
         cl->ResourceBarrier(1, &b);
     }
     Transition(cl, m_particles.Get(), m_particleState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    // the draw reads the framebuffer and the cursor in the vertex stage
+    // the draw reads the framebuffer, the cursor and the energy in the vertex stage
+    Transition(cl, m_energy.Get(), m_energyState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     Transition(cl, m_frame.Get(), m_frameState,
                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     Transition(cl, m_cursor.Get(), m_cursorState,
@@ -596,8 +620,7 @@ bool DesktopParticles::ReadbackEnergy(std::vector<float>& out, uint32_t& w, uint
     w = m_layout.sampledW;
     h = m_layout.sampledH;
     std::vector<uint8_t> raw;
-    if (!m_dev->ReadbackTexture(m_energy.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, DXGI_FORMAT_R16_FLOAT,
-                                w, h, 2, raw))
+    if (!m_dev->ReadbackTexture(m_energy.Get(), m_energyState, DXGI_FORMAT_R16_FLOAT, w, h, 2, raw))
         return false;
     out.resize(static_cast<size_t>(w) * h);
     for (size_t i = 0; i < out.size(); ++i)

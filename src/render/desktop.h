@@ -49,8 +49,10 @@ struct DesktopCB
     uint32_t resetFlag = 0, sampledW = 0, sampledH = 0, cursorCount = 0;
     float brightness = 1, dragAmt = 0.25f, cursorX = -1e6f, cursorY = -1e6f;
     float cursorScale = 0, cursorW = 0, cursorH = 0, pad3 = 0;
+    float fxShock = 0, fxEdge = 0, fxHeat = 0, fxMaterialise = 0;
+    float bornTime = -1e6f, shockAmp = 1, edgeGain = 4, pad4 = 0;
 };
-static_assert(sizeof(DesktopCB) == 48 * 4, "DesktopCB must stay 48 scalars, mirrored in HLSL");
+static_assert(sizeof(DesktopCB) == 56 * 4, "DesktopCB must stay 56 scalars, mirrored in HLSL");
 static_assert(sizeof(DesktopCB) % 16 == 0, "constant buffers are 16-byte aligned");
 
 // The largest desktop the particle field takes at full density. 3840x2160
@@ -90,6 +92,11 @@ public:
         float brightness = 1;
         float mouseX = -1e6f, mouseY = -1e6f, mouseRadius = 120, mouseForce = 0;
         float shockX = 0, shockY = 0, shockTime = -1;
+        float shockAmp = 1;             // +1 outward, negative inward
+        // The effects, 0 off .. 1 full (docs/vnc.md, "Effects"). Any of them
+        // above 0 takes the desktop out of faithful mode: the picture is
+        // exact only once they have settled, and edge glow never settles.
+        float fxShock = 0, fxEdge = 0, fxHeat = 0, fxMaterialise = 0;
         // where the framebuffer sits on screen: top-left and px scale
         float dstX = 0, dstY = 0, scale = 1;
         // the local pointer, in screen px, and whether to draw its cluster
@@ -161,10 +168,15 @@ private:
     D3D12_RESOURCE_STATES m_frameState = D3D12_RESOURCE_STATE_COPY_DEST;
     D3D12_RESOURCE_STATES m_injectState = D3D12_RESOURCE_STATE_COPY_DEST;
     D3D12_RESOURCE_STATES m_cursorState = D3D12_RESOURCE_STATE_COPY_DEST;
+    // energy is a UAV for the energy and sim passes and an SRV for the
+    // draw's vertex stage (the heat effect reads it per particle)
+    D3D12_RESOURCE_STATES m_energyState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
-    // descriptors, allocated once and rewritten on Configure
-    uint32_t m_slotFrameSrv = UINT32_MAX, m_slotCursorSrv = UINT32_MAX;
+    // descriptors, allocated once and rewritten on Configure: the draw's
+    // table is three consecutive SRVs (frame, cursor, energy)
+    uint32_t m_slotFrameSrv = UINT32_MAX, m_slotCursorSrv = UINT32_MAX, m_slotEnergySrv = UINT32_MAX;
     uint32_t m_slotEnergyUav = UINT32_MAX, m_slotInjectUav = UINT32_MAX;
+    double m_bornTime = -1e6;                     // Params::time at the last reset
 
     // the CPU shadow of the framebuffer, for colour deltas
     std::vector<uint32_t> m_shadow;
