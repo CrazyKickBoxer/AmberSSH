@@ -106,8 +106,10 @@ bool DesktopParticles::Init(Device& dev, ShaderCompiler& sc)
     // ---- sim pass: CBV(b1) + UAV(u0 particles) + table { UAV u1 energy } ---
     {
         D3D12_DESCRIPTOR_RANGE range = {};
+        // u1 energy, u2 inject (unused here), u3 stamp — the heap's own
+        // order, so the sim can read when each pixel last changed
         range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-        range.NumDescriptors = 1;
+        range.NumDescriptors = 3;
         range.BaseShaderRegister = 1;
         range.OffsetInDescriptorsFromTableStart = 0;
         D3D12_ROOT_PARAMETER params[3] = {};
@@ -576,8 +578,11 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
     if (m_needReset)
         m_bornTime = p.time;
     cb.bornTime = static_cast<float>(m_bornTime);
-    cb.transition = static_cast<float>(std::clamp(p.transition, 0, 4));
+    cb.transition = static_cast<float>(std::clamp(p.transition, 0, 5));
     cb.transitionSecs = std::clamp(p.transitionSecs, 0.05f, 2.0f);
+    // light speed needs longer than a recolour: the flight is the effect
+    if (cb.transition > 4.5f)
+        cb.transitionSecs = std::max(cb.transitionSecs, 0.55f);
     const bool anyFx = cb.fxShock > 0.0f || cb.fxEdge > 0.0f || cb.fxHeat > 0.0f || cb.fxMaterialise > 0.0f ||
                        cb.transition > 0.0f;
     cb.motion = std::clamp(p.motion, 0.25f, 4.0f);
@@ -597,6 +602,9 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
     // faithful — the exact-pixel contract — is solidity 1 with no effect on;
     // an effect displaces or recolours particles by design
     cb.faithful = (cb.solidity >= 0.999f && !anyFx) ? 1u : 0u;
+    // a moving particle stretches along its velocity and glows: the motion
+    // is drawn, not implied. Nothing moves in faithful mode, so it is free.
+    cb.streak = cb.faithful ? 0.0f : 1.0f;
     cb.resetFlag = m_needReset ? 1u : 0u;
     cb.sampledW = m_layout.sampledW;
     cb.sampledH = m_layout.sampledH;
@@ -608,15 +616,37 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
     cb.cursorScale = 3.0f + 4.0f * (1.0f - cb.solidity);
     cb.cursorW = static_cast<float>(m_cursorShape.width);
     cb.cursorH = static_cast<float>(m_cursorShape.height);
+    cb.cursorHotX = static_cast<float>(m_cursorShape.hotX);
+    cb.cursorHotY = static_cast<float>(m_cursorShape.hotY);
+    // one particle per shape pixel while the shape fits the grid; a larger
+    // shape is sampled down to it
+    const uint32_t big = std::max<uint32_t>(m_cursorShape.width, m_cursorShape.height);
+    cb.cursorGrid = static_cast<float>(m_cursorShape.width ? std::clamp<uint32_t>(big, 4, kCursorGrid) : 16);
+    cb.instanceBase = 0.0f;
     m_lastFaithful = cb.faithful != 0;
     m_lastLight = p.lightMode;
     m_lastInstances = cb.particleCount + cb.cursorCount;
+    m_lastCursorCount = cb.cursorCount;
 
     UploadRing::Alloc a = frame.ring.Allocate(sizeof(DesktopCB), 256);
     if (!a.cpu)
         return;
     std::memcpy(a.cpu, &cb, sizeof cb);
     m_cbGpu = a.gpu;
+    // the cursor's own draw call sees instance ids from 0: this copy tells
+    // it where its particles start
+    m_cbCursorGpu = 0;
+    if (cb.cursorCount)
+    {
+        DesktopCB cc = cb;
+        cc.instanceBase = static_cast<float>(cb.particleCount);
+        UploadRing::Alloc ca = frame.ring.Allocate(sizeof(DesktopCB), 256);
+        if (ca.cpu)
+        {
+            std::memcpy(ca.cpu, &cc, sizeof cc);
+            m_cbCursorGpu = ca.gpu;
+        }
+    }
 
     // ---- energy: decay + inject ----------------------------------------------
     Transition(cl, m_inject.Get(), m_injectState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -675,7 +705,18 @@ void DesktopParticles::Draw(ID3D12GraphicsCommandList* cl)
     cl->SetGraphicsRootShaderResourceView(1, m_particles->GetGPUVirtualAddress());
     cl->SetGraphicsRootDescriptorTable(2, m_dev->SrvGpu(m_slotFrameSrv));
     cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    cl->DrawInstanced(6, m_lastInstances, 0, 0);
+    const uint32_t field = m_lastInstances - m_lastCursorCount;
+    if (field)
+        cl->DrawInstanced(6, field, 0, 0);
+    // The pointer, second and always over-blended: an additive cursor cannot
+    // darken anything, so on a white desktop it would be invisible. Its own
+    // constants carry the instance offset (SV_InstanceID starts at 0 here).
+    if (m_lastCursorCount && m_cbCursorGpu)
+    {
+        cl->SetPipelineState(m_drawOver.Get());
+        cl->SetGraphicsRootConstantBufferView(0, m_cbCursorGpu);
+        cl->DrawInstanced(6, m_lastCursorCount, 0, 0);
+    }
     m_dev->Stamp(cl, Device::StampDesktopEnd);
 }
 

@@ -54,16 +54,22 @@ struct DesktopCB
     float cursorScale = 0, cursorW = 0, cursorH = 0, motion = 1;
     float fxShock = 0, fxEdge = 0, fxHeat = 0, fxMaterialise = 0;
     float bornTime = -1e6f, shockAmp = 1, edgeGain = 4, vivid = 1;
-    float shockStyle = 0, transition = 0, transitionSecs = 0.32f, pad7 = 0;
+    float shockStyle = 0, transition = 0, transitionSecs = 0.32f, streak = 0;
+    float cursorHotX = 0, cursorHotY = 0, cursorGrid = 16, instanceBase = 0;
 };
-static_assert(sizeof(DesktopCB) == 60 * 4, "DesktopCB must stay 60 scalars, mirrored in HLSL");
+static_assert(sizeof(DesktopCB) == 64 * 4, "DesktopCB must stay 64 scalars, mirrored in HLSL");
 static_assert(sizeof(DesktopCB) % 16 == 0, "constant buffers are 16-byte aligned");
 
 // The largest desktop the particle field takes at full density. 3840x2160
 // at density 1 and 1920x1080 at density 4 are both 8 294 400, just inside.
 constexpr uint32_t kMaxDesktopParticles = 8u * 1024 * 1024;
 // The pointer's cluster.
-constexpr uint32_t kCursorParticles = 96;
+// The pointer's cluster: a grid the server's cursor shape is laid out on
+// (up to 24 x 24 = 576 particles, one per shape pixel), and a ring of 64
+// around it that is visible whatever the desktop underneath is doing.
+constexpr uint32_t kCursorGrid = 24;
+constexpr uint32_t kCursorHalo = 64;
+constexpr uint32_t kCursorParticles = kCursorGrid * kCursorGrid + kCursorHalo;
 
 class DesktopParticles
 {
@@ -98,9 +104,11 @@ public:
         float shockX = 0, shockY = 0, shockTime = -1;
         float shockAmp = 1;             // +1 outward, negative inward
         int shockStyle = 0;             // 0 ring, 1 water drop, 2 splash, 3 vortex
-        // How a changed pixel redraws, from its old colour to its new one
-        // over transitionSecs: 0 at once, 1 burn, 2 dissolve, 3 scan wipe,
-        // 4 emboss flash. Anything but 0 is an effect (not pixel-exact).
+        // How a changed region redraws over transitionSecs: 0 at once, 1
+        // burn, 2 dissolve, 3 scan wipe, 4 emboss flash — those four recolour
+        // each pixel in place — and 5 light speed, where the particles
+        // themselves fly in from far out on curved paths, streaked and blue
+        // with their own speed. Anything but 0 is an effect (not pixel-exact).
         int transition = 0;
         float transitionSecs = 0.32f;
         // The effects, 0 off .. 1 full (docs/vnc.md, "Effects"). Any of them
@@ -217,4 +225,6 @@ private:
     D3D12_GPU_VIRTUAL_ADDRESS m_cbGpu = 0;        // this frame's DesktopCB, shared by the passes
     bool m_lastFaithful = true, m_lastLight = false;
     uint32_t m_lastInstances = 0;                 // particles + cursor cluster, as simulated
+    uint32_t m_lastCursorCount = 0;               // ... of which the pointer's
+    D3D12_GPU_VIRTUAL_ADDRESS m_cbCursorGpu = 0;  // the same constants with instanceBase set
 };

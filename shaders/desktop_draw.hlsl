@@ -61,7 +61,33 @@ float3 Redraw(int style, float t, float3 oldc, float3 newc, float seed, float ed
             return relief;
         return lerp(relief, newc, (t - 0.3) / 0.7);
     }
+    // 5 (light speed) recolours nothing: the particle itself is flying in
+    // (desktop_sim.hlsl), and the streak below is what shows.
     return newc;
+}
+
+// The luminance of the desktop directly under the pointer, so the cursor
+// can pick colours that stand against it — white on white is why a plain
+// cluster disappears.
+float PointerLuma()
+{
+    const float2 fp = (float2(cursorX, cursorY) - float2(dstX, dstY)) / max(scale, 1e-3);
+    const int2 q = clamp(int2(fp), int2(0, 0), int2(int(fbW) - 1, int(fbH) - 1));
+    return dot(gFrame.Load(int3(q, 0)).rgb, float3(0.299, 0.587, 0.114));
+}
+
+// The built-in pointer, when the server sends no shape: the classic arrow
+// as a triangle from (0,0) to (0,14) to (10,10) in cell space. 0 outside,
+// 1 inside, 2 on the outline — an outline is what makes a cursor readable
+// on a background of any colour.
+int ArrowAt(float2 q)
+{
+    const float d1 = q.x;
+    const float d2 = (140.0 - 4.0 * q.x - 10.0 * q.y) / 10.7703;
+    const float d3 = (q.y - q.x) / 1.4142136;
+    if (d1 < -1.2 || d2 < -1.2 || d3 < -1.2)
+        return 0;
+    return min(d1, min(d2, d3)) < 1.4 ? 2 : 1;
 }
 
 // The shockwave as a refraction: a particle stays on its pixel and takes
@@ -133,8 +159,11 @@ static const float2 kCorners[6] = {
 VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
 {
     VSOut o;
-    const DeskParticle p = gParticles[iid];
-    const bool isCursor = iid >= particleCount;
+    // The pointer is a second draw call whose instance ids start at 0;
+    // instanceBase says where its particles are (DesktopParticles::Draw).
+    const uint idx = uint(instanceBase) + iid;
+    const DeskParticle p = gParticles[idx];
+    const bool isCursor = idx >= particleCount;
     const float loose = 1.0 - solidity;
 
     float3 rgb;
@@ -143,23 +172,47 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     float edge = 0.0;   // 0..1 luminance-gradient strength, the edge effect
     float heat = 0.0;   // 0..1 disturbance energy, the heat effect
     int2 at = int2(0, 0);   // the framebuffer pixel the colour came from
+    float cursorHalf = 0.0;   // > 0 for a pointer particle: its own crisp size
     if (isCursor)
     {
-        // the cluster's particles sample the cursor shape by their seed
-        // the shape occupies the top-left cursorW x cursorH of gCursor
-        const float seed = UnpackSeed(p.extra);
-        if (cursorW < 1.0 || cursorH < 1.0)
+        // The cluster IS the cursor: a grid over the server's shape, one
+        // particle per shape pixel, or the built-in arrow when there is no
+        // shape — and around it a ring in the accent colour. Every colour
+        // is chosen against the desktop underneath, so the pointer reads on
+        // a white window as well as a dark one.
+        const uint k = idx - particleCount;
+        const uint g = uint(max(cursorGrid, 1.0));
+        const float dark = PointerLuma() > 0.45 ? 1.0 : 0.0;   // a bright desktop wants dark ink
+        if (k < g * g)
         {
-            // no shape from the server: a plain white cluster
-            rgb = float3(1.0, 1.0, 1.0);
-            alpha = 1.0;
+            const float2 cell = float2(float(k % g), float(k / g));
+            if (cursorW >= 1.0)
+            {
+                const uint2 cp = uint2(cell * float2(cursorW, cursorH) / float(g));
+                const float4 c = gCursor.Load(int3(cp, 0));
+                rgb = SrgbToLinearExact(c.rgb);
+                alpha = c.a;
+                // the server's own shape, with a rim of the opposite tone so
+                // a white cursor still shows on a white window
+                if (alpha > 0.5 && dark > 0.5 && dot(rgb, float3(0.299, 0.587, 0.114)) > 0.6)
+                    rgb = lerp(rgb, float3(0.02, 0.02, 0.03), 0.35);
+            }
+            else
+            {
+                const int a = ArrowAt(cell);
+                alpha = a == 0 ? 0.0 : 1.0;
+                const float3 ink = float3(0.015, 0.015, 0.02);
+                const float3 pale = float3(1.0, 1.0, 1.0);
+                rgb = (a == 2) ? (dark > 0.5 ? pale : ink) : (dark > 0.5 ? ink : pale);
+            }
+            cursorHalf = 0.62;
         }
         else
         {
-            const uint2 cp = uint2(seed * cursorW, HashU(iid * 31u + 5u) * cursorH);
-            const float4 c = gCursor.Load(int3(cp, 0));
-            rgb = SrgbToLinearExact(c.rgb);
-            alpha = c.a;
+            // the ring: amber, which stands out on white and on black
+            rgb = float3(1.0, 0.42, 0.06);
+            alpha = 0.85;
+            cursorHalf = 0.9;
         }
     }
     else
@@ -167,7 +220,7 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
         uint2 src;
         float2 home;
         uint sub;
-        HomeOf(iid, src, home, sub);
+        HomeOf(idx, src, home, sub);
         // the shockwave refracts: the colour comes from a displaced pixel
         const float2 refract = ShockRefraction(float2(src) + 0.5);
         at = clamp(int2(floor(float2(src) + 0.5 + refract)), int2(0, 0), int2(int(fbW) - 1, int(fbH) - 1));
@@ -233,13 +286,30 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
                          float2(at));
         }
     }
+    // A particle in flight stretches along its velocity and glows blue-white
+    // with its own speed: the movement is drawn, not implied. At rest the
+    // speed is zero and nothing here does anything.
+    float2 axis = float2(1.0, 0.0), across = float2(0.0, 1.0);
+    float stretch = 0.0;
+    if (streak > 0.0 && !isCursor)
+    {
+        const float2 vel = UnpackVel(p.velPacked);
+        const float sp = length(vel);
+        if (sp > 60.0)
+        {
+            axis = vel / sp;
+            across = float2(-axis.y, axis.x);
+            stretch = min(sp * max(dt, 1.0 / 240.0) * 0.5, 40.0) * streak;
+            rgb += float3(0.22, 0.5, 1.35) * saturate(sp / 1400.0) * streak;
+        }
+    }
     rgb *= 1.0 + edge * 0.35;                              // edges: a little past 1, so bloom finds them
     rgb += float3(1.0, 0.55, 0.15) * heat * 0.6;            // heat: an amber tint that cools away
 
     // size: a hard pixel at solidity 1, growing into a soft glow disc; never
     // under one screen pixel, or a scaled-down desktop turns to speckle
-    const float half = max(0.5 * particleSize * scale, 0.5) + glowSize * loose;
-    o.soft = loose;
+    const float half = isCursor ? cursorHalf : (max(0.5 * particleSize * scale, 0.5) + glowSize * loose);
+    o.soft = isCursor ? 0.0 : loose;
     o.alpha = alpha;
     o.rgb = rgb * brightness;
     if (!faithful && !isCursor)
@@ -258,7 +328,8 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
         o.rgb *= smoothstep(0.0, kMaterialiseSeconds, time - bornTime);
 
     const float2 corner = kCorners[vid];
-    const float2 px = p.pos + corner * half - float2(0.0, lift);
+    const float2 px = p.pos + axis * (corner.x * (half + stretch)) + across * (corner.y * half) -
+                      float2(0.0, lift);
     o.uv = corner;
     o.pos = float4(px.x / screenW * 2.0 - 1.0, 1.0 - px.y / screenH * 2.0, 0.0, 1.0);
     return o;

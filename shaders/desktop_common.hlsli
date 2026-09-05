@@ -43,8 +43,15 @@ cbuffer DesktopCB : register(b1)
     // shockStyle: 0 ring, 1 water drop (concentric ripples), 2 splash
     // (a burst with an upward lean), 3 vortex (a swirl that draws in)
     // transition: how a changed pixel redraws — 0 at once, 1 burn, 2
-    // dissolve, 3 scan wipe, 4 emboss flash — over transitionSecs
-    float shockStyle, transition, transitionSecs, pad7;
+    // dissolve, 3 scan wipe, 4 emboss flash, 5 light speed (the particles
+    // themselves fly in) — over transitionSecs. streak: how much a moving
+    // particle stretches along its velocity and glows blue, 0 = off.
+    float shockStyle, transition, transitionSecs, streak;
+    // The pointer's cluster: the server shape's hotspot, how many particles
+    // across it the shape is laid out on, and the instance offset the draw
+    // adds to SV_InstanceID (the cursor is a second draw call, so that its
+    // dark outline can darken a white desktop — see DesktopParticles::Draw).
+    float cursorHotX, cursorHotY, cursorGrid, instanceBase;
 };
 
 // materialise runs this long after bornTime: the flight home, then exact

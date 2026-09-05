@@ -305,6 +305,40 @@ pixel-exact during those 0.32 s, and the self-check runs with None.
 | Dissolve | each pixel flips from old to new at its own moment |
 | Scan wipe | a bright line sweeps down each 48-row band with the new picture behind it |
 | Emboss flash | the new region appears as its edges alone, a bright relief, then the flat colour floods in behind them |
+| Light speed | **the particles themselves move** (the default): each changed pixel's particle is thrown far out along the ray from the screen's centre, turned by its own seed so the swarm arrives on curves rather than spokes, and flies back into its pixel over 0.55 s, decelerating hard |
+
+Light speed is the one style that is not a recolour: nothing resolves in
+place. The sim reads the change stamp, places the particle on its flight
+path and writes the velocity that flight implies; the draw then stretches
+every moving particle along its velocity and adds a blue-white glow in
+proportion to its speed, so the flight is drawn as a streak rather than
+implied. That streak applies to any fast movement — the shockwave's push
+and the materialise flight get it too — and costs nothing at rest, where
+the velocity is zero.
+
+## The pointer
+
+In the local cursor mode the pointer is a particle cluster, and it is a
+shape rather than a blob: `kCursorGrid` × `kCursorGrid` particles are laid
+over the server's cursor bitmap, one per shape pixel, placed by the
+shape's own hotspot, plus a ring of 64 that turns slowly around it. When
+the server sends no shape the grid draws a built-in arrow with an outline
+(a triangle, its edges found by distance so the outline is a band, not a
+drawn line).
+
+Colours are chosen against the desktop underneath: the shader samples the
+framebuffer at the pointer and, on a bright window, uses dark ink with a
+pale outline, and the reverse on a dark one. The ring is amber, which
+reads on both. The cluster is also a **second draw call, always
+over-blended**: the field may be drawing additively, and an additive
+cursor cannot darken anything, so on a white window it would be invisible
+whatever colour it chose. Its constants carry an instance offset, since a
+second draw call's instance ids start at zero again.
+
+The Windows cursor is hidden over the picture (there is already a pointer
+there, ours or the server's), is an arrow on the letterbox around it, and
+is a **hand** over the tab strip and the foot bar — both are things you
+click, and the class cursor is the terminal's I-beam.
 
 ## The VNC menu
 

@@ -19,6 +19,8 @@
 
 RWStructuredBuffer<DeskParticle> gParticles : register(u0);
 RWTexture2D<float>               gEnergy    : register(u1);
+RWTexture2D<unorm float>         gInject    : register(u2);   // the energy pass's, unused here
+RWTexture2D<float>               gStamp     : register(u3);   // when each pixel last changed
 
 // The burst direction: away from home when the particle is already off it,
 // otherwise the seed's own direction, so a resting particle still leaves.
@@ -49,17 +51,36 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
     uint sub;
     if (isCursor)
     {
-        // a small cluster around the hotspot, each particle with its own spot
+        // The pointer: a grid laid over the server's cursor shape, one
+        // particle per shape pixel, placed by the shape's own hotspot — so
+        // the cluster IS the cursor, not a blob near it. Past the grid, a
+        // slowly turning ring that stays visible on any background.
         const uint k = i - particleCount;
-        const float a = seed * 6.2831853;
-        const float rr = (0.5 + 0.5 * HashU(k * 977u + 11u)) * cursorScale;
-        home = float2(cursorX, cursorY) + float2(cos(a), sin(a)) * rr;
+        const uint g = uint(max(cursorGrid, 1.0));
+        const float2 at = float2(cursorX, cursorY);
+        if (k < g * g)
+        {
+            const float2 cell = float2(float(k % g), float(k / g));
+            if (cursorW >= 1.0)
+                home = at + cell * float2(cursorW, cursorH) / float(g) - float2(cursorHotX, cursorHotY);
+            else
+                home = at + cell;   // no server shape: the built-in arrow, drawn from the same cell
+        }
+        else
+        {
+            const uint j = k - g * g;
+            const float count = max(float(cursorCount - g * g), 1.0);
+            const float a = float(j) / count * 6.2831853 + time * 1.1;
+            const float rr = max(max(cursorW, cursorH), 16.0) * 0.5 + 7.0;
+            home = at + float2(cos(a), sin(a)) * rr;
+        }
         src = uint2(0, 0);
         sub = 0;
     }
     else
         HomeOf(i, src, home, sub);
 
+    const float2 pos0 = p.pos;   // where it was, for the velocity a flight implies
     // A jittered home at low solidity: the swarm settles near, not on, its pixel.
     const float loose = 1.0 - solidity;
     if (!isCursor && jitter > 0.0)
@@ -74,6 +95,37 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
     // take over and place them exactly.
     const float bornAge = time - bornTime;
     const bool materialising = fxMaterialise > 0.0 && !isCursor && bornAge >= 0.0 && bornAge < kMaterialiseSeconds;
+
+    // Light speed (redraw style 5): this pixel changed, so its particle
+    // flies in from far out along a curved path and lands on it. The
+    // particles themselves move; nothing resolves in place.
+    float warpT = -1.0;
+    if (transition > 4.5 && !isCursor && !materialising && !resetFlag)
+    {
+        const float changeAge = time - gStamp[src / max(stride, 1u)];
+        if (changeAge >= 0.0 && changeAge < transitionSecs)
+            warpT = changeAge / transitionSecs;
+    }
+    if (warpT >= 0.0)
+    {
+        // Out along the ray from the screen's centre, turned by the
+        // particle's own seed so the swarm arrives on curves rather than
+        // spokes, and decelerating hard into its pixel.
+        const float e = 1.0 - pow(1.0 - warpT, 3.0);
+        const float2 centre = float2(screenW, screenH) * 0.5;
+        const float2 ray = home - centre;
+        const float2 dir = normalize(ray + float2(1e-3, 1e-3));
+        const float spin = (1.0 - e) * (2.4 * seed - 1.2) + (1.0 - e) * (1.0 - e) * 1.1;
+        const float ca = cos(spin), sa = sin(spin);
+        const float2 turned = float2(dir.x * ca - dir.y * sa, dir.x * sa + dir.y * ca);
+        const float far = (700.0 + 900.0 * HashU(i * 13u + 29u)) * (1.0 - e);
+        const float2 target = home + turned * far;
+        const float step = max(dt, 1.0 / 240.0);
+        p.pos = target;
+        p.velPacked = PackVel((target - pos0) / step);   // the draw streaks along it
+        gParticles[i] = p;
+        return;
+    }
 
     if (resetFlag)
     {

@@ -313,8 +313,9 @@ struct ConnectionProfile
     int         vncVividness = 130;      // saturation + contrast %, 100 = as decoded; pinned to 100 in faithful mode
     int         vncMotion = 200;         // tempo % of the swarm and the effects, 25..800
     // how a changed region redraws: 0 the new pixels at once, 1 burn,
-    // 2 dissolve, 3 scan wipe, 4 emboss flash (docs/vnc.md, "Redraw styles")
-    int         vncTransition = 1;
+    // 2 dissolve, 3 scan wipe, 4 emboss flash, 5 light speed — the particles
+    // themselves fly in (docs/vnc.md, "Redraw styles")
+    int         vncTransition = 5;
     int         vncGlow = 40;            // bloom % applied to the desktop (the terminal's is 100)
     // The desktop's size, asked of the server (ExtendedDesktopSize): 0 the
     // server's own, 1 fit the window (and follow it), 2.. a preset from

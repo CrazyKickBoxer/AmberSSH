@@ -14260,6 +14260,40 @@ LRESULT App::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
         return 0;
     }
 
+    case WM_SETCURSOR:
+    {
+        // The class cursor is the terminal's I-beam, which is right over
+        // text and wrong everywhere else. The chrome is not text: the tab
+        // strip and the buttons in it, and the foot bar's controls, are
+        // things you click, so they get the hand. Over a remote desktop the
+        // pointer is drawn by the particles (or by the server, in its own
+        // picture), and the OS one on top of that is a second cursor.
+        if (LOWORD(lParam) != HTCLIENT)
+        {
+            handled = false;
+            return 0;
+        }
+        POINT pt;
+        GetCursorPos(&pt);
+        ScreenToClient(hwnd, &pt);
+        const float y = static_cast<float>(pt.y);
+        const float foot = static_cast<float>(m_device.Height()) - m_statusBarH;
+        if (y < m_titleBarH || (m_statusBarH > 0.0f && y >= foot))
+        {
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            return TRUE;
+        }
+        if (const amber::VncTab* vt = VncActive(); vt != nullptr)
+        {
+            // inside the picture the pointer is already drawn; on the
+            // letterbox around it there is nothing to point at but the app
+            SetCursor(vt->pointerInside ? nullptr : LoadCursorW(nullptr, IDC_ARROW));
+            return TRUE;
+        }
+        handled = false;
+        return 0;
+    }
+
     case WM_NCHITTEST:
     {
         POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };

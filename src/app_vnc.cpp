@@ -425,7 +425,7 @@ void App::RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame)
     p.fxMaterialise = prof.vncFxMaterialise ? 1.0f : 0.0f;
     p.vivid = static_cast<float>(std::clamp(prof.vncVividness, 50, 200)) / 100.0f;
     p.motion = static_cast<float>(std::clamp(prof.vncMotion, 25, 800)) / 100.0f;
-    p.transition = std::clamp(prof.vncTransition, 0, 4);
+    p.transition = std::clamp(prof.vncTransition, 0, 5);
     p.transitionSecs = 0.32f;
     p.dstX = t.dstX;
     p.dstY = t.dstY;
@@ -695,7 +695,7 @@ const wchar_t* const kVncMotionLabels[] = { L"&Slow (50%)", L"&Normal (100%)", L
                                             L"F&astest (800%)", L"&Custom..." };
 const int kVncMotionValues[] = { 50, 100, 200, 400, 800 };   // the sixth entry prompts
 const wchar_t* const kVncRedrawLabels[] = { L"&None (the new pixels at once)", L"&Burn", L"&Dissolve", L"&Scan Wipe",
-                                            L"&Emboss Flash" };
+                                            L"&Emboss Flash", L"&Light Speed (the particles fly in)" };
 const wchar_t* const kVncShockLabels[] = { L"&Ring", L"&Water Drop", L"&Splash", L"&Vortex" };
 const wchar_t* const kVncFxLabels[] = { L"&Shockwave on Click", L"&Edge Glow", L"&Heat on Change",
                                         L"&Materialise on Connect" };
@@ -713,7 +713,7 @@ void App::BuildVncMenu(HMENU bar)
     for (int i = 0; i < 4; ++i)
         AppendMenuW(shock, MF_STRING, IdmVncShockFirst + i, kVncShockLabels[i]);
     HMENU redraw = CreatePopupMenu();
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < 6; ++i)
         AppendMenuW(redraw, MF_STRING, IdmVncRedrawFirst + i, kVncRedrawLabels[i]);
     HMENU size = CreatePopupMenu();
     for (int i = 0; i < 8; ++i)
@@ -749,7 +749,7 @@ void App::UpdateVncMenuChecks()
             motionIdx = i;
     CheckMenuRadioItem(m_menu, IdmVncMotionFirst, IdmVncMotionLast, IdmVncMotionFirst + motionIdx, MF_BYCOMMAND);
     CheckMenuRadioItem(m_menu, IdmVncRedrawFirst, IdmVncRedrawLast,
-                       IdmVncRedrawFirst + std::clamp(p ? p->vncTransition : 1, 0, 4), MF_BYCOMMAND);
+                       IdmVncRedrawFirst + std::clamp(p ? p->vncTransition : 5, 0, 5), MF_BYCOMMAND);
     CheckMenuRadioItem(m_menu, IdmVncShockFirst, IdmVncShockLast,
                        IdmVncShockFirst + std::clamp(p ? p->vncShockStyle : 0, 0, 3), MF_BYCOMMAND);
     CheckMenuRadioItem(m_menu, IdmVncSizeFirst, IdmVncSizeLast,
@@ -788,7 +788,7 @@ bool App::VncMenuCommand(int id)
     else if (id >= IdmVncRedrawFirst && id <= IdmVncRedrawLast)
     {
         p.vncTransition = id - IdmVncRedrawFirst;
-        static const char* names[] = { "none", "burn", "dissolve", "scan wipe", "emboss flash" };
+        static const char* names[] = { "none", "burn", "dissolve", "scan wipe", "emboss flash", "light speed" };
         SetStatus(std::string("VNC: redraw style ") + names[p.vncTransition]);
     }
     else if (id >= IdmVncShockFirst && id <= IdmVncShockLast)
@@ -925,8 +925,9 @@ void App::VncStatusLines(const Session& s, float y)
     if (s.profile.vncFxHeat) fx += " heat";
     if (s.profile.vncFxMaterialise) fx += " materialise";
     {
-        static const char* redraw[] = { "", " redraw:burn", " redraw:dissolve", " redraw:scan", " redraw:emboss" };
-        fx += redraw[std::clamp(s.profile.vncTransition, 0, 4)];
+        static const char* redraw[] = { "",           " redraw:burn",   " redraw:dissolve",
+                                        " redraw:scan", " redraw:emboss", " redraw:lightspeed" };
+        fx += redraw[std::clamp(s.profile.vncTransition, 0, 5)];
     }
     const std::string contract = fx.empty() ? (s.profile.vncSolidity >= 100 && t.nativeScale ? "faithful" : "swarm")
                                             : "FX:" + fx;

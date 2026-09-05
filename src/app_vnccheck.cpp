@@ -209,7 +209,7 @@ void App::VncSelfCheckTick()
         req.profile.vncFxEdge = fxPreview;
         req.profile.vncFxHeat = fxPreview;
         req.profile.vncFxMaterialise = fxPreview;
-        req.profile.vncTransition = fxPreview ? 1 : 0;
+        req.profile.vncTransition = fxPreview ? 5 : 0;
         req.profile.vncDesktopSize = 0;   // the in-process server has no ExtendedDesktopSize
         const bool started = StartSession(req);
         c.Check("VNC tab started", started);
