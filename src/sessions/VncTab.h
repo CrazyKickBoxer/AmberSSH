@@ -58,6 +58,9 @@ struct VncTab
     // is an echo, not news, and is not sent back.
     std::string lastFromServer;
     std::string lastToServer;
+    // Set for the duration of a Ctrl+V: after the text is sent, V is pressed
+    // so the far side pastes what it just received.
+    bool pasteThenType = false;
 
     // ---- diagnostics -----------------------------------------------------
     double lastDamageAt = 0.0;

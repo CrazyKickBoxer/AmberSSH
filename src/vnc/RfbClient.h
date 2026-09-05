@@ -46,6 +46,13 @@ struct ClientOptions
     bool wantContinuousUpdates = true; // offer ContinuousUpdates
     bool allowNone = true;             // accept security type None
     bool allowVncAuth = true;          // accept VNC Authentication
+    // VeNCrypt (RfbTls.h). With `tls` set the client takes security type
+    // 19 or nothing — never a plaintext type the server also offers — and
+    // only its X.509 subtypes. `username` is for X509Plain, which is taken
+    // only when allowPlainOverTls says so.
+    bool tls = false;
+    std::string username;
+    bool allowPlainOverTls = false;
 };
 
 enum class ClientState
@@ -55,6 +62,15 @@ enum class ClientState
     SecurityReason,   // the server refused with a reason string
     VncAuthChallenge, // 16 bytes to encrypt
     SecurityResult,   // u32, and a reason from 3.8
+    // VeNCrypt (security type 19): version, its ack, the subtype list, its
+    // ack, then a pause while the caller runs the TLS handshake on the
+    // socket (NeedsTls / TlsEstablished); the subtype's own authentication
+    // follows inside TLS
+    VeNCryptVersion,
+    VeNCryptVersionAck,
+    VeNCryptSubtypes,
+    VeNCryptSubtypeAck,
+    TlsHandshake,
     ServerInit,       // the desktop's size, format and name
     Ready,            // steady state: updates, cut text, bells
     Failed,           // the stream is dead; Error() says why
@@ -88,6 +104,17 @@ public:
     const ServerInit& Init() const { return m_init; }
     bool ContinuousUpdates() const { return m_continuous; }
 
+    // ---- VeNCrypt -----------------------------------------------------------
+    // True while the state machine is parked at TlsHandshake: the caller
+    // owns the socket, runs the TLS handshake on it, and — when it is up
+    // and the certificate is accepted — calls TlsEstablished(), after which
+    // every byte fed in must have come through TLS. Nothing is sent or
+    // parsed in between.
+    bool NeedsTls() const { return m_state == ClientState::TlsHandshake; }
+    void TlsEstablished();
+    uint32_t VeNCryptSubtype() const { return m_venSubtype; }   // 0 when not VeNCrypt
+    bool Encrypted() const { return m_encrypted; }
+
     // ---- steady state, client → server ------------------------------------
     // A FramebufferUpdateRequest for the whole framebuffer. Bounded: with a
     // request already outstanding this is a no-op unless `force`.
@@ -120,6 +147,12 @@ private:
     Parse StepSecurityReason(Reader& r);
     Parse StepVncAuthChallenge(Reader& r);
     Parse StepSecurityResult(Reader& r);
+    Parse StepVeNCryptVersion(Reader& r);
+    Parse StepVeNCryptVersionAck(Reader& r);
+    Parse StepVeNCryptSubtypes(Reader& r);
+    Parse StepVeNCryptSubtypeAck(Reader& r);
+    uint32_t m_venSubtype = 0;
+    bool m_encrypted = false;
     Parse StepServerInit(Reader& r);
     Parse StepReady(Reader& r);
     Parse StepRectangle(Reader& r);

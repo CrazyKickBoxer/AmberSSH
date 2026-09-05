@@ -47,7 +47,7 @@ public:
         Window, Appearance, Behaviour, Translation, Selection, Colours,
         Connection, Guardian, Reattach, Data, Proxy, Ssh, SshAuth, SshX11,
         SshTunnels, SshHostKeys, RemoteGui,
-        Serial, Telnet, Rlogin, Local,
+        Serial, Telnet, Rlogin, Local, Vnc,
         Effects,
         Count
     };
@@ -94,6 +94,8 @@ private:
     void ReadFields(ConnectionProfile& p);            // controls → profile
     void WriteFields(const ConnectionProfile& p);     // profile → controls
     void SyncAuthEnabled();
+    // The remember-password flag from whichever page applies to the protocol.
+    void SyncRememberPassword(ConnectionProfile& p) const;
     void SyncGuardianEnabled();   // reattach fields follow the reattach mode
     void SyncProtocol();
     void BrowseForKey();

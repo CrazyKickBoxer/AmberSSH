@@ -193,7 +193,7 @@ enum : int
     // Fields that need special handling keep fixed ids; the rest are
     // assigned from IdFieldFirst upwards by DefineFields.
     IdHost = 200, IdPort, IdUser,
-    IdProtocol = 210,           // 6 radios: 210..215
+    IdProtocol = 210,           // 7 radios: 210..216
     IdCloseOnExit = 220,        // 3 radios: 220..222
     IdAuth = 300,               // 4 radios: 300..303
     IdPassword = 310, IdRememberPassword, IdKeyPath, IdPassphrase,
@@ -205,6 +205,10 @@ enum : int
     IdReconnectMode = 360,      // 3 radios: 360..362
     IdReattachMode = 370,       // 4 radios: 370..373
     IdReattachSession = 380, IdReattachCommand,
+    // The VNC page has its own password control: the same profile secret
+    // (SecretKind::Password) and the same remember flag as SSH > Auth, so
+    // a VNC profile never has two passwords, only one shown where it is used.
+    IdVncPassword = 390, IdRememberVncPassword,
 
     IdFieldFirst = 1000,
 };
@@ -958,7 +962,7 @@ void ConnectionDialog::DefineFields()
     str(Page::Session, &P::host, L"Host name or IP address", -1, IdHost);
     num(Page::Session, &P::port, L"Port", 90, IdPort);
     choice(Page::Session, Kind::RadioRow, &P::protocol, L"Connection type",
-           { L"SSH", L"Telnet", L"Rlogin", L"Raw", L"Serial", L"Local" }, IdProtocol);
+           { L"SSH", L"Telnet", L"Rlogin", L"Raw", L"Serial", L"Local", L"VNC" }, IdProtocol);
     str(Page::Session, &P::username, L"Username (auto-login)", -1, IdUser);
     choice(Page::Session, Kind::RadioRow, &P::closeOnExit, L"Close window on exit",
            { L"Always", L"Never", L"Only on clean exit" }, IdCloseOnExit);
@@ -1336,6 +1340,33 @@ void ConnectionDialog::DefineFields()
     note(Page::Local, L"Local sessions never run elevated. Start AmberSSH itself as\r\n"
                       L"administrator if you need an elevated shell.");
 
+    // ---- VNC (docs/vnc.md) -------------------------------------------------
+    secret(Page::Vnc, IdVncPassword, L"Password (VNC Authentication, or the VeNCrypt subtype's)");
+    chk(Page::Vnc, &P::rememberPassword, L"Remember password (Credential Manager)", IdRememberVncPassword);
+    chk(Page::Vnc, &P::vncViewOnly, L"View only (no keys, pointer or clipboard reach the server)");
+    str(Page::Vnc, &P::vncViaProfileId,
+        L"Tunnel through a connected SSH session (its profile name; blank = direct TCP)");
+    choice(Page::Vnc, Kind::Combo, &P::vncTls, L"Encryption",
+           { L"None (plain RFB; VNC Authentication protects only the password)",
+             L"VeNCrypt / TLS with an X.509 server certificate (required, never downgraded)" });
+    num(Page::Vnc, &P::vncDensity, L"Particles per pixel (1-4; reduced past the GPU budget, and said so)", 90);
+    num(Page::Vnc, &P::vncSolidity, L"Solidity % (0 = loose swarm, 100 = exact reconstruction)", 90);
+    num(Page::Vnc, &P::vncParticleSize, L"Particle size (1-3 px)", 90);
+    num(Page::Vnc, &P::vncDisturbance, L"Disturbance % (how much a changed pixel stirs its particles)", 90);
+    choice(Page::Vnc, Kind::Combo, &P::vncEncodings, L"Encodings",
+           { L"ZRLE, Hextile, CopyRect, Raw", L"Hextile, ZRLE, CopyRect, Raw", L"Raw only" }, 0, 240);
+    choice(Page::Vnc, Kind::Combo, &P::vncCursorMode, L"Cursor",
+           { L"Local particle cursor, in the server's shape", L"The server draws the cursor into the picture" },
+           0, 300);
+    choice(Page::Vnc, Kind::Combo, &P::vncClipboard, L"Clipboard",
+           { L"Disabled", L"Ask each transfer", L"Remote \x2192 local text", L"Local \x2192 remote text",
+             L"Bidirectional text" }, 0, 200);
+    note(Page::Vnc, L"Clipboard is text only, Latin-1 on the wire (RFB cut text). Local \x2192 remote is\r\n"
+                    L"Ctrl+V or the palette's \"VNC: send clipboard\", and goes through the paste guard\r\n"
+                    L"first; remote \x2192 local lands on the Windows clipboard, never typed anywhere.");
+    note(Page::Vnc, L"An unverifiable server certificate is shown as a fingerprint to accept, then\r\n"
+                    L"pinned; a different certificate later is an alarm, not a warning.");
+
     // ---- Telnet ----------------------------------------------------------
     chk(Page::Telnet, &P::telnetPassive, L"Passive telnet negotiation (respond only, never initiate)");
     chk(Page::Telnet, &P::telnetKeyboard, L"Keyboard sends Telnet special commands (Ctrl+C = IP, Ctrl+Z = SUSP, Ctrl+D = EOF)");
@@ -1609,6 +1640,7 @@ void ConnectionDialog::BuildTree(HWND parent)
     insert(conn, L"Local", Page::Local);
     insert(conn, L"Telnet", Page::Telnet);
     insert(conn, L"Rlogin", Page::Rlogin);
+    insert(conn, L"VNC", Page::Vnc);
     insert(TVI_ROOT, L"Effects", Page::Effects);
 
     for (HTREEITEM it : { session, term, window, conn, ssh, guard })
@@ -1929,13 +1961,15 @@ void ConnectionDialog::LoadSelectedProfile()
 
     // Remembered secrets are fetched from the Credential Manager, never a file.
     SetText(GetDlgItem(m_dlg, IdPassword), L"");
+    SetText(GetDlgItem(m_dlg, IdVncPassword), L"");
     SetText(GetDlgItem(m_dlg, IdPassphrase), L"");
     SetText(GetDlgItem(m_dlg, IdProxyPassword), L"");
     if (p.rememberPassword)
     {
         SecureString pw;
         if (CredentialStore::Load(p.id, SecretKind::Password, pw))
-            SetText(GetDlgItem(m_dlg, IdPassword), Widen(pw.Reveal()));
+            SetText(GetDlgItem(m_dlg, p.protocol == Protocol::Vnc ? IdVncPassword : IdPassword),
+                    Widen(pw.Reveal()));
     }
     if (p.rememberPassphrase)
     {
@@ -1994,7 +2028,8 @@ void ConnectionDialog::SaveCurrentProfile()
         else
             CredentialStore::Erase(p.id, kind);
     };
-    secret(p.rememberPassword, IdPassword, SecretKind::Password);
+    SyncRememberPassword(p);
+    secret(p.rememberPassword, p.protocol == Protocol::Vnc ? IdVncPassword : IdPassword, SecretKind::Password);
     secret(p.rememberPassphrase, IdPassphrase, SecretKind::KeyPassphrase);
     secret(p.rememberProxyPassword, IdProxyPassword, SecretKind::ProxyPassword);
 
@@ -2095,6 +2130,7 @@ bool ConnectionDialog::CollectRequest()
     p = ConnectionProfile{};
     p.id = m_selectedProfileId.empty() ? MakeUuid() : m_selectedProfileId;
     ReadFields(p);
+    SyncRememberPassword(p);
     p.name = Narrow(GetText(GetDlgItem(m_dlg, IdProfileName)));
     // Connecting applies the same rule saving does, so "set it and connect"
     // works without a save first.
@@ -2142,15 +2178,25 @@ bool ConnectionDialog::CollectRequest()
         return false;
     }
 
-    m_out.password.Assign(Narrow(GetText(GetDlgItem(m_dlg, IdPassword))));
+    m_out.password.Assign(Narrow(GetText(GetDlgItem(m_dlg, p.protocol == Protocol::Vnc ? IdVncPassword : IdPassword))));
     m_out.passphrase.Assign(Narrow(GetText(GetDlgItem(m_dlg, IdPassphrase))));
     m_out.proxyPassword.Assign(Narrow(GetText(GetDlgItem(m_dlg, IdProxyPassword))));
 
     // Wipe the edit controls so the secrets do not linger in window text.
     SetText(GetDlgItem(m_dlg, IdPassword), L"");
+    SetText(GetDlgItem(m_dlg, IdVncPassword), L"");
     SetText(GetDlgItem(m_dlg, IdPassphrase), L"");
     SetText(GetDlgItem(m_dlg, IdProxyPassword), L"");
     return true;
+}
+
+void ConnectionDialog::SyncRememberPassword(ConnectionProfile& p) const
+{
+    // Two check boxes share one flag (SSH > Auth and VNC); the one on the
+    // page that applies to the protocol is the one that counts.
+    const int id = p.protocol == Protocol::Vnc ? IdRememberVncPassword : IdRememberPassword;
+    if (HWND h = GetDlgItem(m_dlg, id))
+        p.rememberPassword = SendMessageW(h, BM_GETCHECK, 0, 0) == BST_CHECKED;
 }
 
 void ConnectionDialog::SyncAuthEnabled()
@@ -2206,8 +2252,9 @@ void ConnectionDialog::SyncProtocol()
         L"Raw: bare TCP stream, no protocol (set the port).",
         L"Serial: local COM port (Connection > Serial for line settings).",
         L"Local: a shell on this machine â PowerShell, cmd, WSL (Connection > Local).",
+        L"VNC: a remote desktop drawn in particles, port 5900 (Connection > VNC for password, tunnel, TLS).",
     };
-    SetStatus(hints[std::clamp(now, 0, 5)]);
+    SetStatus(hints[std::clamp(now, 0, 6)]);
 }
 
 void ConnectionDialog::BrowseForKey()

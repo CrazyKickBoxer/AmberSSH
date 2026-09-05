@@ -222,6 +222,7 @@ json ToJson(const ConnectionProfile& p)
         {"vncEncodings", p.vncEncodings},
         {"vncCursorMode", p.vncCursorMode},
         {"vncTls", p.vncTls},
+        {"vncClipboard", p.vncClipboard},
         {"windowMode", p.windowMode},
         {"displayMode", p.displayMode},
         {"displayW", p.displayW},
@@ -399,6 +400,7 @@ bool FromJson(const json& j, ConnectionProfile& out)
     out.vncEncodings = std::clamp(Get<int>(j, "vncEncodings", 0), 0, 2);
     out.vncCursorMode = std::clamp(Get<int>(j, "vncCursorMode", 0), 0, 2);
     out.vncTls = std::clamp(Get<int>(j, "vncTls", 0), 0, 1);
+    out.vncClipboard = std::clamp(Get<int>(j, "vncClipboard", 1), 0, 4);
     out.x11Clipboard = std::clamp(Get<int>(j, "x11Clipboard", 0), 0, 4);
     // Remote GUI. A profile saved before this field existed does not have the
     // key, and defaulting it to "off" would turn a working remote GUI off on

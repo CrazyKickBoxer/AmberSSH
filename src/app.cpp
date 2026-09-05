@@ -944,6 +944,7 @@ void App::PumpSshEvents()
                 break;
 
             case SshEventType::Closed:
+                VncOnSshClosed(s);
                 if (!onDrop(ev.text.empty() ? "connection closed" : ev.text))
                 {
                     s.state = amber::SessionState::Disconnected;
@@ -989,6 +990,7 @@ void App::PumpSshEvents()
             }
 
             case SshEventType::Error:
+                VncOnSshClosed(s);
                 if (!onDrop(ev.text))
                 {
                     s.state = amber::SessionState::Error;
@@ -5395,6 +5397,13 @@ void App::SendPasteText(const std::string& norm)
 {
     if (!HasSession())
         return;
+    // A desktop tab has no terminal to paste into: the text goes to the
+    // server's clipboard as RFB cut text, under the profile's clipboard policy.
+    if (VncActive())
+    {
+        VncSendClipboardText(norm);
+        return;
+    }
     // Broadcasting a multi-line paste to several hosts at once is the single
     // most destructive thing this application can be asked to do: every line
     // runs the moment it lands, on every target, simultaneously. The existing
@@ -6691,6 +6700,12 @@ bool App::HandleMenuCommand(int id)
         return true;
     case IdmCommandPalette:   TogglePalette();          return true;
     case IdmJournal:          ToggleJournal();          return true;
+    case IdmVncRefresh:
+    case IdmVncViewOnly:
+    case IdmVncCtrlAltDel:
+    case IdmVncSendClipboard:
+        VncCommand(id);
+        return true;
     case IdmPasteGuard:
         m_pasteGuard = !m_pasteGuard;
         SetStatus(m_pasteGuard ? "Multi-line pastes are confirmed first"
@@ -7918,6 +7933,12 @@ void App::BuildPaletteItems()
     add("Close Tab", IdmCloseTab);
     add("Disconnect", IdmDisconnect);
     add("Reconnect Now", IdmGuardianRetry);
+    // VNC — the desktop tab's own actions; each says what it does to the server
+    add("VNC: Refresh Screen", IdmVncRefresh);
+    add(std::string("VNC: View Only") + (VncActive() && VncActive()->session && VncActive()->session->ViewOnly() ? " (on)" : " (off)"),
+        IdmVncViewOnly);
+    add("VNC: Send Ctrl+Alt+Del", IdmVncCtrlAltDel);
+    add("VNC: Send Clipboard to Server", IdmVncSendClipboard);
     add("Stop Reconnecting", IdmGuardianStop);
     // Command blocks — every action names the block it acts on so the
     // palette entry reads the same way the menu does.
@@ -11873,6 +11894,14 @@ amber::PaneId App::AddPane(const amber::ConnectionProfile* profile, bool vertica
     if (!HasSession())
         return amber::kNoPane;
     amber::Session& tab = Cur();
+    if (tab.IsVnc())
+    {
+        // a desktop has no panes: there is no shell to split, and a pane
+        // session cloned from a VNC profile would be neither a terminal
+        // nor a desktop
+        SetStatus("A remote desktop tab cannot be split into panes", 4.0);
+        return amber::kNoPane;
+    }
     if (tab.diagnostic)
     {
         SetStatus("The diagnostic session cannot be split.");

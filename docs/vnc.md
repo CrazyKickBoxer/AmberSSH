@@ -88,9 +88,38 @@ and disconnect release every held key and button (`VncReleaseAll`).
   no answer; None is followed by no SecurityResult before 3.8; a refusal
   reason exists only from 3.8. Each is a test (`tests/VncClientTests.cpp`).
 * Security **None** and **VNC Authentication** (DES, reversed key bits, in
-  C++ — no OpenSSL legacy provider). VeNCrypt is negotiated by nothing yet
-  (Phase 3): a server offering only VeNCrypt is refused as "no security
-  type in common", never downgraded.
+  C++ — no OpenSSL legacy provider).
+* **VeNCrypt** (security type 19) over the existing OpenSSL, when the
+  profile's Encryption is set to it (`src/vnc/RfbTls.h`). Version 0.2 is
+  exchanged, the server's subtype list is filtered by a policy written
+  here rather than taken from the server, TLS 1.2+ is negotiated on the
+  same socket, and the subtype's own authentication runs inside it:
+
+  | subtype | wire | taken? |
+  |---|---|---|
+  | X509None (260) | X.509 server certificate, no further auth | yes, when there is no password |
+  | X509Vnc (261) | X.509, then the VNC challenge inside TLS | yes, preferred with a password |
+  | X509Plain (262) | X.509, then username + password inside TLS | only when the profile names a user; X509Vnc is preferred |
+  | TLSNone / TLSVnc / TLSPlain (257–259) | anonymous Diffie-Hellman | **no** — encrypted to whoever answered, not to the server |
+  | Plain (256) | username + password in the clear | **no** |
+
+  A profile that requires TLS takes type 19 or nothing: a plaintext type
+  the server also offers is never chosen, a server without VeNCrypt (or
+  an RFB 3.3 server, which has no list to find it in) is refused with the
+  reason named, and a refusal is not retried. **A TLS-configured
+  connection is never downgraded to an unencrypted one.**
+
+  Certificates verify against the Windows ROOT and CA stores with the
+  host name checked (SNI unless the host is an address). A chain that
+  verifies connects silently. Anything else — a self-signed server, which
+  is most VNC servers — is shown as an SSH-style host-key question: the
+  leaf's `SHA256:` fingerprint, its subject and why it did not verify.
+  Accepting pins the fingerprint in
+  `%LOCALAPPDATA%\AmberSSH\vnc_known_hosts` (`host:port SHA256:…`, one per
+  line, fingerprints only, never a certificate). A later connection whose
+  certificate differs from the pin gets the changed-key alarm treatment,
+  and rejecting it ends the attempt without a retry. The overlay's first
+  line says `TLSv1.3 X509Vnc` or `plaintext`.
 * Pixel format: 32 bpp, depth 24, little-endian, shifts 16/8/0 — BGRX on
   the wire, `0xFFRRGGBB` in memory with the alpha forced opaque.
 * Encodings **Raw, CopyRect, ZRLE, Hextile**; pseudo-encodings
@@ -111,9 +140,12 @@ and disconnect release every held key and button (`VncReleaseAll`).
   starts with a fresh full picture. A rejected password or a refusal is
   reported once and never retried.
 
-Not implemented: **Tight**, RRE/CoRRE, the Extended Clipboard
-pseudo-encoding (cut text is Latin-1 with LF endings, as the core protocol
-specifies; code points above U+00FF become `?` outbound), **VeNCrypt/TLS**.
+Not implemented: **Tight** (optional in the brief; left out rather than
+shipped unverified — a server offering only Tight and Raw is served in
+Raw), RRE/CoRRE, the Extended Clipboard pseudo-encoding (cut text is
+Latin-1 with LF endings, as the core protocol specifies; code points above
+U+00FF become `?` outbound), and VeNCrypt's anonymous and plaintext
+subtypes (by policy, above).
 
 ## The particle desktop
 
@@ -159,23 +191,44 @@ placement, tracked resource states, and reuse protected by the frame fence
 (three frames in flight). A first picture, a resize and a recovery are full
 uploads by design.
 
-## Settings (profile fields; the dialog page is Phase 3)
+## Settings
 
-| field | meaning | default |
-|---|---|---|
-| `vncDensity` | particles per pixel, 1–4 | 1 |
-| `vncSolidity` | 0 swarm … 100 faithful | 100 |
-| `vncParticleSize` | 1–3 px | 1 |
-| `vncDisturbance` | burst strength, 0–200 % | 100 |
-| `vncEncodings` | 0 ZRLE first, 1 Hextile first, 2 Raw only | 0 |
-| `vncCursorMode` | 0 local particle cluster with the server's shape, 1 server-drawn, 2 hidden | 0 |
-| `vncViewOnly` | no keys, pointer or clipboard go out | off |
-| `vncViaProfileId` | tunnel through this live SSH session's profile | direct |
-| `vncTls` | VeNCrypt required (Phase 3; refused rather than downgraded until then) | off |
+**VNC** is the seventh connection type on the connection manager's Session
+page, and **Connection > VNC** is its page. The page is built from the
+same field table as every other page, so it takes every interface skin
+without work of its own. Host and port are the Session page's; the
+username there is what X509Plain would send.
 
-The password, when remembered, is the profile's ordinary Password secret in
-the Windows Credential Manager, as for SSH; nothing about it is in
-`profiles.json`.
+| field | on the page | meaning | default |
+|---|---|---|---|
+| (password) | Password | VNC Authentication, or the VeNCrypt subtype's; remembered, it is the profile's ordinary Password secret in the Credential Manager, never in `profiles.json` | — |
+| `vncViewOnly` | View only | no keys, pointer or clipboard go out | off |
+| `vncViaProfileId` | Tunnel through a connected SSH session | that session's profile name (or id); blank = direct TCP | direct |
+| `vncTls` | Encryption | None, or VeNCrypt/TLS with an X.509 certificate — required, never downgraded | None |
+| `vncDensity` | Particles per pixel | 1–4; reduced past the GPU budget, and the overlay says so | 1 |
+| `vncSolidity` | Solidity % | 0 swarm … 100 faithful | 100 |
+| `vncParticleSize` | Particle size | 1–3 px | 1 |
+| `vncDisturbance` | Disturbance % | burst strength, 0–200 | 100 |
+| `vncEncodings` | Encodings | ZRLE first / Hextile first / Raw only | ZRLE first |
+| `vncCursorMode` | Cursor | local particle cluster in the server's shape / server-drawn | local |
+| `vncClipboard` | Clipboard | Disabled / Ask each transfer / Remote → local / Local → remote / Bidirectional | Ask |
+
+Numbers typed outside their range are clamped where they are used. The
+tab's copies of View only and the placement follow the palette toggles
+below without changing the saved profile.
+
+## Commands (palette and menu)
+
+| command | what it does |
+|---|---|
+| VNC: Refresh Screen | a non-incremental FramebufferUpdateRequest for the whole desktop |
+| VNC: View Only (on/off) | flips the active tab's view-only, showing its current state; turning it on releases anything held |
+| VNC: Send Ctrl+Alt+Del | Control_L, Alt_L, Delete pressed and released in order (the local keyboard cannot send it) |
+| VNC: Send Clipboard to Server | the Windows clipboard as cut text, through the paste guard and the clipboard policy |
+
+The tab is a `Session`, so tab close, drag, quake mode, workspaces and the
+notice strip behave as for a terminal; splitting a VNC tab into panes is
+refused (a desktop has no grid to split).
 
 ## Input (implemented)
 
@@ -192,15 +245,51 @@ framebuffer coordinates, clamped to the edge while a button is held; the
 wheel is a press and release of buttons 4/5 per notch; motion is coalesced
 by the worker so a slow link carries the latest position, not a backlog.
 
-Clipboard: server cut text goes onto the Windows clipboard with an echo
-guard (`lastToServer`); the outbound direction, the paste guard and the
-`x11Clipboard`-style policy are Phase 3.
+Focus loss (`WM_KILLFOCUS`), disconnect, and turning view-only on release
+every held keysym and button, so a stuck Shift on the far side cannot
+happen.
+
+Clipboard, both directions, under the profile's policy (the same five
+modes as `x11Clipboard`), text only, Latin-1 on the wire as the core
+protocol specifies:
+
+* **Remote → local**: ServerCutText lands on the Windows clipboard when the
+  policy allows it (or the "ask" dialog says yes); it is never typed into
+  anything. The text is remembered so it is not sent back as an echo.
+* **Local → remote**: nothing watches the Windows clipboard. **Ctrl+V** on
+  the desktop, or the palette's *Send Clipboard to Server*, reads it and
+  runs the ordinary paste guard first (the same preview and the same
+  broadcast confirmation a terminal paste gets); what passes goes out as
+  ClientCutText under the policy, is capped at the protocol's 1 MiB, and is
+  remembered so the server's echo of it is ignored. Ctrl+V then presses V
+  with Control already held, so the far side pastes what it just received.
+  Text that came *from* the server is not sent back to it.
+
+There is no feedback loop by construction: the only outbound trigger is an
+explicit user action, and both directions carry an echo guard.
 
 ## Verification
 
 ### Automated tests
 
-`AmberTests.exe "[vnc]"` — 58 cases, 627 assertions as of Phase 2:
+`AmberTests.exe "[vnc]"` — 71 cases, 887 assertions as of Phase 3 (the
+whole suite: 455 cases, 81 689 assertions, all passing):
+
+* VeNCrypt (`tests/VncTlsTests.cpp`, `[tls]`): the subtype policy as a
+  pure function; the client's steps byte for byte through the fake server
+  for X509Vnc (parked at TLS, resumed with the challenge inside it),
+  X509None, X509Plain allowed and refused, a server without VeNCrypt, a
+  3.3 server, anonymous-only subtypes, version and subtype refusals, and
+  the handshake one byte at a time; then OpenSSL for real on loopback
+  against an in-process OpenSSL server with a certificate generated in the
+  test — fingerprint, verdict, subject, protocol, bytes both ways, and a
+  plaintext server as a clean failure; and finally the whole worker
+  through a VeNCrypt X509Vnc server: the certificate question, acceptance
+  and the pin written, a second connection pinned with no question, a
+  third with a different certificate raising the alarm, refused, not
+  retried and not pinned, plus a TLS-required profile against a
+  plaintext-only server: refused once. The pin store is redirected to a
+  scratch file for the test; the user's is never touched.
 
 * DES against the published FIPS 46 / SP 800-17 known-answer vectors and
   the parity-bit property; the VNC key by its bit-reversal definition; the
@@ -312,10 +401,46 @@ sudo dnf install -y tigervnc-server && vncpasswd && vncserver :1 -localhost no
 
 then connect to `192.168.0.18:5901` directly and through the SSH session.
 
+The same applies to every Phase 3 behaviour that needs a real far side:
+input through a real server, the server cursor shape, DesktopSize on a
+real resolution change, the tunnel through a real SSH session and what
+happens when that session closes, clipboard against a real server, and
+VeNCrypt against a real X.509-capable server (TigerVNC's `-SecurityTypes
+X509Vnc`). Each is implemented and exercised only by the in-process
+fakes described above.
+
+## Status: implemented vs verified
+
+| behaviour | implemented | verified by |
+|---|---|---|
+| RFB 3.3/3.7/3.8, None, VNC Auth | yes | fake-server client tests, loopback session tests, self-check |
+| Raw, CopyRect, ZRLE, Hextile, DesktopSize, Cursor, ContinuousUpdates | yes | fixture and client tests, self-check (Raw/ZRLE/Hextile served) |
+| VeNCrypt X509None/X509Vnc/X509Plain, pin, alarm, no downgrade | yes | `[tls]` tests incl. OpenSSL loopback; **no real server** |
+| direct TCP, reconnect with backoff, no retry of a refusal | yes | session tests |
+| SSH tunnel via `direct-tcpip` forward | yes | session test of the tunnel path; **no real SSH session** |
+| SSH session closing takes its VNC tabs down | yes | by inspection only |
+| particle desktop, faithful contract, disturbance, resize, sustained load | yes | `--vnc-selfcheck` (passes on this build) |
+| 120 fps at 4K | measured, **not met** on RTX 2050 | `--vnc-bench` (Phase 2 numbers above) |
+| keyboard, pointer, wheel, release on focus loss | yes | session tests for the wire; self-check for one key and one pointer event |
+| clipboard both ways with policy and echo guards | yes | by inspection only (no test drives the Windows clipboard) |
+| connection dialog page, palette commands, view-only toggle, Ctrl+Alt+Del | yes | built and launched; by inspection only |
+| Tight encoding | **no** | — |
+| interoperability with TigerVNC / vncfree-server | — | **unverified** |
+
 ## Known limitations
 
-* No TLS (VeNCrypt) yet; a TLS-only server is refused, never downgraded.
 * No Tight encoding; servers that offer only Tight and Raw fall back to Raw.
+* VeNCrypt's anonymous TLS and plaintext subtypes are refused by policy;
+  a server that offers only those cannot be used with TLS required, and
+  the message says which subtypes it offered.
+* A CA-verified certificate supersedes an older self-signed pin silently
+  (the CA's word is taken over the pin); only an unverifiable certificate
+  that differs from the pin raises the alarm.
+* When the SSH session a VNC tab tunnels through closes or errors, the VNC
+  tab is disconnected and says why; it is not reconnected when Guardian
+  brings the SSH session back — reopen it.
+* The view-only toggle in the palette changes the tab, not the saved
+  profile.
 * Cut text is Latin-1 only, as the core protocol specifies.
 * The 120 fps target at 4K is not met on the test hardware (above).
 * Faithful means the scene is exact; the composite's selected effects still

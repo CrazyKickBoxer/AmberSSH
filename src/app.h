@@ -36,6 +36,17 @@
 #include "term/input.h"
 #include "term/vtparser.h"
 
+// Menu and palette ids for the VNC tab, shared with app_vnc.cpp; every other
+// id lives in app.cpp. The range sits between the remote-display ids and the
+// workspace ids (see the enum there).
+enum VncMenuId : int
+{
+    IdmVncRefresh = 40183,         // ask the server for the whole picture again
+    IdmVncViewOnly = 40184,        // toggle view-only on the active desktop tab
+    IdmVncCtrlAltDel = 40185,      // send Ctrl+Alt+Del (the local keyboard cannot)
+    IdmVncSendClipboard = 40186,   // the Windows clipboard to the server, guard applied
+};
+
 class App
 {
 public:
@@ -185,6 +196,14 @@ private:
     bool VncWheel(int delta);
     void VncReleaseAll();                        // held keys and buttons up
     void VncStatusLines(const amber::Session& s, float y);
+    void VncCommand(int id);                     // the palette / menu entries
+    // The Windows clipboard to the server, through the paste guard first.
+    // `typeIt` also presses V afterwards (Ctrl is already held): Ctrl+V.
+    void VncPaste(bool typeIt);
+    void VncSendClipboardText(const std::string& norm);   // after the guard
+    // The SSH session `ssh` went away: every VNC tab tunnelled through it
+    // is disconnected and told why.
+    void VncOnSshClosed(const amber::Session& ssh);
     // --vnc-selfcheck: an RFB server in-process, a VNC tab at solidity 1,
     // the scene target read back and compared pixel for pixel with the
     // picture served, then a changed block and the energy texture checked.

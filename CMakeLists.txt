@@ -78,6 +78,7 @@ set(AMBER_SOURCES
     src/vnc/RfbClient.h    src/vnc/RfbClient.cpp
     src/vnc/VncSession.h   src/vnc/VncSession.cpp
     src/vnc/Keysyms.h      src/vnc/Keysyms.cpp
+    src/vnc/RfbTls.h       src/vnc/RfbTls.cpp
     src/vnc/SelfCheckServer.h src/vnc/SelfCheckServer.cpp
     src/sessions/VncTab.h  src/app_vnc.cpp   src/app_vnccheck.cpp
     src/glyphs/sampler.h   src/glyphs/sampler.cpp

@@ -300,6 +300,9 @@ struct ConnectionProfile
     int         vncCursorMode = 0;   // 0 local particle cursor (server shape),
                                      // 1 server-drawn (no cursor extension), 2 hidden
     int         vncTls = 0;          // 0 off, 1 VeNCrypt required — never downgraded
+    // Same scale as x11Clipboard: 0 disabled, 1 ask each transfer,
+    // 2 remote -> local, 3 local -> remote, 4 both. Latin-1 text only.
+    int         vncClipboard = 1;
     // Where remote windows appear: 0 native Windows windows, 1 AmberSSH tabs,
     // 2 AmberSSH panes, 3 ask per application. Only 0 is implemented; the
     // others are accepted, reported, and fall back to native (see PHASE-7-GATE).

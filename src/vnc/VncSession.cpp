@@ -73,7 +73,10 @@ bool VncSession::Start(const VncConfig& cfg)
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);   // reference-counted; the app has done this already
     m_cfg = cfg;
+    m_viewOnly.store(cfg.viewOnly);
     m_stop.store(false);
+    m_tlsFatal = false;
+    m_tlsError.clear();
     m_wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     m_running.store(true);
     SetState(VncState::Connecting);
@@ -90,6 +93,13 @@ void VncSession::Disconnect()
         std::lock_guard<std::mutex> lk(m_tunnelMu);
         m_tunnelCv.notify_all();
     }
+    {
+        // a certificate question still open is answered "no" by leaving
+        std::lock_guard<std::mutex> lk(m_certMu);
+        if (m_certAnswer == 0)
+            m_certAnswer = -1;
+    }
+    m_certCv.notify_all();
     if (m_thread.joinable())
         m_thread.join();
     if (m_wake)
@@ -144,7 +154,7 @@ bool VncSession::TakeCursor(CursorShape& out)
 
 void VncSession::SendKey(bool down, uint32_t keysym)
 {
-    if (m_cfg.viewOnly)
+    if (m_viewOnly.load())
         return;
     Command c{ Command::Kind::Key };
     c.down = down;
@@ -159,7 +169,7 @@ void VncSession::SendKey(bool down, uint32_t keysym)
 
 void VncSession::SendPointer(uint8_t buttons, uint16_t x, uint16_t y)
 {
-    if (m_cfg.viewOnly)
+    if (m_viewOnly.load())
         return;
     Command c{ Command::Kind::Pointer };
     c.buttons = buttons;
@@ -181,7 +191,7 @@ void VncSession::SendPointer(uint8_t buttons, uint16_t x, uint16_t y)
 
 void VncSession::SendCutText(std::string utf8)
 {
-    if (m_cfg.viewOnly)
+    if (m_viewOnly.load())
         return;
     Command c{ Command::Kind::CutText };
     c.text = std::move(utf8);
@@ -201,6 +211,15 @@ void VncSession::RequestFullUpdate()
     }
     if (m_wake)
         SetEvent(m_wake);
+}
+
+void VncSession::AnswerCertificate(bool accept)
+{
+    {
+        std::lock_guard<std::mutex> lk(m_certMu);
+        m_certAnswer = accept ? 1 : -1;
+    }
+    m_certCv.notify_all();
 }
 
 std::string VncSession::TunnelSpec() const
@@ -241,10 +260,13 @@ VncStats VncSession::GetStats() const
     s.fbHeight = m_fbH.load();
     s.continuous = m_continuous.load();
     s.rfbMinor = m_minor.load();
+    s.encrypted = m_encrypted.load();
+    s.venSubtype = m_venSubtype.load();
     {
         std::lock_guard<std::mutex> lk(m_damageMu);
         s.pendingRects = static_cast<uint32_t>(m_pending.rects.size());
         s.pendingPixels = m_pending.pixels.size();
+        s.tlsProtocol = m_tlsProtocol;
     }
     return s;
 }
@@ -263,6 +285,9 @@ void VncSession::Worker()
         ClientOptions o;
         o.password = m_cfg.password;
         o.wantCursor = m_cfg.wantCursor;
+        o.tls = m_cfg.tls;
+        o.username = m_cfg.username;
+        o.allowPlainOverTls = m_cfg.allowPlainOverTls;
         switch (m_cfg.encodings)
         {
         case 1:  o.encodings = { EncHextile, EncZRLE, EncCopyRect, EncRaw }; break;
@@ -277,6 +302,8 @@ void VncSession::Worker()
         const bool up = Connect(client, err, retryable);
         if (!up)
         {
+            m_tls.reset();
+            m_encrypted.store(false);
             if (m_sock != INVALID_SOCKET)
             {
                 closesocket(static_cast<SOCKET>(m_sock));
@@ -312,6 +339,8 @@ void VncSession::Worker()
         SetState(VncState::Connected);
         Post(VncEvent::Type::Connected, client.Init().name);
         const std::string why = Loop(client);
+        m_tls.reset();
+        m_encrypted.store(false);
         if (m_sock != INVALID_SOCKET)
         {
             closesocket(static_cast<SOCKET>(m_sock));
@@ -454,19 +483,44 @@ bool VncSession::FlushOutput()
 {
     while (!m_outbound.empty())
     {
-        const int n = send(static_cast<SOCKET>(m_sock), reinterpret_cast<const char*>(m_outbound.data()),
-                           static_cast<int>(std::min<size_t>(m_outbound.size(), 1u << 20)), 0);
-        if (n > 0)
+        const size_t want = std::min<size_t>(m_outbound.size(), 1u << 20);
+        int n;
+        if (m_tls && m_tls->Active())
         {
-            m_bytesOut.fetch_add(static_cast<uint64_t>(n));
-            m_outbound.erase(m_outbound.begin(), m_outbound.begin() + n);
-            continue;
+            n = m_tls->Write(m_outbound.data(), want);
+            if (n == 0)
+                return true;   // would block: FD_WRITE will say when to continue
+            if (n < 0)
+                return false;
         }
-        if (n == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
-            return true;   // FD_WRITE will say when to continue
-        return false;
+        else
+        {
+            n = send(static_cast<SOCKET>(m_sock), reinterpret_cast<const char*>(m_outbound.data()),
+                     static_cast<int>(want), 0);
+            if (n == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
+                return true;
+            if (n <= 0)
+                return false;
+        }
+        m_bytesOut.fetch_add(static_cast<uint64_t>(n));
+        m_outbound.erase(m_outbound.begin(), m_outbound.begin() + n);
     }
     return true;
+}
+
+int VncSession::ReadSome(uint8_t* buf, size_t n)
+{
+    if (m_tls && m_tls->Active())
+    {
+        const int r = m_tls->Read(buf, n);
+        return r > 0 ? r : r == 0 ? -1 : 0;
+    }
+    const int r = recv(static_cast<SOCKET>(m_sock), reinterpret_cast<char*>(buf), static_cast<int>(n), 0);
+    if (r > 0)
+        return r;
+    if (r == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
+        return -1;
+    return 0;
 }
 
 // One wait, then whatever can be read and written. `closed` reports the
@@ -483,10 +537,13 @@ bool VncSession::Pump(RfbClient& client, int timeoutMs, bool& closed)
         {
             if (ne.lNetworkEvents & FD_READ)
             {
+                // Drain until it would block: with TLS a record may hold
+                // more than one recv delivered, and the event says nothing
+                // about what OpenSSL has already buffered.
                 uint8_t buf[kReadChunk];
                 for (;;)
                 {
-                    const int n = recv(static_cast<SOCKET>(m_sock), reinterpret_cast<char*>(buf), sizeof buf, 0);
+                    const int n = ReadSome(buf, sizeof buf);
                     if (n > 0)
                     {
                         m_bytesIn.fetch_add(static_cast<uint64_t>(n));
@@ -498,8 +555,8 @@ bool VncSession::Pump(RfbClient& client, int timeoutMs, bool& closed)
                             closed = true;
                             return false;
                         }
-                        if (n < static_cast<int>(sizeof buf))
-                            break;
+                        if (client.NeedsTls())
+                            break;   // the rest of the stream is inside TLS: handshake first
                         continue;
                     }
                     if (n == 0)
@@ -507,12 +564,7 @@ bool VncSession::Pump(RfbClient& client, int timeoutMs, bool& closed)
                         closed = true;
                         return false;
                     }
-                    if (WSAGetLastError() != WSAEWOULDBLOCK)
-                    {
-                        closed = true;
-                        return false;
-                    }
-                    break;
+                    break;   // would block
                 }
             }
             if (ne.lNetworkEvents & FD_CLOSE)
@@ -520,7 +572,7 @@ bool VncSession::Pump(RfbClient& client, int timeoutMs, bool& closed)
                 // read what is left first: the last bytes often ride with the FIN
                 uint8_t buf[kReadChunk];
                 int n;
-                while ((n = recv(static_cast<SOCKET>(m_sock), reinterpret_cast<char*>(buf), sizeof buf, 0)) > 0)
+                while ((n = ReadSome(buf, sizeof buf)) > 0)
                 {
                     m_bytesIn.fetch_add(static_cast<uint64_t>(n));
                     if (!client.Feed(buf, static_cast<size_t>(n)))
@@ -556,12 +608,112 @@ bool VncSession::Pump(RfbClient& client, int timeoutMs, bool& closed)
         closed = true;
         return false;
     }
+    if (client.NeedsTls())
+    {
+        std::string err;
+        if (!StartTls(client, err))
+        {
+            m_tlsError = err;
+            closed = true;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool VncSession::StartTls(RfbClient& client, std::string& err)
+{
+    const uint64_t deadline = NowMs() + static_cast<uint64_t>(m_cfg.handshakeTimeoutMs);
+    // the subtype choice must be on the wire before the handshake starts
+    while (!m_outbound.empty())
+    {
+        if (m_stop.load() || NowMs() >= deadline)
+        {
+            err = "VeNCrypt: the subtype choice could not be sent";
+            return false;
+        }
+        WaitForSingleObject(static_cast<HANDLE>(m_sockEvent), 100);
+        WSANETWORKEVENTS ne;
+        WSAEnumNetworkEvents(static_cast<SOCKET>(m_sock), static_cast<WSAEVENT>(m_sockEvent), &ne);
+        if (!FlushOutput())
+        {
+            err = "VeNCrypt: the connection closed before TLS";
+            return false;
+        }
+    }
+
+    auto tls = std::make_unique<TlsClient>();
+    if (!tls->Connect(m_sock, m_cfg.host, static_cast<int>(deadline > NowMs() ? deadline - NowMs() : 1), m_stop, err))
+        return false;   // a transport failure: the caller's retry rules apply
+
+    const std::string hostPort = m_cfg.host + ":" + std::to_string(m_cfg.port);
+    const std::string pin = LoadCertificatePin(hostPort);
+    const std::string& fp = tls->Fingerprint();
+    bool accept = false;
+    if (tls->VerifyResult() == TlsClient::Verify::Trusted)
+    {
+        // the chain verifies and the name matches: no question to ask, and
+        // a pin from a self-signed past is superseded by the CA's word
+        accept = true;
+        if (pin != fp)
+            SaveCertificatePin(hostPort, fp);
+    }
+    else if (!pin.empty() && pin == fp)
+        accept = true;   // the certificate accepted before
+    else
+    {
+        // Ask. A pin that exists and differs is the alarm case: the server
+        // is not presenting the certificate it presented before.
+        const bool changed = !pin.empty();
+        std::string text = "X.509 " + fp + "\nSubject: " + tls->Subject() + "\n" +
+                           (changed ? "CHANGED: this server's certificate was pinned with a different fingerprint"
+                                    : "Not verified: " + tls->VerifyError());
+        {
+            std::lock_guard<std::mutex> lk(m_certMu);
+            m_certAnswer = 0;
+        }
+        {
+            std::lock_guard<std::mutex> lk(m_evMu);
+            m_events.push_back({ VncEvent::Type::CertPrompt, std::move(text), changed });
+        }
+        std::unique_lock<std::mutex> lk(m_certMu);
+        while (m_certAnswer == 0 && !m_stop.load())
+            m_certCv.wait_for(lk, std::chrono::milliseconds(200));
+        accept = m_certAnswer == 1;
+        if (accept)
+            SaveCertificatePin(hostPort, fp);
+    }
+    if (!accept)
+    {
+        err = m_stop.load() ? "cancelled" : "the server's certificate was not accepted";
+        m_tlsFatal = true;
+        return false;
+    }
+
+    m_tls = std::move(tls);
+    m_encrypted.store(true);
+    {
+        std::lock_guard<std::mutex> lk(m_damageMu);
+        m_tlsProtocol = m_tls->Protocol();
+    }
+    client.TlsEstablished();
+    m_venSubtype.store(client.VeNCryptSubtype());
+    // whatever the subtype sends first (X509Plain's credentials) goes now
+    const std::vector<uint8_t> out = client.TakeOutput();
+    m_outbound.insert(m_outbound.end(), out.begin(), out.end());
+    if (!FlushOutput())
+    {
+        err = "the connection closed after the TLS handshake";
+        return false;
+    }
     return true;
 }
 
 bool VncSession::Connect(RfbClient& client, std::string& err, bool& retryable)
 {
     retryable = true;
+    m_tlsFatal = false;
+    m_tlsError.clear();
     if (!OpenTransport(err))
         return false;
     const uint64_t deadline = NowMs() + static_cast<uint64_t>(m_cfg.handshakeTimeoutMs);
@@ -574,8 +726,20 @@ bool VncSession::Connect(RfbClient& client, std::string& err, bool& retryable)
         }
         if (client.State() == ClientState::Failed)
             break;
-        if (client.State() == ClientState::VncAuthChallenge || client.State() == ClientState::SecurityResult)
+        switch (client.State())
+        {
+        case ClientState::VncAuthChallenge:
+        case ClientState::SecurityResult:
+        case ClientState::VeNCryptVersion:
+        case ClientState::VeNCryptVersionAck:
+        case ClientState::VeNCryptSubtypes:
+        case ClientState::VeNCryptSubtypeAck:
+        case ClientState::TlsHandshake:
             SetState(VncState::Authenticating);
+            break;
+        default:
+            break;
+        }
         const uint64_t now = NowMs();
         if (now >= deadline)
         {
@@ -586,7 +750,13 @@ bool VncSession::Connect(RfbClient& client, std::string& err, bool& retryable)
         if (!Pump(client, static_cast<int>(std::min<uint64_t>(deadline - now, 1000)), closed) && closed &&
             client.State() != ClientState::Failed)
         {
-            err = "the server closed the connection during the handshake";
+            if (!m_tlsError.empty())
+            {
+                err = m_tlsError;
+                retryable = !m_tlsFatal;
+            }
+            else
+                err = "the server closed the connection during the handshake";
             return false;
         }
     }

@@ -30,12 +30,14 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "RfbClient.h"
+#include "RfbTls.h"
 
 namespace amber::vnc
 {
@@ -49,6 +51,8 @@ struct VncConfig
     int encodings = 0;             // 0 ZRLE first, 1 Hextile first, 2 Raw only
     bool wantCursor = true;        // offer the Cursor pseudo-encoding
     bool tls = false;              // VeNCrypt required; never downgraded
+    std::string username;          // for VeNCrypt X509Plain, when allowed
+    bool allowPlainOverTls = false;
     // Tunnel through a live SSH session: the function adds a local forward
     // to it (SshSession::AddForward, thread-safe), and the bound port comes
     // back through OnForwardUp. Empty = direct TCP. Whatever it captures
@@ -83,9 +87,14 @@ struct VncEvent
         Closed,      // text = reason; no further attempts
         Error,       // text = message; no further attempts
         AuthFailed,  // text = the server's reason; the password was rejected
+        // text = the server certificate's fingerprint, subject and why it
+        // did not verify, one per line; flag = a pinned certificate differs
+        // (the alarm case). The worker waits for AnswerCertificate.
+        CertPrompt,
     };
     Type type;
     std::string text;
+    bool flag = false;
 };
 
 // What changed: rectangles in arrival order, pixels packed one rectangle
@@ -110,6 +119,9 @@ struct VncStats
     uint32_t fbWidth = 0, fbHeight = 0;
     bool continuous = false;        // ContinuousUpdates in effect
     int rfbMinor = 0;
+    bool encrypted = false;         // VeNCrypt: the stream is inside TLS
+    uint32_t venSubtype = 0;        // VeNCryptSubtype, 0 when not VeNCrypt
+    std::string tlsProtocol;        // e.g. "TLSv1.3", "" when plaintext
 };
 
 class VncSession
@@ -135,7 +147,11 @@ public:
     void SendPointer(uint8_t buttons, uint16_t x, uint16_t y);
     void SendCutText(std::string utf8);
     void RequestFullUpdate();
-    bool ViewOnly() const { return m_cfg.viewOnly; }
+    bool ViewOnly() const { return m_viewOnly.load(); }
+    void SetViewOnly(bool v) { m_viewOnly.store(v); }
+    // The answer to a CertPrompt. Reject (or Disconnect) ends the attempt;
+    // the worker does not retry a certificate the user refused.
+    void AnswerCertificate(bool accept);
 
     // From the UI thread, when the SSH session this tab tunnels through
     // reports a forward up ("bound:host:port"). Ignored unless it is ours.
@@ -167,6 +183,12 @@ private:
     bool WaitForTunnel(std::string& err);
     bool Pump(RfbClient& client, int timeoutMs, bool& closed);   // one wait + read + write
     bool FlushOutput();
+    // The client is parked at TlsHandshake: flush the subtype choice, run the
+    // handshake, verify or ask about the certificate, then TlsEstablished.
+    // A refusal or a rejected certificate is not retried (m_tlsFatal).
+    bool StartTls(RfbClient& client, std::string& err);
+    // recv/SSL_read, one call: > 0 bytes, 0 = closed, -1 = would block
+    int ReadSome(uint8_t* buf, size_t n);
     void Publish(RfbClient& client);   // dirty rects → pending damage
     void Post(VncEvent::Type type, std::string text = {});
     void SetState(VncState s) { m_state.store(s); }
@@ -176,12 +198,21 @@ private:
     std::atomic<bool> m_running{ false };
     std::atomic<bool> m_stop{ false };
     std::atomic<VncState> m_state{ VncState::Disconnected };
+    std::atomic<bool> m_viewOnly{ false };
 
     // transport
     uintptr_t m_sock = ~static_cast<uintptr_t>(0);   // INVALID_SOCKET without winsock2.h here
     void* m_sockEvent = nullptr;                     // WSAEVENT
     void* m_wake = nullptr;                          // input arrived / stop
     std::vector<uint8_t> m_outbound;                 // not yet written
+    // VeNCrypt: the TLS layer over m_sock once the handshake is done, and
+    // the certificate question in flight between the worker and the UI
+    std::unique_ptr<TlsClient> m_tls;
+    std::string m_tlsError;                          // why StartTls failed
+    bool m_tlsFatal = false;                         // ... and that it must not retry
+    std::mutex m_certMu;
+    std::condition_variable m_certCv;
+    int m_certAnswer = 0;                            // 0 pending, 1 accept, -1 reject
     // tunnel
     mutable std::mutex m_tunnelMu;
     std::condition_variable m_tunnelCv;
@@ -207,6 +238,9 @@ private:
     std::atomic<uint32_t> m_fbW{ 0 }, m_fbH{ 0 };
     std::atomic<bool> m_continuous{ false };
     std::atomic<int> m_minor{ 0 };
+    std::atomic<bool> m_encrypted{ false };
+    std::atomic<uint32_t> m_venSubtype{ 0 };
+    std::string m_tlsProtocol;    // under m_damageMu, like the pending damage
     double m_decodeAccum = 0.0;   // worker thread only: decode CPU ms this window
 };
 

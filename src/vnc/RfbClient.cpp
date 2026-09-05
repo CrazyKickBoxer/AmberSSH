@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "RfbDes.h"
+#include "RfbTls.h"
 
 namespace amber::vnc
 {
@@ -61,6 +62,11 @@ bool RfbClient::Feed(const uint8_t* data, size_t n)
         case ClientState::SecurityReason:   p = StepSecurityReason(r); break;
         case ClientState::VncAuthChallenge: p = StepVncAuthChallenge(r); break;
         case ClientState::SecurityResult:   p = StepSecurityResult(r); break;
+        case ClientState::VeNCryptVersion:  p = StepVeNCryptVersion(r); break;
+        case ClientState::VeNCryptVersionAck: p = StepVeNCryptVersionAck(r); break;
+        case ClientState::VeNCryptSubtypes: p = StepVeNCryptSubtypes(r); break;
+        case ClientState::VeNCryptSubtypeAck: p = StepVeNCryptSubtypeAck(r); break;
+        case ClientState::TlsHandshake:     p = Parse::NeedMore; break;   // parked: the caller runs TLS
         case ClientState::ServerInit:       p = StepServerInit(r); break;
         case ClientState::Ready:            p = StepReady(r); break;
         default:                            p = Parse::Bad; break;
@@ -132,6 +138,13 @@ Parse RfbClient::StepSecurityTypes(Reader& r)
             m_state = ClientState::SecurityReason;
             return Parse::Ok;
         }
+        if (m_opt.tls)
+        {
+            // 3.3 has no security-type list, so it has no VeNCrypt either
+            Fail(FailureKind::Authentication,
+                 "this profile requires TLS and an RFB 3.3 server cannot offer it");
+            return Parse::Ok;
+        }
         if (type == SecNone && m_opt.allowNone)
         {
             AfterSecurity(SecNone);
@@ -163,13 +176,29 @@ Parse RfbClient::StepSecurityTypes(Reader& r)
         r.Rewind(start);
         return Parse::NeedMore;
     }
-    bool none = false, vnc = false;
+    bool none = false, vnc = false, ven = false;
     for (uint8_t i = 0; i < count; ++i)
     {
         if (types[i] == SecNone) none = true;
         if (types[i] == SecVncAuth) vnc = true;
+        if (types[i] == SecVeNCrypt) ven = true;
     }
     r.Skip(count);
+    // TLS required: VeNCrypt or nothing. A plaintext type the server also
+    // offers is not a fallback; it is what "never downgrade" means.
+    if (m_opt.tls)
+    {
+        if (!ven)
+        {
+            Fail(FailureKind::Authentication,
+                 "this profile requires TLS and the server does not offer VeNCrypt");
+            return Parse::Ok;
+        }
+        m_out.push_back(SecVeNCrypt);
+        m_security = SecVeNCrypt;
+        m_state = ClientState::VeNCryptVersion;
+        return Parse::Ok;
+    }
     uint8_t choice = SecInvalid;
     // With a password in hand, VNC Authentication is what the user meant;
     // otherwise None is the only thing that can succeed.
@@ -223,6 +252,130 @@ Parse RfbClient::StepSecurityReason(Reader& r)
     r.Skip(len);
     Fail(FailureKind::Refused, why.empty() ? "the server refused the connection" : why);
     return Parse::Ok;
+}
+
+// ---- VeNCrypt (security type 19) --------------------------------------------------
+// Version: the server states its highest (major, minor); the client answers
+// with what it will speak. Anything below 0.2 is refused.
+Parse RfbClient::StepVeNCryptVersion(Reader& r)
+{
+    const uint8_t* v = r.Peek(2);
+    if (!v)
+        return Parse::NeedMore;
+    r.Skip(2);
+    if (v[0] != 0 || v[1] < 2)
+    {
+        Fail(FailureKind::Protocol, "unsupported VeNCrypt version " + std::to_string(v[0]) + "." + std::to_string(v[1]));
+        return Parse::Ok;
+    }
+    m_out.push_back(0);
+    m_out.push_back(2);
+    m_state = ClientState::VeNCryptVersionAck;
+    return Parse::Ok;
+}
+
+Parse RfbClient::StepVeNCryptVersionAck(Reader& r)
+{
+    uint8_t ack;
+    if (!r.U8(ack))
+        return Parse::NeedMore;
+    if (ack != 0)
+    {
+        Fail(FailureKind::Protocol, "the server refused VeNCrypt 0.2");
+        return Parse::Ok;
+    }
+    m_state = ClientState::VeNCryptSubtypes;
+    return Parse::Ok;
+}
+
+Parse RfbClient::StepVeNCryptSubtypes(Reader& r)
+{
+    const size_t start = r.Consumed();
+    uint8_t n;
+    if (!r.U8(n))
+        return Parse::NeedMore;
+    std::vector<uint32_t> offered;
+    for (uint8_t i = 0; i < n; ++i)
+    {
+        uint32_t s;
+        if (!r.U32(s))
+        {
+            r.Rewind(start);
+            return Parse::NeedMore;
+        }
+        offered.push_back(s);
+    }
+    const uint32_t choice = VeNCryptChoose(offered, !m_opt.password.empty(), !m_opt.username.empty(),
+                                           m_opt.allowPlainOverTls);
+    if (choice == 0)
+    {
+        std::string names;
+        for (uint32_t s : offered)
+            names += std::string(names.empty() ? "" : ", ") + VeNCryptSubtypeName(s);
+        Fail(FailureKind::Authentication,
+             "no acceptable VeNCrypt subtype: the server offers " + (names.empty() ? std::string("none") : names) +
+                 "; an X.509 certificate is required, anonymous TLS and plain passwords are refused");
+        return Parse::Ok;
+    }
+    m_venSubtype = choice;
+    Send({ static_cast<uint8_t>(choice >> 24), static_cast<uint8_t>(choice >> 16), static_cast<uint8_t>(choice >> 8),
+           static_cast<uint8_t>(choice) });
+    m_state = ClientState::VeNCryptSubtypeAck;
+    return Parse::Ok;
+}
+
+Parse RfbClient::StepVeNCryptSubtypeAck(Reader& r)
+{
+    uint8_t ack;
+    if (!r.U8(ack))
+        return Parse::NeedMore;
+    if (ack != 1)
+    {
+        Fail(FailureKind::Authentication, "the server refused the VeNCrypt subtype");
+        return Parse::Ok;
+    }
+    // parked: the caller runs the TLS handshake on the socket now
+    m_state = ClientState::TlsHandshake;
+    return Parse::Ok;
+}
+
+void RfbClient::TlsEstablished()
+{
+    if (m_state != ClientState::TlsHandshake)
+        return;
+    m_encrypted = true;
+    switch (m_venSubtype)
+    {
+    case VenX509Vnc:
+        m_state = ClientState::VncAuthChallenge;
+        break;
+    case VenX509Plain:
+    {
+        // u32 username length, u32 password length, then both — inside TLS
+        const std::string& u = m_opt.username;
+        std::vector<uint8_t> m;
+        auto put32 = [&](uint32_t x) {
+            m.push_back(static_cast<uint8_t>(x >> 24)); m.push_back(static_cast<uint8_t>(x >> 16));
+            m.push_back(static_cast<uint8_t>(x >> 8));  m.push_back(static_cast<uint8_t>(x));
+        };
+        put32(static_cast<uint32_t>(u.size()));
+        put32(static_cast<uint32_t>(m_opt.password.size()));
+        m.insert(m.end(), u.begin(), u.end());
+        m.insert(m.end(), m_opt.password.begin(), m_opt.password.end());
+        Send(m);
+        std::fill(m.begin(), m.end(), uint8_t{ 0 });
+        std::fill(m_opt.password.begin(), m_opt.password.end(), '\0');
+        m_opt.password.clear();
+        m_state = ClientState::SecurityResult;
+        break;
+    }
+    case VenX509None:
+    default:
+        // VeNCrypt is a 3.7+ extension and every server that speaks it sends
+        // a SecurityResult after the subtype's (empty) authentication
+        m_state = ClientState::SecurityResult;
+        break;
+    }
 }
 
 Parse RfbClient::StepVncAuthChallenge(Reader& r)

@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "ui/SafetyDialog.h"
 #include "vnc/Keysyms.h"
 
 using amber::Session;
@@ -93,16 +94,21 @@ bool App::StartVncSession(Session& s, amber::ConnectionRequest& req)
     cfg.encodings = p.vncEncodings;
     cfg.wantCursor = p.vncCursorMode == 0;
     cfg.tls = p.vncTls != 0;
+    // VeNCrypt X509Plain sends a username and password inside TLS; it is
+    // taken only when the profile names a user, and X509Vnc is preferred.
+    cfg.username = p.username;
+    cfg.allowPlainOverTls = !p.username.empty();
 
     if (!p.vncViaProfileId.empty())
     {
         // The SSH session to tunnel through must already be up: the forward
         // is added to a live worker, and the bound port comes back as its
-        // ForwardUp event, relayed in PumpSshEvents.
+        // ForwardUp event, relayed in PumpSshEvents. The dialog takes the
+        // profile's name; an id works too.
         Session* via = nullptr;
         for (auto& sp : m_sessions)
-            if (sp->profile.id == p.vncViaProfileId && sp->profile.protocol == amber::Protocol::Ssh &&
-                sp->ssh.Running())
+            if ((sp->profile.id == p.vncViaProfileId || sp->profile.name == p.vncViaProfileId) &&
+                sp->profile.protocol == amber::Protocol::Ssh && sp->ssh.Running())
             {
                 via = sp.get();
                 break;
@@ -167,13 +173,40 @@ void App::PumpVncEvents()
                 AddNotice(s, 0, "desktop resized to " + ev.text);
                 break;
             case vnc::VncEvent::Type::CutText:
+            {
                 // an echo of what we sent is not news; anything else goes on
-                // the Windows clipboard and is remembered so it is not sent back
+                // the Windows clipboard — under the profile's policy — and is
+                // remembered so it is not sent back
                 if (ev.text == t.lastToServer)
+                    break;
+                const int mode = s.profile.vncClipboard;
+                bool allow = mode == 2 || mode == 4;
+                if (mode == 1)
+                    allow = amber::ShowClipboardDialog(m_hwnd, s.profile.host, false, ev.text.size());
+                if (!allow)
                     break;
                 t.lastFromServer = ev.text;
                 SetClipboardUtf8(m_hwnd, ev.text);
+                if (HasSession() && &s == &Cur())
+                {
+                    char msg[96];
+                    snprintf(msg, sizeof msg, "VNC clipboard: %zu bytes from the server", ev.text.size());
+                    SetStatus(msg);
+                }
                 break;
+            }
+            case vnc::VncEvent::Type::CertPrompt:
+            {
+                // The same dialog as an SSH host key, with the same alarm for
+                // a changed one. The worker is parked until the answer.
+                const amber::HostKeyChoice choice = amber::ShowHostKeyDialog(
+                    m_hwnd, s.profile.host + ":" + std::to_string(s.profile.port > 0 ? s.profile.port : 5900),
+                    ev.text, ev.flag);
+                t.session->AnswerCertificate(choice == amber::HostKeyChoice::Accept);
+                if (choice != amber::HostKeyChoice::Accept)
+                    AddNotice(s, 2, "VNC: server certificate rejected");
+                break;
+            }
             case vnc::VncEvent::Type::Bell:
                 RingBell(s, HasSession() && &s == &Cur());
                 break;
@@ -231,7 +264,7 @@ void App::RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame)
     const uint32_t fbH = have ? d.height : t.fbH;
     if (have && (fbW != t.fbW || fbH != t.fbH || !t.desk->Ready()))
     {
-        if (t.desk->Configure(fbW, fbH, static_cast<uint32_t>(prof.vncDensity)))
+        if (t.desk->Configure(fbW, fbH, static_cast<uint32_t>(std::clamp(prof.vncDensity, 1, 4))))
         {
             t.fbW = fbW;
             t.fbH = fbH;
@@ -254,9 +287,11 @@ void App::RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame)
         t.nativeScale = scale == 1.0f;
     }
 
+    // the profile's numbers are typed into a dialog; the ranges are the docs'
+    const float disturbance = static_cast<float>(std::clamp(prof.vncDisturbance, 0, 200)) / 100.0f;
     if (have && t.desk->Ready())
     {
-        t.desk->Upload(cl, frame, d, static_cast<float>(prof.vncDisturbance) / 100.0f);
+        t.desk->Upload(cl, frame, d, disturbance);
         t.damageRectsLastFrame = static_cast<uint32_t>(d.rects.size());
         t.damageBytesLastFrame = static_cast<uint64_t>(d.pixels.size()) * 4;
         t.lastDamageAt = m_time;
@@ -271,9 +306,9 @@ void App::RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame)
     DesktopParticles::Params p;
     p.time = static_cast<float>(m_time);
     p.dt = static_cast<float>(m_dt * m_timeDial);
-    p.solidity = static_cast<float>(prof.vncSolidity) / 100.0f;
-    p.particleSize = static_cast<float>(prof.vncParticleSize);
-    p.disturbance = static_cast<float>(prof.vncDisturbance) / 100.0f;
+    p.solidity = static_cast<float>(std::clamp(prof.vncSolidity, 0, 100)) / 100.0f;
+    p.particleSize = static_cast<float>(std::clamp(prof.vncParticleSize, 1, 3));
+    p.disturbance = disturbance;
     p.animStyle = tun.animStyle;
     p.effectSpeed = tun.effectSpeed;
     p.dragAmt = tun.dragAmt;
@@ -325,6 +360,15 @@ bool App::VncKey(WPARAM vk, bool down)
         return false;
     if (!InputAllowed(*t))
         return true;   // consumed: a desktop tab never types into a terminal
+    // Ctrl+V: the Windows clipboard to the server's, through the paste
+    // guard, then the keystroke itself so the far side pastes it. Control
+    // went down as a key already; only V is added.
+    if (ctrl && !shift && vk == 'V')
+    {
+        if (down)
+            VncPaste(true);
+        return true;
+    }
     bool right = false;
     if (vk == VK_SHIFT)   right = (GetKeyState(VK_RSHIFT) & 0x8000) != 0;
     if (vk == VK_CONTROL) right = (GetKeyState(VK_RCONTROL) & 0x8000) != 0;
@@ -373,9 +417,14 @@ bool App::VncChar(wchar_t wc)
     if (cp == '\r' || cp == '\n' || cp == '\t' || cp == '\b' || cp == 0x1B || cp == 0x7F)
         return true;
     // Ctrl+letter arrives as a control character; the far side wants the
-    // letter with Control held, which it already is
+    // letter with Control held, which it already is. Ctrl+V was the paste,
+    // handled as a key.
     if (cp < 0x20 && (GetKeyState(VK_CONTROL) & 0x8000))
+    {
+        if (cp == 0x16)
+            return true;
         cp = cp + 0x60;
+    }
     const uint32_t ks = vnc::KeysymFromCodePoint(cp);
     t->session->SendKey(true, ks);
     t->session->SendKey(false, ks);
@@ -468,6 +517,124 @@ void App::VncReleaseAll()
     }
 }
 
+// ---- commands ---------------------------------------------------------------------
+void App::VncCommand(int id)
+{
+    VncTab* t = VncActive();
+    if (!t || !t->session)
+        return;
+    Session& s = Cur();
+    switch (id)
+    {
+    case IdmVncRefresh:
+        t->session->RequestFullUpdate();
+        SetStatus("VNC: full refresh requested");
+        break;
+    case IdmVncViewOnly:
+    {
+        const bool now = !t->session->ViewOnly();
+        if (now)
+            VncReleaseAll();   // nothing stays held on a desktop that stops taking input
+        t->session->SetViewOnly(now);
+        s.profile.vncViewOnly = now;   // this tab's copy; the saved profile is untouched
+        SetStatus(now ? "VNC: view only" : "VNC: input enabled");
+        break;
+    }
+    case IdmVncCtrlAltDel:
+        if (!InputAllowed(*t))
+        {
+            SetStatus("VNC: view only");
+            break;
+        }
+        t->session->SendKey(true, vnc::XK_Control_L);
+        t->session->SendKey(true, vnc::XK_Alt_L);
+        t->session->SendKey(true, vnc::XK_Delete);
+        t->session->SendKey(false, vnc::XK_Delete);
+        t->session->SendKey(false, vnc::XK_Alt_L);
+        t->session->SendKey(false, vnc::XK_Control_L);
+        t->lastInputSentAt = m_time;
+        break;
+    case IdmVncSendClipboard:
+        VncPaste(false);
+        break;
+    default:
+        break;
+    }
+}
+
+void App::VncPaste(bool typeIt)
+{
+    VncTab* t = VncActive();
+    if (!t || !t->session)
+        return;
+    if (!InputAllowed(*t))
+    {
+        SetStatus("VNC: view only");
+        return;
+    }
+    // Paste() reads the Windows clipboard and runs the paste guard; for a
+    // desktop tab it ends in SendPasteText, which lands in
+    // VncSendClipboardText below with the guard already passed.
+    t->pasteThenType = typeIt;
+    Paste();
+    t->pasteThenType = false;
+}
+
+void App::VncSendClipboardText(const std::string& norm)
+{
+    VncTab* t = VncActive();
+    if (!t || !t->session || norm.empty())
+        return;
+    Session& s = Cur();
+    const int mode = s.profile.vncClipboard;
+    bool allow = mode == 3 || mode == 4;
+    if (mode == 1)
+        allow = amber::ShowClipboardDialog(m_hwnd, s.profile.host, true, norm.size());
+    if (!allow)
+    {
+        SetStatus("VNC: sending the clipboard to the server is off for this profile (Connection > VNC)");
+        return;
+    }
+    if (norm.size() > vnc::kMaxCutText)
+    {
+        SetStatus("VNC: clipboard too large to send (1 MiB limit)");
+        return;
+    }
+    if (norm != t->lastFromServer)   // what came from there is not news to it
+    {
+        t->session->SendCutText(norm);
+        t->lastToServer = norm;
+    }
+    if (t->pasteThenType)
+    {
+        t->session->SendKey(true, vnc::KeysymFromCodePoint(U'v'));
+        t->session->SendKey(false, vnc::KeysymFromCodePoint(U'v'));
+    }
+    t->lastInputSentAt = m_time;
+    char msg[96];
+    snprintf(msg, sizeof msg, "VNC clipboard: %zu bytes to the server", norm.size());
+    SetStatus(msg);
+}
+
+void App::VncOnSshClosed(const Session& ssh)
+{
+    for (auto& vp : m_sessions)
+    {
+        if (!vp->vnc || !vp->vnc->session || vp->vnc->viaProfileId != ssh.profile.id)
+            continue;
+        if (!vp->vnc->session->Running())
+            continue;
+        // the forward is gone with the session; a reconnect through a dead
+        // tunnel would only count down the retries
+        vp->vnc->session->Disconnect();
+        vp->vnc->heldKeysyms.clear();
+        vp->vnc->heldButtons = 0;
+        vp->state = amber::SessionState::Error;
+        vp->status = "VNC: the SSH session it tunnels through closed";
+        AddNotice(*vp, 2, vp->status);
+    }
+}
+
 // ---- diagnostics ----------------------------------------------------------------
 void App::VncStatusLines(const Session& s, float y)
 {
@@ -477,16 +644,18 @@ void App::VncStatusLines(const Session& s, float y)
     const vnc::VncStats st = t.session->GetStats();
     const DesktopParticles::Layout L = t.desk ? t.desk->GetLayout() : DesktopParticles::Layout{};
     char line[512];
+    const std::string sampled = L.sampled ? (std::string("SAMPLED 1/") + std::to_string(L.stride) + " -> " +
+                                             std::to_string(L.sampledW) + "x" + std::to_string(L.sampledH))
+                                          : std::string("1:1");
+    const std::string crypto = st.encrypted ? st.tlsProtocol + " " + vnc::VeNCryptSubtypeName(st.venSubtype)
+                                            : std::string("plaintext");
     snprintf(line, sizeof line,
-             "VNC %s  RFB 3.%d  %ux%u%s  particles %u  density %u%s  solidity %d%%  size %d px  %s  %s",
-             vnc::VncStateName(t.session->State()), st.rfbMinor, t.fbW, t.fbH,
+             "VNC %s  RFB 3.%d  %s  %ux%u%s  particles %u  density %u%s  solidity %d%%  size %d px  %s  %s%s",
+             vnc::VncStateName(t.session->State()), st.rfbMinor, crypto.c_str(), t.fbW, t.fbH,
              t.nativeScale ? " native" : " scaled",
              L.particles, L.density, L.clamped ? " (clamped)" : "",
-             s.profile.vncSolidity, s.profile.vncParticleSize,
-             L.sampled ? (std::string("SAMPLED 1/") + std::to_string(L.stride) + " -> " +
-                          std::to_string(L.sampledW) + "x" + std::to_string(L.sampledH)).c_str()
-                       : "1:1",
-             st.continuous ? "continuous" : "requested");
+             s.profile.vncSolidity, s.profile.vncParticleSize, sampled.c_str(),
+             st.continuous ? "continuous" : "requested", t.session->ViewOnly() ? "  VIEW ONLY" : "");
     m_prims.AddText(m_gm.originX, y, line, 0.6f, m_sampler);
     snprintf(line, sizeof line,
              "decode %.1f ms/s  gpu upload %.2f  sim %.2f  draw %.2f  frame %.2f ms  "

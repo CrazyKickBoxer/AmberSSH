@@ -34,8 +34,10 @@ add_executable(AmberTests
     VncClientTests.cpp
     VncSessionTests.cpp
     VncKeysymTests.cpp
+    VncTlsTests.cpp
 
     ${CMAKE_SOURCE_DIR}/src/vnc/Keysyms.cpp
+    ${CMAKE_SOURCE_DIR}/src/vnc/RfbTls.cpp
     ${CMAKE_SOURCE_DIR}/src/vnc/RfbDes.cpp
     ${CMAKE_SOURCE_DIR}/src/vnc/RfbProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/vnc/RfbDecoders.cpp
@@ -82,10 +84,12 @@ if(MSVC)
 endif()
 
 find_package(ZLIB REQUIRED)   # the VNC ZRLE decoder, and the tests that deflate fixtures for it
+find_package(OpenSSL REQUIRED) # VeNCrypt's TLS client, and the in-process TLS server the tests stand up
 target_link_libraries(AmberTests PRIVATE
     Catch2::Catch2WithMain
     nlohmann_json::nlohmann_json
     ZLIB::ZLIB
+    OpenSSL::SSL OpenSSL::Crypto crypt32
     d3d12 dxgi dxguid advapi32 bcrypt shell32 ole32 ws2_32
 )
 
