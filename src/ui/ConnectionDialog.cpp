@@ -794,7 +794,7 @@ LRESULT ConnectionDialog::Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             InvalidateRect(hb, nullptr, TRUE);
         }
 
-        if (id >= IdProtocol && id < IdProtocol + 6)
+        if (id >= IdProtocol && id < IdProtocol + 7)   // seven radios: SSH .. VNC
         {
             SyncProtocol();
             return 0;
@@ -2001,7 +2001,7 @@ void ConnectionDialog::SaveCurrentProfile()
         p.id = MakeUuid();
 
     ReadFields(p);
-    if (p.protocol != Protocol::Serial && p.host.empty())
+    if (p.protocol != Protocol::Serial && p.protocol != Protocol::Local && p.host.empty())
     {
         SetStatus(L"A host name is required before saving.");
         return;
@@ -2015,7 +2015,19 @@ void ConnectionDialog::SaveCurrentProfile()
         p.port = ProtocolDefaultPort(p.protocol);
     p.name = Narrow(GetText(GetDlgItem(m_dlg, IdProfileName)));
     if (p.name.empty())
-        p.name = p.protocol == Protocol::Serial ? p.serialPort : p.host;
+    {
+        if (p.protocol == Protocol::Serial)
+            p.name = p.serialPort;
+        else if (p.protocol == Protocol::Local)
+        {
+            p.name = "Local shell";
+            for (const amber::LocalShell& s : amber::DiscoverLocalShells())
+                if (s.key == p.localShellKey)
+                    p.name = s.name;
+        }
+        else
+            p.name = p.host;
+    }
 
     // Secrets go to the Credential Manager, keyed by profile id â never to JSON.
     auto secret = [&](bool remember, int editId, SecretKind kind)
@@ -2144,6 +2156,11 @@ bool ConnectionDialog::CollectRequest()
             return false;
         }
     }
+    else if (p.protocol == Protocol::Local)
+    {
+        // no host, port or user; a blank shell and executable mean the
+        // machine's default shell, resolved at launch
+    }
     else
     {
         if (p.host.empty())
@@ -2255,6 +2272,29 @@ void ConnectionDialog::SyncProtocol()
         L"VNC: a remote desktop drawn in particles, port 5900 (Connection > VNC for password, tunnel, TLS).",
     };
     SetStatus(hints[std::clamp(now, 0, 6)]);
+
+    // Local needs no host, port or user: choosing it should leave Open ready
+    // to press. The shell defaults to PowerShell (7 when installed, else
+    // Windows PowerShell) unless the user already picked a shell or typed an
+    // executable.
+    if (now == static_cast<int>(Protocol::Local))
+    {
+        Field* shell = FindField(IdLocalShell);
+        Field* exe = FindField(IdLocalExe);
+        const bool custom = shell && _wtoi(FieldValue(*shell).c_str()) == 0;
+        const bool typed = exe && !FieldValue(*exe).empty();
+        if (shell && custom && !typed)
+        {
+            const std::vector<amber::LocalShell> shells = amber::DiscoverLocalShells();
+            for (size_t i = 0; i < shells.size(); ++i)
+                if (shells[i].key == "pwsh" || shells[i].key == "powershell")
+                {
+                    SetFieldValue(*shell, std::to_wstring(i + 1));   // options[0] is Custom
+                    break;
+                }
+        }
+        SetStatus(L"Local: a shell on this machine. Nothing else is needed \x2014 press Open.");
+    }
 }
 
 void ConnectionDialog::BrowseForKey()
