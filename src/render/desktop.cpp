@@ -490,6 +490,30 @@ void DesktopParticles::Upload(ID3D12GraphicsCommandList* cl, FrameContext& frame
         return;
     const uint32_t W = m_layout.fbW, H = m_layout.fbH, S = m_layout.stride;
 
+    // Where the change is, as one region: the styles that sweep or throw
+    // need a centre and a reach, not just a set of pixels.
+    {
+        uint32_t x0 = W, y0 = H, x1 = 0, y1 = 0;
+        for (const Rect& r : d.rects)
+        {
+            if (r.w == 0 || r.h == 0)
+                continue;
+            x0 = std::min<uint32_t>(x0, r.x);
+            y0 = std::min<uint32_t>(y0, r.y);
+            x1 = std::max<uint32_t>(x1, static_cast<uint32_t>(r.x) + r.w);
+            y1 = std::max<uint32_t>(y1, static_cast<uint32_t>(r.y) + r.h);
+        }
+        if (x1 > x0 && y1 > y0)
+        {
+            m_damageCx = (static_cast<float>(x0) + static_cast<float>(x1)) * 0.5f;
+            m_damageCy = (static_cast<float>(y0) + static_cast<float>(y1)) * 0.5f;
+            const float hw = (static_cast<float>(x1) - static_cast<float>(x0)) * 0.5f;
+            const float hh = (static_cast<float>(y1) - static_cast<float>(y0)) * 0.5f;
+            m_damageReach = std::sqrt(hw * hw + hh * hh);
+            m_damageFresh = true;
+        }
+    }
+
     // What the changed rectangles were, kept for the redraw transitions:
     // copied out of the framebuffer texture before the upload overwrites it
     Transition(cl, m_frame.Get(), m_frameState, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -614,11 +638,30 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
     if (m_needReset)
         m_bornTime = p.time;
     cb.bornTime = static_cast<float>(m_bornTime);
-    cb.transition = static_cast<float>(std::clamp(p.transition, 0, 5));
+    cb.transition = static_cast<float>(std::clamp(p.transition, 0, 10));
     cb.transitionSecs = std::clamp(p.transitionSecs, 0.05f, 2.0f);
-    // light speed is a short flight, not a journey: quicker than a recolour
-    if (cb.transition > 4.5f)
-        cb.transitionSecs = 0.26f;
+    // Each style has the length its own choreography needs. All of them are
+    // under half a second: a redraw that outstays that reads as a fault.
+    switch (std::clamp(p.transition, 0, 10))
+    {
+    case 5:  cb.transitionSecs = 0.26f; break;   // light speed: a short flight
+    case 7:  cb.transitionSecs = 0.34f; break;   // iris: the front crosses the region
+    case 8:  cb.transitionSecs = 0.30f; break;   // sonic boom: out, back, land
+    case 9:  cb.transitionSecs = 0.44f; break;   // shatter: the shards break raggedly
+    case 10: cb.transitionSecs = 0.40f; break;   // odometer: the reels settle in sequence
+    default: break;
+    }
+    // the region the last damage covered, and how fast a front must move to
+    // cross it inside that time
+    if (m_damageFresh)
+    {
+        m_damageFresh = false;
+        m_damageAt = p.time;
+    }
+    cb.irisX = m_damageCx;
+    cb.irisY = m_damageCy;
+    cb.irisTime = static_cast<float>(m_damageAt);
+    cb.irisSpeed = std::max(m_damageReach, 24.0f) / std::max(cb.transitionSecs, 0.05f);
     const bool anyFx = cb.fxShock > 0.0f || cb.fxEdge > 0.0f || cb.fxHeat > 0.0f || cb.fxMaterialise > 0.0f ||
                        cb.transition > 0.0f;
     cb.motion = std::clamp(p.motion, 0.25f, 4.0f);

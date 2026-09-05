@@ -61,8 +61,64 @@ float3 Redraw(int style, float t, float3 oldc, float3 newc, float seed, float ed
             return relief;
         return lerp(relief, newc, (t - 0.3) / 0.7);
     }
-    // 5 (light speed) recolours nothing: the particle itself is flying in
-    // (desktop_sim.hlsl), and the streak below is what shows.
+    if (style == 7)
+    {
+        // Iris: a hard front expands from the region's centre, the old
+        // picture ahead of it and the new behind, and the rim itself burns.
+        // The sim throws the particles the rim passes, so the edge has
+        // depth instead of being a drawn circle.
+        const float front = (time - irisTime) * irisSpeed;
+        const float d = length(fp - float2(irisX, irisY));
+        if (d > front + 6.0)
+            return oldc;
+        if (d > front - 6.0)
+            return float3(2.3, 2.05, 1.7);
+        return newc;
+    }
+    if (style == 8)
+    {
+        // Sonic boom: the new colour rides out and back with the particle;
+        // the punch is a flash at the instant they all land together.
+        const float f = exp(-pow((t - 0.92) / 0.07, 2.0));
+        return newc * (1.0 + 2.4 * f);
+    }
+    if (style == 9)
+    {
+        // Shatter: the shard borders catch the light while they are moving,
+        // so the breaks read as edges of glass rather than as seams.
+        const float2 q = frac(fp / 16.0) * 16.0;
+        const float dEdge = min(min(q.x, 16.0 - q.x), min(q.y, 16.0 - q.y));
+        const float k = 1.0 - t;
+        if (dEdge < 1.5)
+            return newc + float3(1.2, 1.35, 1.6) * k * k;
+        return newc;
+    }
+    if (style == 10)
+    {
+        // Odometer: each column spins through the picture at a falling
+        // offset and stops with the overshoot of a reel, the columns
+        // settling left to right across the region. Three samples along the
+        // offset blur it while it spins, which is what sells the spin.
+        const float sweep = saturate((fp.x - (irisX - 420.0)) / 840.0) * 0.32;
+        const float u = (t - sweep) / max(1.0 - sweep, 0.05);
+        if (u <= 0.0)
+            return oldc;
+        const float uu = saturate(u);
+        const float e = 1.0 + 2.70158 * pow(uu - 1.0, 3.0) + 1.70158 * pow(uu - 1.0, 2.0);
+        const float span = 150.0 + 220.0 * HashU(uint(max(fp.x, 0.0)) * 2654435761u);
+        const float off = (1.0 - e) * span;
+        float3 c = float3(0.0, 0.0, 0.0);
+        [unroll]
+        for (int s = -1; s <= 1; ++s)
+        {
+            const int2 q = clamp(int2(fp + float2(0.0, off + float(s) * 3.0)), int2(0, 0),
+                                 int2(int(fbW) - 1, int(fbH) - 1));
+            c += SrgbToLinearExact(gFrame.Load(int3(q, 0)).rgb);
+        }
+        return lerp(c / 3.0, newc, smoothstep(0.85, 1.0, uu));
+    }
+    // 5 (light speed) and 6 (shear plates) recolour nothing: the particles
+    // themselves are moving (desktop_sim.hlsl), and the streak is what shows.
     return newc;
 }
 

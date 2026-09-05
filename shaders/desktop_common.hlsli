@@ -58,6 +58,11 @@ cbuffer DesktopCB : register(b1)
     //   prism   red and blue split along the velocity, 0 = off
     //   tails   the streak's tail bends by the curl field it flew through
     float ignite, trails, prism, tails;
+    // The changed region as a whole, for the redraw styles that need to know
+    // where it is rather than only which pixels it holds: the centre of the
+    // last damage in framebuffer pixels, when it arrived, and how fast a
+    // front must travel to cross the region within transitionSecs.
+    float irisX, irisY, irisTime, irisSpeed;
 };
 
 // materialise runs this long after bornTime: the flight home, then exact

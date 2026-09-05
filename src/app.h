@@ -56,8 +56,10 @@ enum VncMenuId : int
     IdmVncFxLast = IdmVncFxFirst + 7,
     IdmVncSizeFirst = 41830,       // +0..7 -> the Desktop size choices
     IdmVncSizeLast = IdmVncSizeFirst + 7,
-    IdmVncRedrawFirst = 41840,     // +0..5 -> none / burn / dissolve / scan wipe / emboss / light speed
-    IdmVncRedrawLast = IdmVncRedrawFirst + 5,
+    // +0..10 -> none / burn / dissolve / scan wipe / emboss / light speed /
+    // shear plates / iris / sonic boom / shatter / odometer
+    IdmVncRedrawFirst = 41840,
+    IdmVncRedrawLast = IdmVncRedrawFirst + 10,
 };
 
 class App

@@ -215,7 +215,15 @@ void App::VncSelfCheckTick()
         // the ignition front spreads energy beyond the pixels that changed,
         // which is exactly what the energy assertions measure
         req.profile.vncFxIgnite = fxPreview;
-        req.profile.vncTransition = fxPreview ? 5 : 0;
+        // AMBER_VNC_STYLE picks the redraw style for a preview run, so each
+        // one can be watched against the check's own changing block.
+        req.profile.vncTransition = 0;
+        if (fxPreview)
+        {
+            wchar_t pick[8] = {};
+            const DWORD n = GetEnvironmentVariableW(L"AMBER_VNC_STYLE", pick, 8);
+            req.profile.vncTransition = n > 0 ? std::clamp(_wtoi(pick), 0, 10) : 5;
+        }
         req.profile.vncDesktopSize = 0;   // the in-process server has no ExtendedDesktopSize
         const bool started = StartSession(req);
         c.Check("VNC tab started", started);

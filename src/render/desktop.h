@@ -57,8 +57,9 @@ struct DesktopCB
     float shockStyle = 0, transition = 0, transitionSecs = 0.32f, streak = 0;
     float cursorHotX = 0, cursorHotY = 0, cursorGrid = 16, instanceBase = 0;
     float ignite = 0, trails = 1, prism = 0, tails = 0;
+    float irisX = 0, irisY = 0, irisTime = -1e6f, irisSpeed = 600;
 };
-static_assert(sizeof(DesktopCB) == 68 * 4, "DesktopCB must stay 68 scalars, mirrored in HLSL");
+static_assert(sizeof(DesktopCB) == 72 * 4, "DesktopCB must stay 72 scalars, mirrored in HLSL");
 static_assert(sizeof(DesktopCB) % 16 == 0, "constant buffers are 16-byte aligned");
 
 // The largest desktop the particle field takes at full density. 3840x2160
@@ -242,5 +243,11 @@ private:
     uint32_t m_lastInstances = 0;                 // particles + cursor cluster, as simulated
     uint32_t m_lastCursorCount = 0;               // ... of which the pointer's
     uint32_t m_lastTrails = 1;                    // exposure copies per particle this frame
+    // The last damage's bounding box, in framebuffer pixels: its centre and
+    // half-diagonal are what the iris, the sonic boom and the odometer key
+    // off, so they act on the region rather than on each pixel alone.
+    float m_damageCx = 0, m_damageCy = 0, m_damageReach = 0;
+    bool m_damageFresh = false;                   // set by Upload, consumed by Simulate
+    double m_damageAt = -1e6;                     // when it arrived (Params::time)
     D3D12_GPU_VIRTUAL_ADDRESS m_cbCursorGpu = 0;  // the same constants with instanceBase set
 };

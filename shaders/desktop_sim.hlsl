@@ -102,7 +102,7 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
     // than a cloud of dots. Every particle works its block's transform out
     // for itself from the block's own coordinates, so nothing has to be
     // shared between them.
-    if (transition > 5.5 && !isCursor && !materialising && !resetFlag)
+    if (transition > 5.5 && transition < 6.5 && !isCursor && !materialising && !resetFlag)
     {
         const uint2 blk = src / 8u;
         const uint2 mid = blk * 8u + 4u;
@@ -119,6 +119,68 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
             const float ca = cos(ang), sa = sin(ang);
             const float2 turned = float2(off.x * ca - off.y * sa, off.x * sa + off.y * ca);
             const float2 target = centre + turned * (1.0 + 0.12 * k2) + slide;
+            const float step = max(dt, 1.0 / 240.0);
+            p.pos = target;
+            p.velPacked = PackVel((target - pos0) / step);
+            gParticles[i] = p;
+            return;
+        }
+    }
+
+    // The region styles (7 iris, 8 sonic boom, 9 shatter): these move
+    // particles with respect to the changed region as a whole, whose centre
+    // and reach the CPU measured from the damage itself.
+    if (transition > 6.5 && transition < 9.5 && !isCursor && !materialising && !resetFlag)
+    {
+        const float regionAge = time - gStamp[src / max(stride, 1u)];
+        if (regionAge >= 0.0 && regionAge < transitionSecs)
+        {
+            const float t = regionAge / transitionSecs;
+            const int style = int(transition + 0.5);
+            const float2 hub = float2(dstX, dstY) + (float2(irisX, irisY) + 0.5) * scale;
+            const float2 fromHub = home - hub;
+            const float reach = max(length(fromHub), 1.0);
+            const float2 away = fromHub / reach;
+            float2 target = home;
+            if (style == 7)
+            {
+                // Iris: the picture does not move except at the rim, where
+                // the expanding front throws the particles it passes
+                // outward. That is what gives the wipe a physical edge.
+                const float front = (time - irisTime) * irisSpeed * scale;
+                const float band = 7.0 * scale;
+                const float onRim = exp(-(reach - front) * (reach - front) / (band * band));
+                target = home + away * onRim * 9.0 * scale;
+            }
+            else if (style == 8)
+            {
+                // Sonic boom: every particle in the region leaves at once on
+                // one expanding shell, then comes back on a curve that
+                // accelerates into the landing, so they all arrive together.
+                const float k = t < 0.28 ? smoothstep(0.0, 1.0, t / 0.28)
+                                         : pow(1.0 - (t - 0.28) / 0.72, 2.2);
+                target = home + away * k * (48.0 + 26.0 * seed) * scale;
+            }
+            else
+            {
+                // Shatter and reform: sixteen-pixel shards, each turning
+                // about its own centroid, thrown out from the region's
+                // centre and falling, each starting a moment after the last
+                // so the break is ragged rather than a single pulse.
+                const uint2 cell = src / 16u;
+                const uint h = cell.x * 73856093u ^ cell.y * 19349663u;
+                const float lead = HashU(h) * 0.3;
+                const float u = saturate((t - lead) / max(1.0 - lead, 0.05));
+                const float k = 1.0 - u;
+                const float k2 = k * k;
+                const float2 mid = float2(dstX, dstY) + (float2(cell * 16u + 8u) + 0.5) * scale;
+                const float2 off = home - mid;
+                const float ang = (HashU(h + 5u) - 0.5) * 2.4 * k2;
+                const float ca = cos(ang), sa = sin(ang);
+                const float2 turned = float2(off.x * ca - off.y * sa, off.x * sa + off.y * ca);
+                const float2 spread = normalize(mid - hub + float2(0.001, 0.001)) * 46.0 * k2 * scale;
+                target = mid + turned * (1.0 + 0.12 * k2) + spread + float2(0.0, 30.0 * k2 * k * scale);
+            }
             const float step = max(dt, 1.0 / 240.0);
             p.pos = target;
             p.velPacked = PackVel((target - pos0) / step);

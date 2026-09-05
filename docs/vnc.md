@@ -308,6 +308,18 @@ pixel-exact during those 0.32 s, and the self-check runs with None.
 | Light speed | **the particles themselves move** (the default): each changed pixel's particle is thrown far out along the ray from the screen's centre, turned by its own seed so the swarm arrives on curves rather than spokes, and flies back into its pixel in a quarter of a second, decelerating hard |
 
 | Shear plates | the pixels of an eight-by-eight block move as one rigid plate, sliding and turning about the block's centre and settling, so the eye reads whole surfaces moving rather than a cloud of dots |
+| Iris | a hard front expands from the region's centre, the old picture ahead of it and the new behind, and the rim burns white; the sim throws the particles the rim passes outward, so the edge has depth instead of being a drawn circle |
+| Sonic boom | every particle in the region leaves at once on one expanding shell, then returns on a curve that accelerates into the landing, and the region punches white at the instant they all arrive |
+| Shatter and reform | sixteen-pixel shards, each turning about its own centroid, thrown out from the region's centre and falling, each starting a moment after the last so the break is ragged; the shard borders catch the light while they move |
+| Odometer | each column spins through the picture at a falling offset, blurred by three samples along it, and stops with a reel's overshoot, the columns settling left to right across the region |
+
+The last four act on the changed region as a whole, so they need to know
+where it is and how big it is, not only which pixels it holds. The CPU
+measures the bounding box of each damage as it arrives and passes its
+centre and half-diagonal, and the front's speed is set so it crosses the
+region in exactly the style's own time. Each style has the length its
+choreography needs, and all of them are under half a second: a redraw that
+outstays that reads as a fault rather than as an effect.
 
 Light speed and shear plates are the two styles that are not recolours:
 nothing resolves in place. The sim reads the change stamp, moves the
