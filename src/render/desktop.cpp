@@ -586,3 +586,31 @@ void DesktopParticles::Draw(ID3D12GraphicsCommandList* cl)
     cl->DrawInstanced(6, m_lastInstances, 0, 0);
     m_dev->Stamp(cl, Device::StampDesktopEnd);
 }
+
+bool DesktopParticles::ReadbackEnergy(std::vector<float>& out, uint32_t& w, uint32_t& h)
+{
+    if (!Ready() || !m_energy)
+        return false;
+    w = m_layout.sampledW;
+    h = m_layout.sampledH;
+    std::vector<uint8_t> raw;
+    if (!m_dev->ReadbackTexture(m_energy.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, DXGI_FORMAT_R16_FLOAT,
+                                w, h, 2, raw))
+        return false;
+    out.resize(static_cast<size_t>(w) * h);
+    for (size_t i = 0; i < out.size(); ++i)
+    {
+        // IEEE half to float
+        const uint16_t v = static_cast<uint16_t>(raw[i * 2] | (raw[i * 2 + 1] << 8));
+        const uint32_t sign = (v >> 15) & 1u, exp = (v >> 10) & 0x1Fu, mant = v & 0x3FFu;
+        float f;
+        if (exp == 0)
+            f = std::ldexp(static_cast<float>(mant), -24);
+        else if (exp == 31)
+            f = mant ? NAN : INFINITY;
+        else
+            f = std::ldexp(static_cast<float>(mant | 0x400u), static_cast<int>(exp) - 25);
+        out[i] = sign ? -f : f;
+    }
+    return true;
+}

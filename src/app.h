@@ -49,6 +49,8 @@ public:
     bool Init(HWND hwnd, bool diagMode = false, const std::string& connectId = {},
               const std::wstring& playPath = {}, const std::string& localShell = {},
               int previewSafety = 0);
+    // --vnc-selfcheck (app_vnc.cpp): arms the check; it starts on the first Tick.
+    void RequestVncSelfCheck() { m_vncSelfCheckRequested = true; }
     // Open an asciinema .cast in a local playback tab (File menu, --play).
     void PlayRecordingFile(const std::wstring& path);
     void Shutdown();
@@ -180,6 +182,15 @@ private:
     bool VncWheel(int delta);
     void VncReleaseAll();                        // held keys and buttons up
     void VncStatusLines(const amber::Session& s, float y);
+    // --vnc-selfcheck: an RFB server in-process, a VNC tab at solidity 1,
+    // the scene target read back and compared pixel for pixel with the
+    // picture served, then a changed block and the energy texture checked.
+    // Report in %TEMP%\vnc-selfcheck.txt; the exit code says pass or fail.
+    bool m_vncSelfCheckRequested = false;
+    struct VncSelfCheck;
+    VncSelfCheck* m_vncCheck = nullptr;          // owned; deleted when it finishes
+    void VncSelfCheckTick();                     // from Tick
+    void VncSelfCheckAfterFrame();               // from RenderFrame, after EndFrame
 
     // sessions --------------------------------------------------------------
     bool HasSession() const

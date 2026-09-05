@@ -54,6 +54,13 @@ public:
     uint32_t AllocRtv();
     D3D12_CPU_DESCRIPTOR_HANDLE RtvCpu(uint32_t slot) const;
 
+    // Synchronous readback of a 2D texture's first subresource, for the
+    // self-checks: waits for the GPU, copies through a readback heap, waits
+    // again, and returns the rows tightly packed at `bytesPerPixel`. The
+    // resource is returned to `state`. Slow by design and never per frame.
+    bool ReadbackTexture(ID3D12Resource* tex, D3D12_RESOURCE_STATES state, DXGI_FORMAT format,
+                         uint32_t width, uint32_t height, uint32_t bytesPerPixel,
+                         std::vector<uint8_t>& out);
     // Copy-queue fence, used for glyph-point uploads between frames.
     uint64_t SignalCopy();
     void     DirectWaitCopy(uint64_t value);

@@ -136,6 +136,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int nCmdSho
                           sizeof(dark));
 
     App app;
+    // --vnc-selfcheck: an RFB server in-process, a VNC tab at solidity 1,
+    // the scene read back and compared with the picture served. Needs the
+    // window and the GPU, so it runs inside the ordinary loop and exits
+    // through the message queue with 0 (passed) or 1; the report is in
+    // %TEMP%\vnc-selfcheck.txt.
+    if (lpCmdLine && wcsstr(lpCmdLine, L"--vnc-selfcheck"))
+        app.RequestVncSelfCheck();
     g_app = &app;
     // Route messages to the app BEFORE Init so the custom-frame WM_NCCALCSIZE
     // that Init triggers (SWP_FRAMECHANGED) reaches App::WndProc.

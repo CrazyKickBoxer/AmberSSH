@@ -522,7 +522,10 @@ bool App::Init(HWND hwnd, bool diagMode, const std::string& connectId,
 
     // The connection manager is the first thing the user sees — unless a
     // jump-list launch named a profile to connect to directly.
-    bool started = connectId.empty() ? ShowConnectionDialog()
+    // --vnc-selfcheck opens its own tab on the first Tick; the modal dialog
+    // here would sit in front of the loop that Tick belongs to.
+    bool started = m_vncSelfCheckRequested ? true
+                 : connectId.empty()       ? ShowConnectionDialog()
                                      : ConnectProfileById(connectId);
     if (!started)
         return false;               // cancelled at startup: exit cleanly
@@ -779,6 +782,8 @@ void App::HandleColorSpaceChange()
 // ---------------------------------------------------------------------- tick
 void App::Tick()
 {
+    if (m_vncSelfCheckRequested || m_vncCheck)
+        VncSelfCheckTick();
     // --preview-safety: open both safety boxes once, on the frame after the
     // window is up, with sample content and nothing connected. It exists so
     // the two modals can be reviewed on every interface skin without a server
@@ -1719,6 +1724,7 @@ void App::RenderFrame()
     }
 
     PumpSshEvents();
+    PumpVncEvents();
 
     // Disarm a finished shockwave so blank cells return to the fast path.
     if (m_particles.tun.shockTime >= 0.0f &&
@@ -2019,6 +2025,8 @@ void App::RenderFrame()
 
     m_device.Stamp(cl, Device::StampFrameEnd);
     m_device.EndFrame(m_vsync);
+    if (m_vncCheck)
+        VncSelfCheckAfterFrame();   // reads the scene target back, synchronously
 
     UpdateAutoDensity();
 

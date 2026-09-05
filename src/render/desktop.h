@@ -123,6 +123,10 @@ public:
                   float screenW, float screenH);
     void Draw(ID3D12GraphicsCommandList* cl);
 
+    // For the self-check: the disturbance energy texture, sampledW x
+    // sampledH floats, read back synchronously. Never per frame.
+    bool ReadbackEnergy(std::vector<float>& out, uint32_t& w, uint32_t& h);
+
     // Diagnostics for the overlay.
     uint32_t UploadedRectsLastFrame() const { return m_rectsLast; }
     uint64_t UploadedBytesLastFrame() const { return m_bytesLast; }

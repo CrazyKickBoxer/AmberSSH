@@ -433,3 +433,85 @@ void Device::DirectWaitCopy(uint64_t value)
 {
     m_directQueue->Wait(m_copyFence.Get(), value);
 }
+
+bool Device::ReadbackTexture(ID3D12Resource* tex, D3D12_RESOURCE_STATES state, DXGI_FORMAT format,
+                             uint32_t width, uint32_t height, uint32_t bytesPerPixel,
+                             std::vector<uint8_t>& out)
+{
+    if (!tex || width == 0 || height == 0)
+        return false;
+    WaitIdle();
+    const uint32_t pitch = (width * bytesPerPixel + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) /
+                           D3D12_TEXTURE_DATA_PITCH_ALIGNMENT * D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
+    const uint64_t total = static_cast<uint64_t>(pitch) * height;
+
+    D3D12_HEAP_PROPERTIES hp = {};
+    hp.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC rd = {};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width = total;
+    rd.Height = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.SampleDesc.Count = 1;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ComPtr<ID3D12Resource> rb;
+    if (FAILED(m_device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                 nullptr, IID_PPV_ARGS(&rb))))
+        return false;
+
+    ComPtr<ID3D12CommandAllocator> alloc;
+    ComPtr<ID3D12GraphicsCommandList> cl;
+    if (FAILED(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))) ||
+        FAILED(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc.Get(), nullptr,
+                                           IID_PPV_ARGS(&cl))))
+        return false;
+
+    D3D12_RESOURCE_BARRIER b = {};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = tex;
+    b.Transition.StateBefore = state;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    if (state != D3D12_RESOURCE_STATE_COPY_SOURCE)
+        cl->ResourceBarrier(1, &b);
+
+    D3D12_TEXTURE_COPY_LOCATION src = {};
+    src.pResource = tex;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.SubresourceIndex = 0;
+    D3D12_TEXTURE_COPY_LOCATION dst = {};
+    dst.pResource = rb.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint.Offset = 0;
+    dst.PlacedFootprint.Footprint.Format = format;
+    dst.PlacedFootprint.Footprint.Width = width;
+    dst.PlacedFootprint.Footprint.Height = height;
+    dst.PlacedFootprint.Footprint.Depth = 1;
+    dst.PlacedFootprint.Footprint.RowPitch = pitch;
+    cl->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+    if (state != D3D12_RESOURCE_STATE_COPY_SOURCE)
+    {
+        std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+        cl->ResourceBarrier(1, &b);
+    }
+    if (FAILED(cl->Close()))
+        return false;
+    ID3D12CommandList* lists[] = { cl.Get() };
+    m_directQueue->ExecuteCommandLists(1, lists);
+    WaitIdle();
+
+    D3D12_RANGE range = { 0, total };
+    void* mapped = nullptr;
+    if (FAILED(rb->Map(0, &range, &mapped)))
+        return false;
+    out.resize(static_cast<size_t>(width) * height * bytesPerPixel);
+    for (uint32_t y = 0; y < height; ++y)
+        memcpy(out.data() + static_cast<size_t>(y) * width * bytesPerPixel,
+               static_cast<const uint8_t*>(mapped) + static_cast<size_t>(y) * pitch,
+               static_cast<size_t>(width) * bytesPerPixel);
+    D3D12_RANGE none = { 0, 0 };
+    rb->Unmap(0, &none);
+    return true;
+}
