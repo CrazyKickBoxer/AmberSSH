@@ -2087,9 +2087,10 @@ void App::RecordScene(ID3D12GraphicsCommandList* cl)
     D3D12_GPU_VIRTUAL_ADDRESS cb = m_particles.FrameCbGpu();
     if (VncActive())
     {
-        // a desktop tab: the particle desktop, then the overlays that any
-        // tab has (palette, notices), and none of the terminal's layers
-        DrawVncScene(cl, frame, cb);
+        // a desktop tab: the terminal's layer order with the particle
+        // desktop in place of the glyph field (app_vnc.cpp); the FrameCB it
+        // uploads is the one the post-bloom pass below must use too
+        cb = DrawVncScene(cl, frame);
     }
     else
     {

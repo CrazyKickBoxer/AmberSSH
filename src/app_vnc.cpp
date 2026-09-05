@@ -333,18 +333,31 @@ void App::RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame)
     t.desk->Simulate(cl, frame, p, static_cast<float>(m_device.Width()), static_cast<float>(m_device.Height()));
 }
 
-void App::DrawVncScene(ID3D12GraphicsCommandList* cl, FrameContext& frame, D3D12_GPU_VIRTUAL_ADDRESS)
+D3D12_GPU_VIRTUAL_ADDRESS App::DrawVncScene(ID3D12GraphicsCommandList* cl, FrameContext& frame)
 {
-    if (VncTab* t = VncActive(); t && t->desk && t->desk->Ready())
-        t->desk->Draw(cl);
-    // The overlays draw against a FrameCB. The glyph field was not simulated
-    // this frame, so the address the terminal path would hand over is last
-    // frame's ring — or a ring re-created since; a fresh one is uploaded here.
+    // Every prim pass draws against a FrameCB. The glyph field was not
+    // simulated this frame, so the address the terminal path would hand over
+    // is last frame's ring — or a ring re-created since; a fresh one first.
     const D3D12_GPU_VIRTUAL_ADDRESS cb = m_particles.UploadFrameCbOnly(
         frame, m_gm, static_cast<float>(m_device.Width()), static_cast<float>(m_device.Height()),
         static_cast<float>(m_time), static_cast<float>(m_dt), m_device.HdrActive());
+    // The terminal's layer order, kept: the skin's chrome fills (title bar
+    // plates, tab pills, the status bar) and any panel backgrounds are the
+    // "under" layer; the desktop stands in for the glyph field; the crisp
+    // text of the strip and the status line, emoji, darkening panels and
+    // the rest of the chrome come over it. Leaving any of these out is how
+    // a skin loses its chrome the moment a desktop tab is active.
+    m_prims.RecordUnder(cl, frame, cb);
+    if (m_sharpness == 0)
+        m_prims.RecordCore(cl, frame, cb);
+    if (VncTab* t = VncActive(); t && t->desk && t->desk->Ready())
+        t->desk->Draw(cl);
+    if (m_sharpness == 1)
+        m_prims.RecordCore(cl, frame, cb);   // Razor (2) draws its core after bloom, in RecordScene
+    m_prims.RecordColor(cl, frame, cb);
     m_prims.RecordOverBlend(cl, frame, cb);
     m_prims.RecordOver(cl, frame, cb);
+    return cb;
 }
 
 // ---- input --------------------------------------------------------------------

@@ -187,8 +187,12 @@ private:
     void PumpVncEvents();
     amber::VncTab* VncActive();        // the active tab's desktop, or null
     void RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame);
-    void DrawVncScene(ID3D12GraphicsCommandList* cl, FrameContext& frame,
-                      D3D12_GPU_VIRTUAL_ADDRESS cb);
+    // The scene for a desktop tab: the same layer order as a terminal's,
+    // with the particle desktop where the glyph field would be — so the
+    // skin's chrome (fills under, text over) is drawn exactly as for any
+    // tab. Returns the FrameCB it uploaded for this frame; the caller's
+    // later passes (Razor's post-bloom core) must use it, not the stale one.
+    D3D12_GPU_VIRTUAL_ADDRESS DrawVncScene(ID3D12GraphicsCommandList* cl, FrameContext& frame);
     bool VncKey(WPARAM vk, bool down);           // true when consumed
     bool VncChar(wchar_t wc);
     bool VncMouseButton(bool down, int px, int py, bool right, bool middle);
