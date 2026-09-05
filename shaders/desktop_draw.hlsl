@@ -107,16 +107,31 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
         }
     }
 
-    // size: a hard pixel at solidity 1, growing into a soft glow disc
-    const float half = 0.5 * particleSize * scale + glowSize * loose;
+    // Vividness: saturation about the pixel's own luminance and contrast
+    // about mid grey, in linear light. 1 leaves the decoded colour alone
+    // (and faithful mode pins it there).
+    if (vivid != 1.0 && !isCursor)
+    {
+        const float l = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+        rgb = lerp(l.xxx, rgb, vivid);
+        const float contrast = 1.0 + (vivid - 1.0) * 0.6;
+        rgb = max((rgb - 0.18) * contrast + 0.18, 0.0);
+    }
+
+    // size: a hard pixel at solidity 1, growing into a soft glow disc; never
+    // under one screen pixel, or a scaled-down desktop turns to speckle
+    const float half = max(0.5 * particleSize * scale, 0.5) + glowSize * loose;
     o.soft = loose;
     o.alpha = alpha;
     o.rgb = rgb * brightness;
     if (!faithful && !isCursor)
     {
         // additive overlap: density particles per pixel must not sum to
-        // density times the colour
+        // density times the colour, and a desktop scaled below native size
+        // lands 1/scale^2 particles on each screen pixel - which must not
+        // sum either, or every highlight blows out
         o.rgb /= max(float(density), 1.0);
+        o.rgb *= min(1.0, scale * scale);
         o.rgb *= 1.0 + hdrBoost * loose;
     }
     // Materialise: the arriving particles brighten over the flight, so the

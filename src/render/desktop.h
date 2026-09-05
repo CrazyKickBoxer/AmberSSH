@@ -48,9 +48,9 @@ struct DesktopCB
     uint32_t particleCount = 0, animStyle = 0, reducedMotion = 0, faithful = 1;
     uint32_t resetFlag = 0, sampledW = 0, sampledH = 0, cursorCount = 0;
     float brightness = 1, dragAmt = 0.25f, cursorX = -1e6f, cursorY = -1e6f;
-    float cursorScale = 0, cursorW = 0, cursorH = 0, pad3 = 0;
+    float cursorScale = 0, cursorW = 0, cursorH = 0, motion = 1;
     float fxShock = 0, fxEdge = 0, fxHeat = 0, fxMaterialise = 0;
-    float bornTime = -1e6f, shockAmp = 1, edgeGain = 4, pad4 = 0;
+    float bornTime = -1e6f, shockAmp = 1, edgeGain = 4, vivid = 1;
 };
 static_assert(sizeof(DesktopCB) == 56 * 4, "DesktopCB must stay 56 scalars, mirrored in HLSL");
 static_assert(sizeof(DesktopCB) % 16 == 0, "constant buffers are 16-byte aligned");
@@ -97,6 +97,10 @@ public:
         // above 0 takes the desktop out of faithful mode: the picture is
         // exact only once they have settled, and edge glow never settles.
         float fxShock = 0, fxEdge = 0, fxHeat = 0, fxMaterialise = 0;
+        // Vividness: saturation and contrast about mid grey, 1 = the decoded
+        // colours; ignored (1) in faithful mode. Motion: the tempo of the
+        // swarm's drift, the motion style and the effects, 1 = as designed.
+        float vivid = 1, motion = 1;
         // where the framebuffer sits on screen: top-left and px scale
         float dstX = 0, dstY = 0, scale = 1;
         // the local pointer, in screen px, and whether to draw its cluster

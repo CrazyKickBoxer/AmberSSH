@@ -31,14 +31,15 @@ cbuffer DesktopCB : register(b1)
     uint particleCount, animStyle, reducedMotion, faithful;   // faithful: solidity 1 at native scale
     uint resetFlag, sampledW, sampledH, cursorCount;     // cursorCount: particles reserved for the pointer cluster
     float brightness, dragAmt, cursorX, cursorY;         // cursorX/Y: screen px of the local pointer
-    float cursorScale, cursorW, cursorH, pad3;           // cursorW/H: the shape's size inside gCursor
+    float cursorScale, cursorW, cursorH, motion;         // cursorW/H: the shape's size inside gCursor; motion: tempo of the swarm and effects, 1 = as designed
     // The effects (docs/vnc.md, "Effects"), each 0 = off .. 1 = full. Any of
     // them on means the desktop is no longer pixel-exact: faithful is 0.
     float fxShock, fxEdge, fxHeat, fxMaterialise;
     // bornTime: when this particle buffer was (re)born, for materialise;
     // shockAmp: +1 pushes outward (a click), negative pulls in (right click);
     // edgeGain: gradient-to-glow scale for fxEdge
-    float bornTime, shockAmp, edgeGain, pad4;
+    // vivid: saturation and contrast, 1 = the decoded colours (forced to 1 in faithful mode)
+    float bornTime, shockAmp, edgeGain, vivid;
 };
 
 // materialise runs this long after bornTime: the flight home, then exact

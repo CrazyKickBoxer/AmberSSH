@@ -94,7 +94,7 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
 
     float2 vel = UnpackVel(p.velPacked);
     float2 pos = p.pos;
-    const float ts = time * effectSpeed;
+    const float ts = time * effectSpeed * motion;   // the motion setting is tempo: the fields' clock and their push
 
     // --- forces ------------------------------------------------------------
     float2 a = (home - pos) * springK - vel * damping;
@@ -140,7 +140,7 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
     if (materialising)
         a = (home - pos) * 30.0 - vel * 11.0;   // critically damped, about a second's flight
     else
-        a += field * loose + shock * max(loose, fxShock) + burst * max(loose, fxHeat * 0.35);
+        a += (field * loose + shock * max(loose, fxShock) + burst * max(loose, fxHeat * 0.35)) * motion;
 
     // --- integrate ------------------------------------------------------------
     const float h = min(dt, 1.0 / 30.0);

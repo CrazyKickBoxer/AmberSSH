@@ -309,6 +309,8 @@ struct ConnectionProfile
     bool        vncFxEdge = true;        // edges (window borders, text) glow
     bool        vncFxHeat = true;        // changed pixels run hot and lift until they cool
     bool        vncFxMaterialise = true; // connect and resize assemble the picture from a scatter
+    int         vncVividness = 130;      // saturation + contrast %, 100 = as decoded; pinned to 100 in faithful mode
+    int         vncMotion = 200;         // tempo % of the swarm and the effects
     // Where remote windows appear: 0 native Windows windows, 1 AmberSSH tabs,
     // 2 AmberSSH panes, 3 ask per application. Only 0 is implemented; the
     // others are accepted, reported, and fall back to native (see PHASE-7-GATE).

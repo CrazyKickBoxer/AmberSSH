@@ -523,6 +523,10 @@ void DesktopParticles::Simulate(ID3D12GraphicsCommandList* cl, FrameContext& fra
         m_bornTime = p.time;
     cb.bornTime = static_cast<float>(m_bornTime);
     const bool anyFx = cb.fxShock > 0.0f || cb.fxEdge > 0.0f || cb.fxHeat > 0.0f || cb.fxMaterialise > 0.0f;
+    cb.motion = std::clamp(p.motion, 0.25f, 4.0f);
+    // vividness recolours; the exact contract forbids that, so faithful
+    // (solidity 1, no effect) pins it to 1 whatever the profile says
+    cb.vivid = (cb.solidity >= 0.999f && !anyFx) ? 1.0f : std::clamp(p.vivid, 0.5f, 2.0f);
     cb.lightMode = p.lightMode ? 1.0f : 0.0f;
     cb.hdrBoost = p.hdrBoost;
     cb.audioWind = p.audioWind;

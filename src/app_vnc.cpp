@@ -330,6 +330,8 @@ void App::RenderVncPasses(ID3D12GraphicsCommandList* cl, FrameContext& frame)
     p.fxEdge = prof.vncFxEdge ? 1.0f : 0.0f;
     p.fxHeat = prof.vncFxHeat ? 1.0f : 0.0f;
     p.fxMaterialise = prof.vncFxMaterialise ? 1.0f : 0.0f;
+    p.vivid = static_cast<float>(std::clamp(prof.vncVividness, 50, 200)) / 100.0f;
+    p.motion = static_cast<float>(std::clamp(prof.vncMotion, 25, 400)) / 100.0f;
     p.dstX = t.dstX;
     p.dstY = t.dstY;
     p.scale = t.scale;

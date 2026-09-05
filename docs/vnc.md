@@ -214,7 +214,15 @@ username there is what X509Plain would send.
 | `vncEncodings` | Encodings | ZRLE first / Hextile first / Raw only | ZRLE first |
 | `vncCursorMode` | Cursor | local particle cluster in the server's shape / server-drawn | local |
 | `vncClipboard` | Clipboard | Disabled / Ask each transfer / Remote → local / Local → remote / Bidirectional | Ask |
+| `vncVividness` | Vividness % | saturation about each pixel's luminance and contrast about mid grey, in linear light; 100 = the decoded colours, and faithful mode pins it there | 130 |
+| `vncMotion` | Motion speed % | the tempo of the swarm's drift, the motion style's field and the effects | 200 |
 | `vncFxShock`, `vncFxEdge`, `vncFxHeat`, `vncFxMaterialise` | Effect: … | the four effects below; any on = not pixel-exact | on |
+
+A desktop drawn below native size (the window is smaller than the
+framebuffer) lands 1/scale² particles on each screen pixel; in the
+additive (non-faithful) draw their colours are scaled by scale² so they
+sum to the pixel, not past it, and no sprite is drawn under one screen
+pixel. Without that a scaled desktop washes out.
 
 Numbers typed outside their range are clamped where they are used. The
 tab's copies of View only and the placement follow the palette toggles
@@ -452,7 +460,7 @@ fakes described above.
 | clipboard both ways with policy and echo guards | yes | by inspection only (no test drives the Windows clipboard) |
 | connection dialog page, palette commands, view-only toggle, Ctrl+Alt+Del | yes | built and launched; by inspection only |
 | Tight encoding | **no** | — |
-| interoperability with TigerVNC / vncfree-server | — | **unverified** |
+| interoperability with TigerVNC / vncfree-server | — | **observed, not instrumented**: on 2026-09-05 the user connected to a Fedora guest running TigerVNC with an XFCE session and showed the desktop drawn (a screenshot: Thunar, panel, wallpaper, scaled below native). Which encodings the server chose, DesktopSize, cursor shapes and VeNCrypt against it are still unrecorded; vncfree-server remains untried |
 
 ## Known limitations
 
