@@ -48,7 +48,45 @@ std::string Env(const char* name)
     return (n == 0 || n >= sizeof buf) ? std::string() : std::string(buf, n);
 }
 
-const char* kPrompt = "\x1b[38;5;114mjosh\x1b[0m@\x1b[38;5;214mamber\x1b[0m:\x1b[38;5;75m~\x1b[0m$ ";
+// Nerd Font glyphs, from the Private Use Area. AmberSSH's fallback chain
+// resolves them out of %LOCALAPPDATA%\AmberSSH\fonts (SymbolsNerdFontMono),
+// which is what the prompt-icon auto-fetch puts there. Written as escapes
+// rather than literal bytes so the source's own encoding cannot matter;
+// each is its own literal because a C++ hex escape is greedy.
+constexpr const char* kNfSep     = "\xEE\x82\xB0";   // U+E0B0 powerline separator
+constexpr const char* kNfBranch  = "\xEE\x82\xA0";   // U+E0A0 git branch
+constexpr const char* kNfFolder  = "\xEF\x81\xBB";   // U+F07B folder
+constexpr const char* kNfFile    = "\xEF\x85\x9B";   // U+F15B file
+constexpr const char* kNfFedora  = "\xEF\x85\xBC";   // U+F17C linux (U+F30A, fedora, is not in the symbols font)
+constexpr const char* kNfDisk    = "\xEF\x82\xA0";   // U+F0A0 disk
+constexpr const char* kNfChip    = "\xEF\x8B\x9B";   // U+F2DB chip
+constexpr const char* kNfCheck   = "\xEF\x80\x8C";   // U+F00C check
+constexpr const char* kNfCross   = "\xEF\x80\x8D";   // U+F00D cross
+constexpr const char* kNfDown    = "\xEF\x80\x99";   // U+F019 download
+constexpr const char* kNfLock    = "\xEF\x80\xA3";   // U+F023 lock
+constexpr const char* kNfGear    = "\xEF\x80\x93";   // U+F013 cog
+constexpr const char* kNfArchive = "\xEF\x87\x86";   // U+F1C6 archive
+constexpr const char* kNfCode    = "\xEF\x84\xA1";   // U+F121 code
+constexpr const char* kNfKey     = "\xEF\x82\x84";   // U+F084 key
+constexpr const char* kNfClock   = "\xEF\x80\x97";   // U+F017 clock
+
+// A powerline prompt: user segment, path segment, and the separators that
+// make them read as one ribbon.
+std::string Prompt()
+{
+    return std::string("\x1b[48;5;24m\x1b[38;5;255m ") + kNfKey + " josh@fedora \x1b[0m" +
+           "\x1b[38;5;24m\x1b[48;5;238m" + kNfSep + "\x1b[0m" +
+           "\x1b[48;5;238m\x1b[38;5;252m ~ \x1b[0m\x1b[38;5;238m" + kNfSep + "\x1b[0m ";
+}
+
+// One row of a listing, the way eza --icons draws it: mode, owner, size,
+// date, then the type's glyph and the name in the colour ls would use.
+std::string Row(const char* mode, const char* size, const char* date, const char* icon, const char* colour,
+                const char* name)
+{
+    return std::string("\x1b[38;5;244m") + mode + "\x1b[0m josh josh \x1b[38;5;180m" + size +
+           "\x1b[0m \x1b[38;5;108m" + date + "\x1b[0m  " + colour + icon + "  " + name + "\x1b[0m\r\n";
+}
 
 std::string Bar(double t)
 {
@@ -222,29 +260,67 @@ void App::ReelBuild()
             "   /_\\  _ __  _ _ | |__  ___ _ _  / __/ __| || |\r\n"
             "  / _ \\| '  \\| '_>| '_ \\/ -_) '_| \\__ \\__ \\ __ |\r\n"
             " /_/ \\_\\_|_|_|_.__|_.__/\\___|_|   |___/___/_||_|\r\n"
-            "\x1b[0m\r\n\x1b[1ma particle terminal\x1b[0m\r\n");
+            "\x1b[0m\r\n\x1b[1ma particle terminal\x1b[0m"
+            "   \x1b[2m(recorded demonstration; the figures are this machine's own)\x1b[0m\r\n");
     });
-    at(4, [say] { say("\r\n" + std::string(kPrompt) + "ls -la --color\r\n"); });
-    at(6, [say] {
-        say("total 148\r\n"
-            "drwxr-xr-x  8 josh josh  4096 Sep  5 06:41 \x1b[1;34m.\x1b[0m\r\n"
-            "drwx------  2 josh josh  4096 Aug 30 11:04 \x1b[1;34m.ssh\x1b[0m\r\n"
-            "drwxr-xr-x  4 josh josh  4096 Sep  4 22:17 \x1b[1;34mprojects\x1b[0m\r\n"
-            "-rwxr-xr-x  1 josh josh 12288 Sep  2 09:51 \x1b[1;32mdeploy.sh\x1b[0m\r\n"
-            "-rw-r--r--  1 josh josh 90112 Sep  5 06:12 notes.md\r\n"
-            "lrwxrwxrwx  1 josh josh    11 Sep  1 18:33 \x1b[1;36mlatest\x1b[0m -> notes.md\r\n"
-            "-rw-r--r--  1 josh josh  8192 Aug 28 14:20 \x1b[1;31marchive.tar.gz\x1b[0m\r\n");
+    // A real listing of the Fedora box's home directory, drawn the way eza
+    // draws one: the file-type glyph beside every name.
+    at(3.5, [say] { say("\r\n" + Prompt() + "eza -la --icons\r\n"); });
+    at(4.6, [say] {
+        std::string d;
+        d += Row("drwx------.", " 4096", "Sep  5 12:13", kNfFolder, "\x1b[38;5;75m", ".");
+        d += Row("drwxr-xr-x.", "   18", "Sep  3 16:03", kNfFolder, "\x1b[38;5;75m", "..");
+        d += Row("-rw-------.", " 8245", "Sep  5 12:11", kNfFile, "\x1b[38;5;250m", ".bash_history");
+        d += Row("-rw-r--r--.", "  522", "Jan 15  2026", kNfCode, "\x1b[38;5;114m", ".bashrc");
+        d += Row("-rw-r--r--.", "  144", "Jan 15  2026", kNfCode, "\x1b[38;5;114m", ".bash_profile");
+        d += Row("drwx------.", " 4096", "Sep  5 11:46", kNfFolder, "\x1b[38;5;75m", ".cache");
+        d += Row("drwx------.", " 4096", "Sep  5 11:49", kNfGear, "\x1b[38;5;180m", ".config");
+        d += Row("drwx------.", "  125", "Sep  5 12:12", kNfLock, "\x1b[38;5;203m", ".gnupg");
+        d += Row("drwx------.", "   61", "Sep  5 05:35", kNfKey, "\x1b[38;5;203m", ".ssh");
+        d += Row("drwxr-xr-x.", "    6", "Sep  5 05:35", kNfFolder, "\x1b[38;5;75m", "Desktop");
+        d += Row("drwxr-xr-x.", "    6", "Sep  5 05:35", kNfFolder, "\x1b[38;5;75m", "Documents");
+        d += Row("drwxr-xr-x.", "    6", "Sep  5 05:35", kNfDown, "\x1b[38;5;75m", "Downloads");
+        say(d);
     });
-    at(12, [say] {
-        say("\r\n" + std::string(kPrompt) + "systemctl is-active nginx postgresql redis\r\n"
-            "\x1b[32mactive\x1b[0m\r\n\x1b[32mactive\x1b[0m\r\n\x1b[31mfailed\x1b[0m\r\n");
+    // The machine it is really running on, in a fastfetch-style panel.
+    at(11, [say] { say("\r\n" + Prompt() + "fastfetch\r\n"); });
+    at(12.2, [say] {
+        std::string d;
+        d += std::string("      \x1b[38;5;33m") + kNfFedora + "\x1b[0m   \x1b[1;38;5;33mjosh\x1b[0m@\x1b[1;38;5;33mfedora\x1b[0m\r\n";
+        d += "           \x1b[38;5;240m--------------------------------\x1b[0m\r\n";
+        d += std::string("      \x1b[38;5;33m") + kNfFedora + "\x1b[0m   \x1b[1;38;5;33mOS\x1b[0m      Fedora Linux 44 (Server Edition)\r\n";
+        d += std::string("           \x1b[1;38;5;33mKernel\x1b[0m  6.19.10-300.fc44.x86_64\r\n");
+        d += std::string("      \x1b[38;5;33m") + kNfChip + "\x1b[0m   \x1b[1;38;5;33mCPU\x1b[0m     AMD Ryzen 5 7535HS\r\n";
+        d += std::string("      \x1b[38;5;33m") + kNfDisk + "\x1b[0m   \x1b[1;38;5;33mDisk\x1b[0m    6.8G / 15G (46%)\r\n";
+        d += std::string("      \x1b[38;5;33m") + kNfChip + "\x1b[0m   \x1b[1;38;5;33mMemory\x1b[0m  1.0Gi / 3.8Gi\r\n";
+        d += std::string("      \x1b[38;5;33m") + kNfClock + "\x1b[0m   \x1b[1;38;5;33mUptime\x1b[0m  up 10 minutes\r\n";
+        say(d);
     });
-    at(16, [say] { say("\r\n" + std::string(kPrompt) + "curl -O https://files.example.invalid/amberssh.zip\r\n"); });
-    for (int i = 0; i < 16; ++i)
-        at(17 + i * 0.5, [say, i] {
-            say(Bar((i + 1) / 16.0));
-            if (i == 15)
-                say("\r\n\x1b[32m  saved amberssh.zip\x1b[0m\r\n\r\n" + std::string(kPrompt));
+    at(18, [say] {
+        say("\r\n" + Prompt() + "systemctl is-active sshd vncserver@:1 firewalld chronyd\r\n");
+    });
+    at(19.2, [say] {
+        std::string d;
+        for (const char* s : { "sshd", "vncserver@:1", "firewalld", "chronyd" })
+            d += std::string("\x1b[38;5;114m") + kNfCheck + "\x1b[0m active   \x1b[38;5;250m" + s + "\x1b[0m\r\n";
+        say(d);
+    });
+    at(22, [say] {
+        say("\r\n" + Prompt() + "git status -sb\r\n" +
+            "\x1b[38;5;214m" + kNfBranch + "\x1b[0m \x1b[1mamberx-phase0\x1b[0m\x1b[38;5;240m...origin/amberx-phase0\x1b[0m\r\n" +
+            "\x1b[38;5;114m M\x1b[0m src/app_reel.cpp\r\n" +
+            "\x1b[38;5;114m M\x1b[0m src/render/desktop.cpp\r\n" +
+            "\x1b[38;5;203m??\x1b[0m docs/vnc.md\r\n");
+    });
+    at(25, [say] {
+        say("\r\n" + Prompt() + "curl -O https://files.example.invalid/amberssh.zip\r\n");
+    });
+    for (int i = 0; i < 10; ++i)
+        at(25.8 + i * 0.45, [say, i] {
+            say(Bar((i + 1) / 10.0));
+            if (i == 9)
+                say(std::string("\r\n  \x1b[38;5;114m") + kNfCheck + "\x1b[0m  saved \x1b[38;5;180m" + kNfArchive +
+                    "  amberssh.zip\x1b[0m \x1b[38;5;240m(18.4 MB)\x1b[0m\r\n");
         });
 
     // ---- beats 32..55: every motion style, one a beat, the text reforming on each --
@@ -287,20 +363,25 @@ void App::ReelBuild()
         at(86, [shock] { shock(1, 0.55f, 0.55f); });
         at(88, [shock] { shock(2, 0.75f, 0.45f); });
         at(90, [shock] { shock(3, 0.60f, 0.65f); });
-        // a terminal, through the run dialog
-        at(92, [chord] { chord(amber::vnc::XK_Alt_L, kF2); });
-        at(93, [type] { type("xfce4-terminal"); });
-        at(96, [redraw, type] { redraw(7); type("ls -la"); });          // iris
-        at(100, [redraw, type] { redraw(8); type("uname -a"); });       // sonic boom
-        at(104, [redraw, type] { redraw(9); type("top"); });            // shatter, on a screen that keeps changing
-        at(107, [redraw] { redraw(10); });                               // odometer
-        at(110, [redraw, tap] { redraw(6); tap('q'); });                 // shear plates
-        at(112, [chord] { chord(amber::vnc::XK_Alt_L, kF7); });          // move the window from the keyboard
-        for (int i = 0; i < 8; ++i)
-            at(112.4 + i * 0.35, [tap, i] { tap(i < 5 ? kRight : kDown); });
-        at(116, [tap] { tap(kReturn); });
-        at(118, [redraw, chord] { redraw(1); chord(amber::vnc::XK_Alt_L, kF4); });   // burn as it closes
-        at(120, [redraw, tap] { redraw(2); tap(kEscape); });                        // dissolve
+        // A terminal on the far side, opened with the desktop's own
+        // Ctrl+Alt+T, then real commands run on the real machine — each one
+        // redrawn in a different style as its output lands.
+        at(92, [key] {
+            key(amber::vnc::XK_Control_L, true);
+            key(amber::vnc::XK_Alt_L, true);
+            key(amber::vnc::KeysymFromCodePoint(U't'), true);
+            key(amber::vnc::KeysymFromCodePoint(U't'), false);
+            key(amber::vnc::XK_Alt_L, false);
+            key(amber::vnc::XK_Control_L, false);
+        });
+        at(95, [redraw, type] { redraw(7); type("uname -srm"); });                    // iris
+        at(98, [redraw, type] { redraw(8); type("free -h"); });                       // sonic boom
+        at(101, [redraw, type] { redraw(9); type("ls -la ~"); });                     // shatter
+        at(105, [redraw, type] { redraw(10); type("df -h /"); });                     // odometer
+        at(108, [redraw, type] { redraw(6); type("systemctl is-active sshd vncserver@:1"); });   // shear plates
+        at(112, [redraw, type] { redraw(5); type("top -b -n1 | head -14"); });        // light speed
+        at(117, [redraw, type] { redraw(1); type("exit"); });                         // burn as it closes
+        at(120, [redraw] { redraw(2); });                                             // dissolve
     }
 
     // ---- beats 122..130: back to the terminal, and out ------------------------------
