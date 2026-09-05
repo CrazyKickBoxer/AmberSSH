@@ -70,6 +70,63 @@ constexpr const char* kNfCode    = "\xEF\x84\xA1";   // U+F121 code
 constexpr const char* kNfKey     = "\xEF\x82\x84";   // U+F084 key
 constexpr const char* kNfClock   = "\xEF\x80\x97";   // U+F017 clock
 
+// Real names out of /usr/bin on the Fedora box this was shot against,
+// sampled across the whole directory so the screen reads like the machine
+// rather than like a word list.
+const char* const kBinNames[] = {
+    "abrtd", "abrt-watch-log", "adcli", "agetty", "alsamixer", "anaconda", "aplay", "apropos",
+    "arecordmidi", "arptables", "aseqdump", "asunder", "atril-previewer", "audit2why", "aulastlog", "automount",
+    "avcstat", "b43-fwcutter", "basenc", "bc", "blkdeactivate", "blockdev", "bluemoon", "brltty",
+    "brltty-genkey", "brltty-mkuser", "brltty-ttb", "bs2bstream", "btrfsck", "bunzip2", "bzdiff", "bzip2recover",
+    "cache_repair", "canberra-boot", "cardos-tool", "cdda-player", "cd-info", "certmonger", "chage", "chcat",
+    "check-regexp", "chmem", "chronyc", "chvt", "cisco-decrypt", "clockdiff", "colcrt", "comm",
+    "composite", "convert", "cpio", "cracklib-packer", "crontab", "ctags", "cups-calibrate", "cupsfilter",
+    "curve_keygen", "date", "dbus-send", "dc", "deallocvt", "depmod", "dig", "dirname",
+    "dmfilemapd", "dnf", "dnie-tool", "dos2unix", "driverless", "dumpe2fs", "dump-utmp", "e2image",
+    "e4defrag", "echo", "eidenv", "enchant-2", "envsubst", "era_invalidate", "ethtool", "eu-elfcompress",
+    "eu-ranlib", "eu-stacktrace", "ex", "exiv2", "factor", "fancontrol", "fc-cat", "fc-query",
+    "fedfs-map-nfs4", "fgconsole", "fincore", "firewall-cmd", "flatpak", "fmt", "fprintd-delete", "fribidi",
+    "fsck.exfat", "fsck.minix", "fsfreeze", "fuse-overlayfs", "gaim", "gcr-viewer", "gdbus", "genl-ctrl-list",
+    "getconf", "getkeycodes", "getpolicyload", "ghostscript", "glxinfo64", "gnome-keyring-3", "gpg", "gpgme-json",
+    "gr2fonttest", "grops", "groupmod", "grub2-editenv", "grub2-mkrelpath", "gs", "gslj", "gst-inspect-1.0",
+    "gtf", "gunzip", "hangul", "hexdump", "hostnamectl", "hp-firmware", "hp-plugin", "hp-setup",
+    "hv_kvp_daemon", "ibus", "iconvconfig", "ifconfig", "imsettings-info", "insmod", "iodine", "ip6tables-save",
+    "ipa-join", "ipmaddr", "iptables", "irqbalance", "iscsiadm", "iso-info", "jcat-tool", "json_reformat",
+    "kbdinfo", "kernel-install", "kinit", "kpartx", "ktutil", "lastcomm", "ld", "ld.so",
+    "lesspipe.sh", "libinput", "linux64", "load_policy", "local-getcert", "login", "look", "lpasswd",
+    "lpmove", "lpr.cups", "ls", "lsfd", "lslogins", "lspci", "lusermod", "lvextend",
+    "lvmdump", "lvmsar", "lvs", "magick-script", "manpath", "mbim-network", "mdmon", "mii-diag",
+    "mkdir", "mkfontscale", "mkfs.ext2", "mkfs.msdos", "mknod", "mmcli", "modprobe", "more",
+    "mount.fuse3", "mount.ntfs-fuse", "mp3rtp", "mpris-proxy", "multipathd", "namei", "ndptool", "NetworkManager",
+    "nf-ct-add", "nf-exp-list", "nfsdcld", "nft", "nl", "nl-class-delete", "nl-fib-lookup", "nl-link-stats",
+    "nl-neigh-delete", "nl-qdisc-list", "nl-rule-list", "nmblookup", "normalizer", "nsec3hash", "ntfs-3g", "ntfscluster",
+    "ntfsfix", "ntfsmount", "ntfstruncate", "objcopy", "ogg123", "oomctl", "opensc-asn1", "openvt",
+    "orca", "os-prober", "pactl", "pango-list", "parecord", "passt", "pasta.avx2", "pax11publish",
+    "pdf2dsc", "pdfimages", "pdftohtml", "peekfd", "pfbtopfa", "pidof", "pinfo", "pipewire",
+    "pivot_root", "pkcon", "pkexec", "pkmon", "plocate", "pod2man", "poweroff", "ppdpo",
+    "pppstats", "pre-grohtml", "printf_ngettext", "ps2ascii", "ps2pdf14", "psfgettable", "pstree.x11", "pvck",
+    "pvresize", "pw-cli", "pw-dot", "pw-jack", "pw-metadata", "pw-midirecord", "pwqfilter", "pw-sysex",
+    "pydoc3.14", "qemu-arm-static", "qr", "quota", "quotasync", "rdma", "readtags", "regdiff",
+    "renice", "repquota", "resizepart", "rfkill", "route", "rpc.idmapd", "rpm", "rpmkeys",
+    "rsync-ssl", "rtmon", "runscript", "rx", "satyr", "sdiff", "secret-tool", "selabel_compare",
+    "selinuxenabled", "semodule_link", "serdi", "setcifsacl", "setfont", "setpgid", "setroubleshootd", "setxkbmap",
+    "sha1hmac", "sha256sum", "sharesec", "shred", "skdump", "sleep", "smbclient", "smbprint",
+    "smp_discover", "smp_write_gpio", "soelim.groff", "sotruss", "spa-monitor", "speaker-test", "split", "ssh-add",
+    "ssh-keyscan", "sssd", "sstpc", "stdbuf", "stty", "sudoedit", "swaplabel", "symlinks",
+    "systemd-cat", "systemd-delta", "systemd-mount", "systemd-run", "tabs", "tbl", "tcptraceroute", "tee",
+    "thin_delta", "thin_restore", "thunar-settings", "timeout", "top", "tpm2_changeeps", "tpm2_create", "tpm2_ecdhzgen",
+    "tpm2_hash", "tpm2_nvdefine", "tpm2_nvundefine", "tpm2_pcrreset", "tpm2_quote", "tpm2_rsaencrypt", "tpm2_sign", "tpm2_unseal",
+    "tracepath6", "true", "tset", "ts_print_mt", "tss2_createnv", "tss2_exportkey", "tss2_list", "tss2_pcrextend",
+    "tss2_sign", "tty", "uchardet", "ulimit", "umount.nfs4", "uncompface", "unix2dos", "unsetfiles",
+    "unzstd", "upnpc", "usbhid-dump", "userdbctl", "utmpdump", "varlinkctl", "VBoxService", "vgcfgbackup",
+    "vgcreate", "vgimportclone", "vgremove", "vi", "vimdiff", "vmcore-dmesg", "vmware-checkvm", "vncconfig",
+    "vpddecode", "wait", "wc", "weston-debug", "whatis", "who", "wipefs", "wpa_passphrase",
+    "wsdd", "X", "xauth", "xdg-email", "xdg-user-dir", "xfce4-appfinder", "xfce4-session", "xfrun4",
+    "xfs_estimate", "xfs_info", "xfs_mkfile", "xfs_rtcp", "xinit", "xmlsec1", "xqmstats", "xtables-monitor",
+    "xz", "xzegrep", "yes", "zdiff", "zgrep", "zipinfo", "znew", "zstdgrep",
+};
+constexpr int kBinCount = static_cast<int>(sizeof(kBinNames) / sizeof(kBinNames[0]));
+
 // A powerline prompt: user segment, path segment, and the separators that
 // make them read as one ribbon.
 std::string Prompt()
@@ -198,13 +255,53 @@ void App::ReelBuild()
         r.screen += line;
         SetStatus("Motion: " + name, 1.0);
     };
-    auto skin = [this, say](int i) {
+    // The screen the motion styles perform on: a real listing of /usr/bin,
+    // in as many columns as the grid takes, filling it edge to edge. It is
+    // kept whole in r.screen so a style change can reprint every cell in
+    // one frame — which is what makes the entire screenful take the new
+    // field's choreography at once, on the beat.
+    auto fillScreen = [this, &r]() {
+        const int colW = 19;
+        const int cols = std::max(1, (static_cast<int>(m_gm.cols) - 2) / colW);
+        // Every row under the prompt, right down to the one above the status
+        // bar. The last row is deliberately left without its newline so a
+        // full screen does not scroll itself by one line.
+        const int rows = std::max(4, static_cast<int>(m_gm.rows) - 2);
+        const int shown = std::min(kBinCount, cols * rows);
+        std::string d = "\x1b[2J\x1b[H" + Prompt() + "ls /usr/bin\r\n";
+        for (int i = 0; i < shown; ++i)
+        {
+            if (i % cols == 0)
+                d += " ";
+            const char* colour = (i % 9 == 0)   ? "\x1b[38;5;114m"
+                                 : (i % 5 == 0) ? "\x1b[38;5;180m"
+                                 : (i % 7 == 0) ? "\x1b[38;5;75m"
+                                                : "\x1b[38;5;252m";
+            char cell[96];
+            snprintf(cell, sizeof cell, "%s%s %-*s\x1b[0m", colour, kNfCode, colW - 4, kBinNames[i]);
+            d += cell;
+            if (i % cols == cols - 1 && i != shown - 1)
+                d += "\r\n";
+        }
+        r.screen = d;
+        if (amber::Session* t = ReelTerminal(m_sessions))
+            t->localPending += d;
+    };
+    // One style, and the same screenful reprinted under it.
+    auto styleDemo = [this, &r](int i) {
+        m_motionStyle = std::clamp(i, 0, kMotionStyleCount - 1);
+        if (amber::Session* t = ReelTerminal(m_sessions))
+            t->localPending += r.screen;
+        SetStatus(std::string("Motion: ") + MotionStyleAt(static_cast<uint32_t>(m_motionStyle)).name, 2.2);
+    };
+    // The skin changes the chrome, not the text: the listing stays put so
+    // the tab strip, the status bar and the frame are what visibly change.
+    auto skin = [this](int i) {
         m_chromeId = std::clamp(i, 0, amber::kChromeCount - 1);
         amber::SetChrome(m_chromeId);
         ApplyTheme();
         UpdateMenuChecks();
-        say(std::string("  \x1b[2minterface:\x1b[0m ") + amber::Chrome().name + "\r\n");
-        SetStatus(std::string("Interface: ") + amber::Chrome().name, 1.0);
+        SetStatus(std::string("Interface: ") + amber::Chrome().name, 1.2);
     };
     auto appearance = [this](int i) {
         m_appearance = i;
@@ -250,150 +347,127 @@ void App::ReelBuild()
                 SelectTab(i, -1);
         }
     };
+    auto showDesktop = [this, desk]() {
+        if (amber::Session* d = desk())
+        {
+            const int i = IndexOf(m_sessions, d);
+            if (i >= 0 && i != m_active)
+                SelectTab(i, -1);
+        }
+    };
 
-    // ---- beat 0: the marker, and the terminal ------------------------------------
-    at(0.00, [appearance] { appearance(1); });   // the flash
-    at(0.15, [appearance, say] {
-        appearance(0);
-        say("\x1b[2J\x1b[H\x1b[38;5;214m"
-            "    _              _               ___ ___ _  _\r\n"
-            "   /_\\  _ __  _ _ | |__  ___ _ _  / __/ __| || |\r\n"
-            "  / _ \\| '  \\| '_>| '_ \\/ -_) '_| \\__ \\__ \\ __ |\r\n"
-            " /_/ \\_\\_|_|_|_.__|_.__/\\___|_|   |___/___/_||_|\r\n"
-            "\x1b[0m\r\n\x1b[1ma particle terminal\x1b[0m"
-            "   \x1b[2m(recorded demonstration; the figures are this machine's own)\x1b[0m\r\n");
+    // The desktop opens the reel. It is already connected before beat zero,
+    // but the first beat lands on the black terminal so the flash marker the
+    // cut is found by is unmistakable — and so the desktop arrives as a cut,
+    // not as a connection.
+    at(0.00, [appearance] { appearance(1); });   // the flash: beat zero
+    at(0.15, [appearance] { appearance(0); });
+    at(0.40, [showDesktop] { showDesktop(); });
+    at(1.50, [redraw] { redraw(5); });                                  // light speed
+    at(3.00, [shock] { shock(0, 0.70f, 0.60f); });                      // ring
+    at(5.00, [shock] { shock(1, 0.45f, 0.50f); });                      // water drop
+    at(7.00, [shock] { shock(2, 0.75f, 0.42f); });                      // splash
+    at(9.00, [shock] { shock(3, 0.55f, 0.62f); });                      // vortex
+    // A terminal on the far side, opened with the desktop's own Ctrl+Alt+T,
+    // then real commands on the real machine, each redrawn in its own style.
+    at(12.0, [key] {
+        key(amber::vnc::XK_Control_L, true);
+        key(amber::vnc::XK_Alt_L, true);
+        key(amber::vnc::KeysymFromCodePoint(U't'), true);
+        key(amber::vnc::KeysymFromCodePoint(U't'), false);
+        key(amber::vnc::XK_Alt_L, false);
+        key(amber::vnc::XK_Control_L, false);
     });
-    // A real listing of the Fedora box's home directory, drawn the way eza
-    // draws one: the file-type glyph beside every name.
-    at(3.5, [say] { say("\r\n" + Prompt() + "eza -la --icons\r\n"); });
-    at(4.6, [say] {
-        std::string d;
-        d += Row("drwx------.", " 4096", "Sep  5 12:13", kNfFolder, "\x1b[38;5;75m", ".");
-        d += Row("drwxr-xr-x.", "   18", "Sep  3 16:03", kNfFolder, "\x1b[38;5;75m", "..");
-        d += Row("-rw-------.", " 8245", "Sep  5 12:11", kNfFile, "\x1b[38;5;250m", ".bash_history");
-        d += Row("-rw-r--r--.", "  522", "Jan 15  2026", kNfCode, "\x1b[38;5;114m", ".bashrc");
-        d += Row("-rw-r--r--.", "  144", "Jan 15  2026", kNfCode, "\x1b[38;5;114m", ".bash_profile");
-        d += Row("drwx------.", " 4096", "Sep  5 11:46", kNfFolder, "\x1b[38;5;75m", ".cache");
-        d += Row("drwx------.", " 4096", "Sep  5 11:49", kNfGear, "\x1b[38;5;180m", ".config");
-        d += Row("drwx------.", "  125", "Sep  5 12:12", kNfLock, "\x1b[38;5;203m", ".gnupg");
-        d += Row("drwx------.", "   61", "Sep  5 05:35", kNfKey, "\x1b[38;5;203m", ".ssh");
-        d += Row("drwxr-xr-x.", "    6", "Sep  5 05:35", kNfFolder, "\x1b[38;5;75m", "Desktop");
-        d += Row("drwxr-xr-x.", "    6", "Sep  5 05:35", kNfFolder, "\x1b[38;5;75m", "Documents");
-        d += Row("drwxr-xr-x.", "    6", "Sep  5 05:35", kNfDown, "\x1b[38;5;75m", "Downloads");
-        say(d);
-    });
-    // The machine it is really running on, in a fastfetch-style panel.
-    at(11, [say] { say("\r\n" + Prompt() + "fastfetch\r\n"); });
-    at(12.2, [say] {
-        std::string d;
-        d += std::string("      \x1b[38;5;33m") + kNfFedora + "\x1b[0m   \x1b[1;38;5;33mjosh\x1b[0m@\x1b[1;38;5;33mfedora\x1b[0m\r\n";
-        d += "           \x1b[38;5;240m--------------------------------\x1b[0m\r\n";
-        d += std::string("      \x1b[38;5;33m") + kNfFedora + "\x1b[0m   \x1b[1;38;5;33mOS\x1b[0m      Fedora Linux 44 (Server Edition)\r\n";
-        d += std::string("           \x1b[1;38;5;33mKernel\x1b[0m  6.19.10-300.fc44.x86_64\r\n");
-        d += std::string("      \x1b[38;5;33m") + kNfChip + "\x1b[0m   \x1b[1;38;5;33mCPU\x1b[0m     AMD Ryzen 5 7535HS\r\n";
-        d += std::string("      \x1b[38;5;33m") + kNfDisk + "\x1b[0m   \x1b[1;38;5;33mDisk\x1b[0m    6.8G / 15G (46%)\r\n";
-        d += std::string("      \x1b[38;5;33m") + kNfChip + "\x1b[0m   \x1b[1;38;5;33mMemory\x1b[0m  1.0Gi / 3.8Gi\r\n";
-        d += std::string("      \x1b[38;5;33m") + kNfClock + "\x1b[0m   \x1b[1;38;5;33mUptime\x1b[0m  up 10 minutes\r\n";
-        say(d);
-    });
-    at(18, [say] {
-        say("\r\n" + Prompt() + "systemctl is-active sshd vncserver@:1 firewalld chronyd\r\n");
-    });
-    at(19.2, [say] {
-        std::string d;
-        for (const char* s : { "sshd", "vncserver@:1", "firewalld", "chronyd" })
-            d += std::string("\x1b[38;5;114m") + kNfCheck + "\x1b[0m active   \x1b[38;5;250m" + s + "\x1b[0m\r\n";
-        say(d);
-    });
-    at(22, [say] {
-        say("\r\n" + Prompt() + "git status -sb\r\n" +
-            "\x1b[38;5;214m" + kNfBranch + "\x1b[0m \x1b[1mamberx-phase0\x1b[0m\x1b[38;5;240m...origin/amberx-phase0\x1b[0m\r\n" +
-            "\x1b[38;5;114m M\x1b[0m src/app_reel.cpp\r\n" +
-            "\x1b[38;5;114m M\x1b[0m src/render/desktop.cpp\r\n" +
-            "\x1b[38;5;203m??\x1b[0m docs/vnc.md\r\n");
-    });
-    at(25, [say] {
-        say("\r\n" + Prompt() + "curl -O https://files.example.invalid/amberssh.zip\r\n");
-    });
-    for (int i = 0; i < 10; ++i)
-        at(25.8 + i * 0.45, [say, i] {
-            say(Bar((i + 1) / 10.0));
-            if (i == 9)
-                say(std::string("\r\n  \x1b[38;5;114m") + kNfCheck + "\x1b[0m  saved \x1b[38;5;180m" + kNfArchive +
-                    "  amberssh.zip\x1b[0m \x1b[38;5;240m(18.4 MB)\x1b[0m\r\n");
-        });
+    at(15.0, [redraw, type] { redraw(7);  type("uname -srm"); });                             // iris
+    at(18.0, [redraw, type] { redraw(8);  type("free -h"); });                                // sonic boom
+    at(21.0, [redraw, type] { redraw(9);  type("ls -la ~"); });                               // shatter
+    at(25.0, [redraw, type] { redraw(10); type("df -h /"); });                                // odometer
+    at(28.0, [redraw, type] { redraw(6);  type("systemctl is-active sshd vncserver@:1"); });  // shear plates
+    at(32.0, [redraw, type] { redraw(5);  type("top -b -n1 | head -14"); });                  // light speed
+    at(37.0, [redraw, type] { redraw(1);  type("exit"); });                                   // burn
+    at(40.0, [shock] { shock(1, 0.50f, 0.50f); });
+    at(41.5, [shock] { shock(0, 0.50f, 0.50f); });
 
-    // ---- beats 32..55: every motion style, one a beat, the text reforming on each --
-    at(31.5, [this, &r, say] {
+    // ---- the terminal: the cut is a bang, not a fade --------------------------------
+    // Beat 43 lands on the downbeat: the picture goes white for a sixth of a
+    // beat, and what comes back is the other half of the application.
+    at(43.0, [this, &r, showTerminal, appearance] {
+        appearance(1);               // the flash
+        showTerminal();
         r.cascade = m_fxCascade;
         r.cascadeBorrowed = true;
-        m_fxCascade = false;   // the redraws land whole, in one frame each
-        say("\r\n\x1b[38;5;214m-- every motion style --\x1b[0m\r\n");
+        m_fxCascade = false;         // every redraw lands whole, in one frame
+        m_motionStyle = 19;          // the wordmark arrives under murmuration
+        if (amber::Session* t = ReelTerminal(m_sessions))
+            t->localPending +=
+                "\x1b[2J\x1b[H\x1b[38;5;214m"
+                "    _              _               ___ ___ _  _\r\n"
+                "   /_\\  _ __  _ _ | |__  ___ _ _  / __/ __| || |\r\n"
+                "  / _ \\| '  \\| '_>| '_ \\/ -_) '_| \\__ \\__ \\ __ |\r\n"
+                " /_/ \\_\\_|_|_|_.__|_.__/\\___|_|   |___/___/_||_|\r\n"
+                "\x1b[0m\r\n\x1b[1ma particle terminal\x1b[0m"
+                "   \x1b[2m(recorded; the figures are this machine's own)\x1b[0m\r\n";
     });
-    for (int i = 0; i < kMotionStyleCount; ++i)
-        at(32 + i, [style, i] { style(i); });
-    at(32 + kMotionStyleCount, [this, &r, style] {
-        style(0);
-        m_fxCascade = r.cascade;
-    });
+    at(43.16, [appearance] { appearance(0); });
 
-    // ---- beats 56..71: every interface style, one a beat -----------------------------
-    for (int i = 0; i < amber::kChromeCount; ++i)
-        at(56 + i, [skin, i] { skin(i); });
-    at(56 + amber::kChromeCount, [skin, this, &r] { skin(r.chrome); });
-
-    // ---- beats 72..75: the appearances ---------------------------------------------
-    at(72, [appearance] { appearance(1); });
-    at(73, [appearance] { appearance(2); });
-    at(74, [appearance] { appearance(3); });
-    at(75, [appearance] { appearance(0); });
-
-    // ---- beat 76: the desktop ------------------------------------------------------
-    if (!r.profileId.empty())
+    // The whole machine's /usr/bin, edge to edge, and then six fields in
+    // three beats: a montage on the half-beat before the paced demonstration
+    // starts. Every one of these is two thousand glyphs re-forming at once.
+    at(44.0, [fillScreen] { fillScreen(); });
     {
-        at(76, [this, &r] { ConnectProfileById(r.profileId); });
-        at(77, [desk] {
-            // the reel's tab, not the saved profile: no clipboard prompts on camera
-            if (amber::Session* d = desk())
-                d->profile.vncClipboard = 0;
-        });
-        at(78, [redraw] { redraw(5); });                       // light speed for the arrival
-        // shockwaves on real clicks, on the desktop's background
-        at(84, [shock] { shock(0, 0.70f, 0.62f); });
-        at(86, [shock] { shock(1, 0.55f, 0.55f); });
-        at(88, [shock] { shock(2, 0.75f, 0.45f); });
-        at(90, [shock] { shock(3, 0.60f, 0.65f); });
-        // A terminal on the far side, opened with the desktop's own
-        // Ctrl+Alt+T, then real commands run on the real machine — each one
-        // redrawn in a different style as its output lands.
-        at(92, [key] {
-            key(amber::vnc::XK_Control_L, true);
-            key(amber::vnc::XK_Alt_L, true);
-            key(amber::vnc::KeysymFromCodePoint(U't'), true);
-            key(amber::vnc::KeysymFromCodePoint(U't'), false);
-            key(amber::vnc::XK_Alt_L, false);
-            key(amber::vnc::XK_Control_L, false);
-        });
-        at(95, [redraw, type] { redraw(7); type("uname -srm"); });                    // iris
-        at(98, [redraw, type] { redraw(8); type("free -h"); });                       // sonic boom
-        at(101, [redraw, type] { redraw(9); type("ls -la ~"); });                     // shatter
-        at(105, [redraw, type] { redraw(10); type("df -h /"); });                     // odometer
-        at(108, [redraw, type] { redraw(6); type("systemctl is-active sshd vncserver@:1"); });   // shear plates
-        at(112, [redraw, type] { redraw(5); type("top -b -n1 | head -14"); });        // light speed
-        at(117, [redraw, type] { redraw(1); type("exit"); });                         // burn as it closes
-        at(120, [redraw] { redraw(2); });                                             // dissolve
+        const int kRush[] = { 5, 20, 8, 16, 2, 12 };
+        for (int i = 0; i < 6; ++i)
+            at(44.75 + i * 0.5, [styleDemo, kRush, i] { styleDemo(kRush[i]); });
     }
+    // one more flash to close the montage and open the paced act
+    at(47.7, [appearance] { appearance(1); });
+    at(47.85, [appearance] { appearance(0); });
 
-    // ---- beats 122..130: back to the terminal, and out ------------------------------
-    at(122, [showTerminal, style, say] {
-        showTerminal();
-        style(1);
-        say("\r\n\x1b[38;5;214mAmberSSH\x1b[0m  the particle terminal\r\n"
-            "\x1b[2mssh  telnet  serial  local  vnc\x1b[0m\r\n");
+    // Every one of these is the whole screen taking a different field at
+    // once. The listing is real and it never changes: what changes is how
+    // two thousand glyphs' worth of particles get back to their cells.
+    {
+        const int kShow[] = { 2, 4, 5, 6, 8, 12, 16, 19, 20 };   // the ones with the most to look at
+        for (int i = 0; i < 9; ++i)
+            at(48.5 + i * 2.5, [styleDemo, kShow, i] { styleDemo(kShow[i]); });
+    }
+    at(71.0, [styleDemo] { styleDemo(0); });
+
+    // ---- the interface styles, over the same screen -------------------------------
+    for (int i = 0; i < amber::kChromeCount; ++i)
+        at(73 + i, [skin, i] { skin(i); });
+    at(73 + amber::kChromeCount, [skin, &r] { skin(r.chrome); });
+
+    // ---- the appearances ----------------------------------------------------------
+    at(89, [appearance] { appearance(1); });
+    at(90, [appearance] { appearance(2); });
+    at(91, [appearance] { appearance(3); });
+    at(92, [appearance] { appearance(0); });
+
+    // ---- out ----------------------------------------------------------------------
+    at(94, [this, &r] {
+        if (r.cascadeBorrowed)
+        {
+            m_fxCascade = r.cascade;
+            r.cascadeBorrowed = false;
+        }
+        // The screen clears to nothing first: two thousand glyphs leave under
+        // the motion field, and the mark is the only thing left standing.
+        m_motionStyle = 1;
+        if (amber::Session* t = ReelTerminal(m_sessions))
+            t->localPending +=
+                "\x1b[2J\x1b[H\r\n\r\n\r\n\x1b[38;5;214m"
+                "    _              _               ___ ___ _  _\r\n"
+                "   /_\\  _ __  _ _ | |__  ___ _ _  / __/ __| || |\r\n"
+                "  / _ \\| '  \\| '_>| '_ \\/ -_) '_| \\__ \\__ \\ __ |\r\n"
+                " /_/ \\_\\_|_|_|_.__|_.__/\\___|_|   |___/___/_||_|\r\n"
+                "\x1b[0m\r\n"
+                "  \x1b[1mthe particle terminal\x1b[0m\r\n"
+                "  \x1b[2mssh   telnet   rlogin   raw   serial   local   vnc\x1b[0m\r\n";
+        r.screen.clear();
     });
-    at(126, [style] { style(0); });
-    at(130, [appearance] { appearance(1); });   // the end marker
-    at(130.15, [this] {
+    at(101, [appearance] { appearance(1); });   // the end marker
+    at(101.15, [this] {
         ApplyAppearance();
         m_reel->done = true;
     });
@@ -419,16 +493,29 @@ void App::ReelTick()
         r.appearance = m_appearance;
         r.wasFullscreen = m_fullscreen;
         r.started = true;
-        // the stage: a dark, empty terminal, full screen; beat zero after a
-        // hold of black so the first flash is unmistakable
+        // The stage. The terminal tab is made first and left showing, so
+        // beat zero lands on black and the flash marker is unmistakable; the
+        // desktop is connected straight away behind it, so that when the
+        // reel cuts to it a moment later it is already live. Beat zero is
+        // held back far enough for that connection to have arrived.
         StartDiagSession();
         m_sessions.back()->label = "reel";
         m_appearance = 0;
         ApplyAppearance();
         m_motionStyle = 0;
+        if (!r.profileId.empty())
+        {
+            ConnectProfileById(r.profileId);
+            if (amber::Session* t = ReelTerminal(m_sessions))
+            {
+                const int i = IndexOf(m_sessions, t);
+                if (i >= 0)
+                    SelectTab(i, -1);
+            }
+        }
         // the window is already maximized (App::Tick); the reel performs in
         // it as the user would see it, title bar and tab strip included
-        r.t0 = m_time + 2.0;
+        r.t0 = m_time + (r.profileId.empty() ? 2.0 : 5.0);   // time for the desktop to arrive
         ReelBuild();
         std::sort(r.steps.begin(), r.steps.end(), [](const Reel::Step& a, const Reel::Step& b) { return a.beat < b.beat; });
         return;
