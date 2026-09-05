@@ -489,6 +489,32 @@ protocol specifies:
 There is no feedback loop by construction: the only outbound trigger is an
 explicit user action, and both directions carry an echo guard.
 
+## The built-in demonstrations
+
+Two, both on the View menu and in the palette, and both also reachable as
+`--demo` and `--demo-vnc` (`src/app_demo.cpp`).
+
+**Demo: Scripted Terminal.** A local session that plays a written
+transcript into its own parser at the cascade rate, so it types itself the
+way real output arrives: a listing in colour, a disk report, a service
+check, a download with a progress bar, and then a walk through all
+twenty-three motion styles, naming each as it goes. It is **not a
+connection**, it says so in its own first lines, and the host it appears to
+fetch from is under `.invalid`, a name reserved so that it can never
+resolve. Nothing is contacted and no bytes leave the machine. The motion
+style is put back to what it was when the demonstration ends.
+
+**Demo: Particle Desktop.** The in-process RFB server that
+`--vnc-selfcheck` uses, serving 1024 x 640 on loopback, with a real VNC tab
+connected to it. It walks every redraw style against a real change, every
+shockwave style against a real click, runs sustained drag and video load,
+sends keys and pointer events that the server counts, and resizes the
+desktop. Everything in it is the shipping code path; only the far end is
+ours. It ends by reporting what actually crossed the connection and leaves
+the desktop connected, so it can be used afterwards. The pointer count is
+lower than the number of positions sent because motion coalesces to the
+newest position, which is the worker's own behaviour rather than a fault.
+
 ## Verification
 
 ### Automated tests

@@ -60,6 +60,9 @@ enum VncMenuId : int
     // shear plates / iris / sonic boom / shatter / odometer
     IdmVncRedrawFirst = 41840,
     IdmVncRedrawLast = IdmVncRedrawFirst + 10,
+    // The built-in demonstrations (app_demo.cpp). Above the VNC ranges.
+    IdmDemoSsh = 41860,
+    IdmDemoVnc = 41861,
 };
 
 class App
@@ -77,6 +80,11 @@ public:
               int previewSafety = 0);
     // --vnc-selfcheck (app_vnc.cpp): arms the check; it starts on the first Tick.
     void RequestVncSelfCheck() { m_vncSelfCheckRequested = true; }
+    // --demo / --demo-vnc (app_demo.cpp): the built-in demonstrations. Both
+    // are self-contained — the terminal one is a scripted local session and
+    // contacts nothing; the desktop one connects to an RFB server inside
+    // this process. Also on the View menu and in the palette.
+    void RequestDemo(bool vnc) { m_demoRequested = true; m_demoVnc = vnc; }
     // --vnc-bench: the same harness serving a 3840x2160 desktop, measuring
     // frame times over three loads; report in %TEMP%\vnc-bench.txt.
     void RequestVncBench() { m_vncSelfCheckRequested = true; m_vncBenchRequested = true; }
@@ -238,6 +246,15 @@ private:
     VncSelfCheck* m_vncCheck = nullptr;          // owned; deleted when it finishes
     void VncSelfCheckTick();                     // from Tick
     void VncSelfCheckAfterFrame();               // from RenderFrame, after EndFrame
+
+    // ---- the built-in demonstrations (app_demo.cpp) ----------------------------
+    struct Demo;
+    Demo* m_demo = nullptr;                      // owned; deleted when it ends
+    bool m_demoRequested = false, m_demoVnc = false;
+    void DemoTick();                             // from Tick: one step when due
+    void DemoTickSsh();
+    void DemoTickVnc();
+    void DemoStop();                             // ends it and puts back what it borrowed
 
     // sessions --------------------------------------------------------------
     bool HasSession() const

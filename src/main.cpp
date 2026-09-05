@@ -148,6 +148,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int nCmdSho
     // report in %TEMP%\vnc-bench.txt. Exits 0 — it measures, it does not judge.
     if (lpCmdLine && wcsstr(lpCmdLine, L"--vnc-bench"))
         app.RequestVncBench();
+    // --demo / --demo-vnc: the built-in demonstrations. The terminal one is
+    // scripted and contacts nothing; the desktop one serves itself over
+    // loopback from inside this process. Both are also on the View menu.
+    if (lpCmdLine && wcsstr(lpCmdLine, L"--demo"))
+        app.RequestDemo(wcsstr(lpCmdLine, L"--demo-vnc") != nullptr);
     g_app = &app;
     // Route messages to the app BEFORE Init so the custom-frame WM_NCCALCSIZE
     // that Init triggers (SWP_FRAMECHANGED) reaches App::WndProc.

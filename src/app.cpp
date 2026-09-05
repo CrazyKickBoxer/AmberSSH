@@ -524,7 +524,7 @@ bool App::Init(HWND hwnd, bool diagMode, const std::string& connectId,
     // jump-list launch named a profile to connect to directly.
     // --vnc-selfcheck opens its own tab on the first Tick; the modal dialog
     // here would sit in front of the loop that Tick belongs to.
-    bool started = m_vncSelfCheckRequested ? true
+    bool started = (m_vncSelfCheckRequested || m_demoRequested) ? true
                  : connectId.empty()       ? ShowConnectionDialog()
                                      : ConnectProfileById(connectId);
     if (!started)
@@ -784,6 +784,8 @@ void App::Tick()
 {
     if (m_vncSelfCheckRequested || m_vncCheck)
         VncSelfCheckTick();
+    if (m_demoRequested || m_demo)
+        DemoTick();
     // --preview-safety: open both safety boxes once, on the frame after the
     // window is up, with sample content and nothing connected. It exists so
     // the two modals can be reviewed on every interface skin without a server
@@ -6431,6 +6433,8 @@ void App::BuildMenus()
     AppendMenuW(view, MF_STRING | MF_DISABLED, IdmTruecolorInfo,
                 L"Truecolor: advertised (COLORTERM)");
     AppendMenuW(view, MF_STRING, IdmViewDiag, L"Color &Diagnostic Screen");
+    AppendMenuW(view, MF_STRING, IdmDemoSsh, L"Demo: Scripted &Terminal");
+    AppendMenuW(view, MF_STRING, IdmDemoVnc, L"Demo: Particle &Desktop");
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IdmViewFontLarger, L"Font &Larger\tCtrl+Plus");
     AppendMenuW(view, MF_STRING, IdmViewFontSmaller, L"Font S&maller\tCtrl+Minus");
@@ -7294,6 +7298,12 @@ bool App::HandleMenuCommand(int id)
         if (HasSession())
             FeedDiagnostic(Cur());
         return true;
+    case IdmDemoSsh:
+    case IdmDemoVnc:
+        // a demonstration already running is replaced, not stacked
+        DemoStop();
+        RequestDemo(id == IdmDemoVnc);
+        return true;
 
     case IdmViewFullscreen:
         ToggleFullscreen();
@@ -8010,6 +8020,8 @@ void App::BuildPaletteItems()
     add("Log Session to File", IdmLogSession);
     add("Customize Theme...", IdmThemeEdit);
     add("Diagnostic Screen", IdmViewDiag);
+    add("Demo: Scripted Terminal (nothing is connected)", IdmDemoSsh);
+    add("Demo: Particle Desktop (a server inside this process)", IdmDemoVnc);
     add("Font Size Larger", IdmViewFontLarger);
     add("Font Size Smaller", IdmViewFontSmaller);
 
