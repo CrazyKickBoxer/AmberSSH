@@ -57,6 +57,7 @@ set(AMBER_SOURCES
     src/ui/SafetyDialog.h     src/ui/SafetyDialog.cpp
     src/ssh/Vitals.h          src/ssh/Vitals.cpp
     src/ssh/SyncPlan.h        src/ssh/SyncPlan.cpp
+    src/ssh/RemoteName.h      src/ssh/RemoteName.cpp
     src/utility/Hash.h        src/utility/Hash.cpp
     src/security/HostSigil.h     src/security/HostSigil.cpp
     src/security/BlastRadius.h   src/security/BlastRadius.cpp

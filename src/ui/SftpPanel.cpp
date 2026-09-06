@@ -1,5 +1,6 @@
 #include "SftpPanel.h"
 #include "Theme.h"
+#include "../ssh/RemoteName.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -429,6 +430,17 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             int i = sel - 1;
             if (i < 0 || i >= (int)ui->entries.size() || ui->entries[i].dir)
                 return 0;
+            // The Save dialog is the user's own decision about where this
+            // goes, but the name pre-filled into it came from the server.
+            // A traversing name is not offered for confirmation at all.
+            const amber::NameCheck nc = amber::CheckRemoteName(ui->entries[i].name);
+            if (nc != amber::NameCheck::Ok)
+            {
+                SetWindowTextW(ui->status,
+                               (L"Refused \"" + Widen(ui->entries[i].name) + L"\": " +
+                                Widen(amber::NameCheckReason(nc))).c_str());
+                return 0;
+            }
             wchar_t path[MAX_PATH];
             lstrcpynW(path, Widen(ui->entries[i].name).c_str(), MAX_PATH);
             OPENFILENAMEW ofn = { sizeof(ofn) };

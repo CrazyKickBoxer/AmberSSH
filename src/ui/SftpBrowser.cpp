@@ -4,6 +4,7 @@
 
 #include "../platform/Notify.h"
 #include "../ssh/SftpClient.h"
+#include "../ssh/RemoteName.h"
 #include "../ssh/SyncPlan.h"
 #include "../utility/Hash.h"
 
@@ -1260,8 +1261,20 @@ void Browser::RunTransfer(Tab& t, std::shared_ptr<Transfer> x)
     });
 }
 
+// The download root for the walk below: the directory the user picked. Every
+// path the walk produces is checked against it, so a name that somehow got
+// past CheckRemoteName still cannot put a write outside this directory.
 void Browser::QueueDownload(Tab& t, const SftpEntry& e, const std::wstring& localDir)
 {
+    // The name the server sent decides where this is written. Refuse anything
+    // that is not one plain filename before it touches a local path.
+    const amber::NameCheck nc = amber::CheckRemoteName(e.name);
+    if (nc != amber::NameCheck::Ok)
+    {
+        SetStatusText(L"Refused \"" + Widen(e.name) + L"\": " +
+                      Widen(amber::NameCheckReason(nc)));
+        return;
+    }
     std::string remote = SftpJoin(t.rcwd, e.name);
     if (e.dir)
     {
@@ -1269,18 +1282,46 @@ void Browser::QueueDownload(Tab& t, const SftpEntry& e, const std::wstring& loca
         Worker* w = t.worker.get();
         Tab* tp = &t;
         std::wstring ldir = LocalJoin(localDir, Widen(e.name));
-        w->Post([this, tp, w, remote, ldir](SftpClient& c) {
+        std::wstring root = localDir;
+        w->Post([this, tp, w, remote, ldir, root](SftpClient& c) {
+            size_t refused = 0;
             std::function<void(const std::string&, const std::wstring&)> walk =
                 [&](const std::string& rdir, const std::wstring& ld) {
+                if (!amber::PathWithin(root, ld))   // cannot happen; cheap to prove
+                {
+                    ++refused;
+                    return;
+                }
                 CreateDirectoryW(ld.c_str(), nullptr);
                 std::vector<SftpEntry> kids; std::string err;
                 if (!c.List(rdir, kids, err)) return;
                 for (const SftpEntry& k : kids)
                 {
-                    if (k.dir) { walk(SftpJoin(rdir, k.name), LocalJoin(ld, Widen(k.name))); continue; }
+                    if (amber::CheckRemoteName(k.name) != amber::NameCheck::Ok)
+                    {
+                        ++refused;
+                        continue;
+                    }
+                    // A symlink is not descended. Following one on a recursive
+                    // download is a loop at best and a way out of the tree at
+                    // worst, and the server chooses where it points.
+                    if (k.dir)
+                    {
+                        if (!k.link)
+                            walk(SftpJoin(rdir, k.name), LocalJoin(ld, Widen(k.name)));
+                        else
+                            ++refused;
+                        continue;
+                    }
+                    const std::wstring local = LocalJoin(ld, Widen(k.name));
+                    if (!amber::PathWithin(root, local))
+                    {
+                        ++refused;
+                        continue;
+                    }
                     auto x = std::make_shared<Transfer>();
                     x->download = true; x->remote = SftpJoin(rdir, k.name);
-                    x->local = LocalJoin(ld, Widen(k.name)); x->name = Widen(k.name);
+                    x->local = local; x->name = Widen(k.name);
                     x->total = k.size; x->refreshLocal = true;
                     x->verifyRequested = tp->verifyTransfers;
                     { std::lock_guard<std::mutex> lk(tp->xmx); x->id = tp->nextXfer++; tp->xfers.push_back(x); }
@@ -1288,12 +1329,20 @@ void Browser::QueueDownload(Tab& t, const SftpEntry& e, const std::wstring& loca
                 }
             };
             walk(remote, ldir);
-            (void)w;
+            if (refused)
+                w->SetStatus(std::to_string(refused) +
+                             " entries refused: unsafe name, or a symlinked directory", false);
         });
         return;
     }
+    const std::wstring local = LocalJoin(localDir, Widen(e.name));
+    if (!amber::PathWithin(localDir, local))
+    {
+        SetStatusText(L"Refused \"" + Widen(e.name) + L"\": it resolves outside the download folder");
+        return;
+    }
     auto x = std::make_shared<Transfer>();
-    x->download = true; x->remote = remote; x->local = LocalJoin(localDir, Widen(e.name));
+    x->download = true; x->remote = remote; x->local = local;
     x->name = Widen(e.name); x->total = e.size; x->refreshLocal = true;
     x->verifyRequested = t.verifyTransfers;
     { std::lock_guard<std::mutex> lk(t.xmx); x->id = t.nextXfer++; t.xfers.push_back(x); }
@@ -1339,6 +1388,16 @@ void Browser::QueueUpload(Tab& t, const std::wstring& localPath, const std::stri
 void Browser::OpenRemote(Tab& t, const SftpEntry& e)
 {
     if (e.dir) { NavigateRemote(t, e.name); return; }
+    // This one ends in ShellExecute, so the name is checked before anything
+    // else happens: a traversing name here would not just write a file, it
+    // would choose which file gets opened.
+    const amber::NameCheck nc = amber::CheckRemoteName(e.name);
+    if (nc != amber::NameCheck::Ok)
+    {
+        SetStatusText(L"Refused \"" + Widen(e.name) + L"\": " +
+                      Widen(amber::NameCheckReason(nc)));
+        return;
+    }
     // Download into a temp folder, open with the default app, and watch for
     // saves — the edited file is re-uploaded automatically.
     wchar_t tmp[MAX_PATH];
@@ -1347,6 +1406,11 @@ void Browser::OpenRemote(Tab& t, const SftpEntry& e)
                        L"\\" + std::to_wstring(active);
     SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
     std::wstring local = LocalJoin(dir, Widen(e.name));
+    if (!amber::PathWithin(dir, local))
+    {
+        SetStatusText(L"Refused \"" + Widen(e.name) + L"\": it resolves outside the temp folder");
+        return;
+    }
     std::string remote = SftpJoin(t.rcwd, e.name);
     auto x = std::make_shared<Transfer>();
     x->download = true; x->remote = remote; x->local = local; x->name = Widen(e.name) + L" (open)";
@@ -2563,6 +2627,7 @@ void Browser::ShowPlan(Tab& t, const amber::SyncPlan& plan, bool truncated)
     // turning a comparison into a mirror needs its own confirmed action, not
     // a checkbox that was read minutes earlier in a different dialog.
     int queued = 0;
+    int refused = 0;
     for (const amber::SyncStep& s : plan.steps)
     {
         const bool up = s.action == amber::SyncAction::Upload ||
@@ -2571,15 +2636,30 @@ void Browser::ShowPlan(Tab& t, const amber::SyncPlan& plan, bool truncated)
                           s.action == amber::SyncAction::ReplaceLocal;
         if (!up && !down)
             continue;
+        // s.path is relative and came from the remote walk, so every one of
+        // its components is a name a server chose. It is about to be
+        // concatenated onto the local directory.
+        if (amber::CheckRemotePath(s.path) != amber::NameCheck::Ok)
+        {
+            ++refused;
+            continue;
+        }
         std::wstring wrel = Widen(s.path);
         for (wchar_t& ch : wrel)
             if (ch == L'/')
                 ch = L'\\';
-        QueuePair(t, down, t.lcwd + L"\\" + wrel, SftpJoin(t.rcwd, s.path),
-                  s.bytes);
+        const std::wstring local = t.lcwd + L"\\" + wrel;
+        if (!amber::PathWithin(t.lcwd, local))
+        {
+            ++refused;
+            continue;
+        }
+        QueuePair(t, down, local, SftpJoin(t.rcwd, s.path), s.bytes);
         ++queued;
     }
     std::wstring msg = L"Queued " + std::to_wstring(queued) + L" transfers.";
+    if (refused)
+        msg += L" " + std::to_wstring(refused) + L" refused for unsafe remote names.";
     if (plan.deletions)
         msg += L" No deletions were performed.";
     SetStatusText(msg);
