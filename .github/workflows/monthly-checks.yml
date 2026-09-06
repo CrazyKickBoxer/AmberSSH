@@ -1,0 +1,72 @@
+name: Monthly checks
+
+# Pinning the vcpkg baseline fixed reproducibility and created staleness.
+# This is the other half: once a month, say whether the crypto this project
+# builds against has moved upstream. It changes nothing and opens nothing —
+# moving a baseline is a decision that ends in a rebuild and a test run.
+on:
+  schedule:
+    - cron: '0 7 1 * *'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      # Full history: the check reads versions/baseline.json at two commits,
+      # and a shallow clone has neither.
+      - name: Clone vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$env:RUNNER_TEMP\vcpkg"
+          echo "VCPKG_ROOT=$env:RUNNER_TEMP\vcpkg" >> $env:GITHUB_ENV
+
+      - name: Compare pinned baseline with upstream
+        shell: pwsh
+        run: .\tools\check-deps.ps1
+
+  # A long fuzz soak under AddressSanitizer, on the same monthly cadence.
+  # The per-push job runs the fuzz targets at their default 20,000 iterations
+  # without a sanitizer, which is fast and catches the obvious. This is the
+  # one that would catch a read one byte past a buffer.
+  fuzz-asan:
+    runs-on: windows-2022
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up vcpkg at the pinned baseline
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          git clone https://github.com/microsoft/vcpkg.git "$env:RUNNER_TEMP\vcpkg"
+          git -C "$env:RUNNER_TEMP\vcpkg" checkout --detach $baseline
+          & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+          echo "VCPKG_ROOT=$env:RUNNER_TEMP\vcpkg" >> $env:GITHUB_ENV
+
+      - name: Configure with AddressSanitizer
+        run: |
+          cmake -S . -B build-asan -G "Visual Studio 17 2022" -A x64 `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DAMBER_ASAN=ON
+
+      - name: Build tests
+        run: cmake --build build-asan --config Release --target AmberTests
+
+      # Several seeds: one seed explores one path through the mutator, and a
+      # soak that always starts from the same place stops finding anything.
+      - name: Soak the fuzz targets
+        shell: pwsh
+        run: |
+          foreach ($seed in '0x1', '0xC0FFEE', '0x9ABCDEF', '0xFACEB00C') {
+            Write-Host "seed $seed"
+            $env:AMBER_FUZZ_SEED = $seed
+            $env:AMBERX_FUZZ_SEED = $seed
+            $env:AMBER_FUZZ_ITERS = '200000'
+            $env:AMBERX_FUZZ_ITERS = '200000'
+            .\build-asan\tests\Release\AmberTests.exe "[fuzz]"
+            if ($LASTEXITCODE -ne 0) { throw "fuzz soak failed at seed $seed" }
+          }

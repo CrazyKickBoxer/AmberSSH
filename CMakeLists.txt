@@ -250,5 +250,6 @@ add_dependencies(AmberSSH AmberXHost)
 # OFF by default: it compiles 228 upstream files and needs the pinned trees
 # fetched by third_party/amberx/fetch-upstream.sh. Its own CMakeLists runs
 # the provenance and licence-allowlist gates at configure time.
+option(AMBER_ASAN "Build the test target under AddressSanitizer" OFF)
 option(AMBERX_CORE "Build the audited X.Org core as AmberXCore (requires fetch-upstream.sh)" OFF)
 add_subdirectory(third_party/amberx)

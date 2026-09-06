@@ -90,6 +90,43 @@ target_compile_definitions(AmberTests PRIVATE
 )
 if(MSVC)
     target_compile_options(AmberTests PRIVATE /W3 /utf-8 /EHsc /MP)
+    # -DAMBER_ASAN=ON builds the tests under AddressSanitizer. It is off by
+    # default because it roughly triples the run time and needs the ASAN
+    # runtime DLL beside the executable, and on for the job that matters: the
+    # fuzz targets, where "it did not crash" is a much weaker statement
+    # without it. Incremental linking is incompatible with /fsanitize.
+    if(AMBER_ASAN)
+        target_compile_options(AmberTests PRIVATE /fsanitize=address /Zi)
+        target_link_options(AmberTests PRIVATE /INCREMENTAL:NO /DEBUG)
+        # Catch2 comes from vcpkg built without ASAN, so its objects carry
+        # annotate_string/annotate_vector = 0 and ours would carry 1; the
+        # linker refuses the mixture. Turning the container annotations off
+        # on our side matches it.
+        #
+        # What that costs: overflow *within* a std::string or std::vector's
+        # spare capacity is no longer caught. What it keeps, which is the
+        # reason this exists: heap overflow and underflow, use-after-free,
+        # double free, stack-buffer overflow, and global overflow — every one
+        # of which applies to the raw buffers the parsers actually use.
+        target_compile_definitions(AmberTests PRIVATE
+            _DISABLE_STRING_ANNOTATION=1 _DISABLE_VECTOR_ANNOTATION=1)
+        message(STATUS "AmberTests: AddressSanitizer enabled (container annotations off)")
+        # The ASAN runtime is a DLL and it is not on PATH. Without it beside
+        # the executable the tests do not start at all, with an error that
+        # says nothing about sanitizers.
+        find_file(AMBER_ASAN_DLL clang_rt.asan_dynamic-x86_64.dll
+                  HINTS "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
+                        "${CMAKE_CXX_COMPILER}/../"
+                  NO_CACHE)
+        if(AMBER_ASAN_DLL)
+            add_custom_command(TARGET AmberTests POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${AMBER_ASAN_DLL}" "$<TARGET_FILE_DIR:AmberTests>")
+        else()
+            message(WARNING "ASAN runtime DLL not found; copy clang_rt.asan_dynamic-x86_64.dll "
+                            "next to AmberTests.exe by hand or it will not start.")
+        endif()
+    endif()
 endif()
 
 find_package(ZLIB REQUIRED)   # the VNC ZRLE decoder, and the tests that deflate fixtures for it
