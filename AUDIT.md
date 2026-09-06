@@ -779,9 +779,23 @@ questions about a UI I have not driven.
   folder was demonstrated on this machine, before or after.
 - **Every fix's behaviour in the running application.** All of them were
   verified by compiling, by unit tests on the pure parts, and by reading the
-  call sites. None was verified by connecting to a server and watching it
-  work. The OSC 52 consent dialog, the paste status message, the recorder
-  masking and the two new `known_hosts` messages have not been seen on screen.
+  call sites. The OSC 52 consent dialog, the paste status message, the
+  recorder masking and the two new `known_hosts` messages have not been seen
+  on screen.
+
+  One was attempted and did not conclude. A `.cast` recording carrying an
+  OSC 52 write was built and played through `--play`, which binds the full
+  sink set and so exercises the production path with no server needed. The
+  application started and reported its window (`AmberSSH - playback`), but
+  every screen capture came back showing only the wallpaper, with no taskbar
+  and no window — a display or desktop-region problem on this machine rather
+  than anything about the application. The recording and the harness are in
+  the session scratchpad and the method is sound; it needs a machine whose
+  screen can be captured.
+
+  The one runtime verification that did conclude is the crash handler, which
+  was confirmed by building a binary with a deliberate null write, running
+  it, and reading the report it produced.
 - **The dim-factor change's appearance.** The contrast maths is tested; how
   faint text now looks on Violet Haze, Blood Cell and Brass Gaslight has not
   been seen.
