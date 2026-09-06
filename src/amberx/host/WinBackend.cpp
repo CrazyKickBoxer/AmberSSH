@@ -1988,6 +1988,10 @@ uint32_t amberwin_clipboard_pull(char* buf, uint32_t cap)
     }
     const uint32_t n = static_cast<uint32_t>(g.clipPending.size());
     memcpy(buf, g.clipPending.data(), n);
+    // buf[cap] when n == cap: the header requires cap + 1 bytes for exactly
+    // this, and the only caller allocates that. Noted here as well because a
+    // terminator written past the stated bound is the kind of thing that
+    // reads as correct right up until someone reuses the function.
     buf[n] = '\0';
     g.clipPending.clear();
     return n;

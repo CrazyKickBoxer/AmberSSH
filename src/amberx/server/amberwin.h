@@ -254,6 +254,12 @@ void amberwin_report_counts(uint32_t clients, uint32_t windows,
  * pull: copies the pending text into `buf`, at most `cap` bytes, and
  *       returns how many were copied; 0 when there is nothing pending or it
  *       does not fit. The pending text is consumed either way.
+ *
+ *       `buf` MUST have room for cap + 1 bytes. The copy is bounded by cap
+ *       but a NUL terminator is written after it, so a buffer of exactly cap
+ *       bytes is overflowed by one when the text is exactly cap long. The
+ *       only caller allocates cap + 1 already; this says so, because nothing
+ *       did and the next caller would have had no way to know.
  * push: hands an X client's selection text to the Windows side, which
  *       applies the session's clipboard policy to it. */
 uint32_t amberwin_clipboard_pull(char *buf, uint32_t cap);

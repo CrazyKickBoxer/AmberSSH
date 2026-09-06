@@ -538,9 +538,9 @@ unrelated jobs.
   domain-name form (`src/ssh/transports.cpp:222-232`), which is correct
   behaviour, not a lost error.
 
-**Unverified:** I did not audit D3D12 descriptor or resource lifetimes, GPU
-synchronisation, or the AmberX subsystem (`src/amberx/`, 3,257 lines). Those
-were out of the time this pass had and are not covered by any claim here.
+**Unverified:** I did not audit D3D12 descriptor or resource lifetimes or GPU
+synchronisation, and they are not covered by any claim here. AmberX was also
+outside this pass; it was read later, in Pass 4.
 
 ---
 
@@ -662,6 +662,87 @@ invisible because the build directory's cache carried `AMBERX_CORE=ON`; a
 clean reconfigure surfaced it immediately. Guarded, and both configurations
 now build.
 
+---
+
+# PASS 4 — AMBERX
+
+Added after the fact. The first three passes never opened `src/amberx/`,
+3,257 lines, and calling that "not audited" while marking everything else
+resolved would have been the most misleading line in this document.
+
+A security-focused read of the paths a hostile peer reaches, not a full
+review. What it did not cover is listed at the end of it.
+
+## X1. The named pipe is hardened, and verified rather than assumed
+
+`src/amberx/control/Pipe.cpp:118-160`. The controller creates the pipe with a
+protected DACL naming only the current user's SID (`D:P(A;;GA;;;<sid>)`), a
+Low mandatory label with no-write-up so the low-integrity host can still open
+it, `FILE_FLAG_FIRST_PIPE_INSTANCE` so a squatter cannot own the name first,
+`PIPE_REJECT_REMOTE_CLIENTS`, and exactly one instance. The name carries 16
+bytes from `BCryptGenRandom`. The client opens it `SECURITY_ANONYMOUS`, so a
+server that did squat cannot impersonate the caller. `ERROR_ACCESS_DENIED`
+with the first-instance flag is reported as the squatting case rather than as
+a generic failure, and the DACL is read back after creation.
+
+Nothing to fix. Recorded because the reasoning is worth not losing.
+
+## X2. The handshake binds, compares in constant time, and closes
+
+`src/amberx/control/Handshake.cpp:88-118`. Mutual proof of a shared secret.
+The echoed nonce binds a reply to the Hello that asked for it, so a reply
+captured from another session fails. Both comparisons go through
+`ConstantTimeEqual`. Any frame arriving when the state is not `AwaitAck`
+fails the handshake, which is what stops a second HelloAck from rewriting the
+session's nonces after completion. The secret is zeroed and cleared on
+success.
+
+Nothing to fix.
+
+## X3. The window icon is bounded before it is multiplied
+
+`src/amberx/server/ddx_wm.c:218-247`. `_NET_WM_ICON` is a property an X client
+controls. The parser checks format and type, rejects a zero or oversized
+dimension **before** computing `w * h` so the multiply cannot overflow, then
+checks that `w * h` fits in what remains of the property before trusting it.
+
+The pointer it hands to `amberwin_frame_set_icon` is borrowed rather than
+copied, which crossing a thread boundary would normally make a
+use-after-free. It is not: `Marshal` (`src/amberx/host/WinBackend.cpp:1287`)
+uses `SendMessageW`, which blocks until the UI thread has run the op, so the
+property outlives the call. Correct, and resting on a detail that would be
+easy to break by making the marshal asynchronous.
+
+## X4. `amberwin_clipboard_pull` writes one byte past its stated bound — LOW — FIXED
+
+`src/amberx/host/WinBackend.cpp:1981-1994` copies at most `cap` bytes and then
+writes a NUL at `buf[n]`. When the pending text is exactly `cap` long that is
+`buf[cap]`, one past the end of a buffer of the size the header asks for.
+
+Not currently exploitable. The only caller
+(`src/amberx/server/ddx_clipboard.c:405`) allocates
+`clipboard_max_bytes + 1` and passes `clipboard_max_bytes` as `cap`, so the
+terminator lands inside the allocation. The defect is the contract rather than
+the arithmetic: a second caller reading the header and allocating `cap` would
+be overflowed by one, and nothing said otherwise.
+
+> **Fixed** by stating the requirement in the header and at the write site,
+> not by changing the behaviour. Tightening the guard to `>= cap` would
+> silently drop a clipboard transfer of exactly the maximum size, which is a
+> worse bug than the one being fixed.
+
+## What Pass 4 did not cover
+
+- `src/amberx/PreviewClient.cpp`, 2,047 lines. It is the `--preview-amberx`
+  harness rather than a runtime path, so it ranked below the code a session
+  actually runs. Not read.
+- `src/amberx/host/WinBackend.cpp` beyond its four `memcpy` sites, its
+  marshalling and its clipboard. 2,151 lines: window management, keyboard
+  translation and the RANDR paths were not reviewed.
+- The X.Org core under `third_party/`. Out of scope entirely.
+- The gate from the project's own notes still stands, and reading code cannot
+  move it: no real X application has ever run against this server.
+
 # What is left
 
 Nothing below is a defect. What remains from Pass 2 and Pass 3 is
@@ -707,5 +788,6 @@ questions about a UI I have not driven.
 - Keyboard-only navigation, screen reader behaviour, first-run step count, and
   whether particle rendering hurts readability on long output.
 - D3D12 resource and descriptor lifetimes, GPU synchronisation.
-- The AmberX subsystem, `src/amberx/`, 3,257 lines. Still not audited; the
-  build fix above was a compile error, not a review.
+- AmberX beyond Pass 4: `PreviewClient.cpp` in full, and `WinBackend.cpp`
+  outside its buffer, marshalling and clipboard paths. Pass 4 was a
+  security-focused read of what a hostile peer reaches, not a full review.
