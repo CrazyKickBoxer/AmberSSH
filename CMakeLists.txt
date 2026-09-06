@@ -59,6 +59,7 @@ set(AMBER_SOURCES
     src/ssh/SyncPlan.h        src/ssh/SyncPlan.cpp
     src/ssh/RemoteName.h      src/ssh/RemoteName.cpp
     src/ssh/HostKeyDecision.h src/ssh/HostKeyDecision.cpp
+    src/ssh/DownloadPlan.h    src/ssh/DownloadPlan.cpp
     src/utility/Hash.h        src/utility/Hash.cpp
     src/security/HostSigil.h     src/security/HostSigil.cpp
     src/security/BlastRadius.h   src/security/BlastRadius.cpp

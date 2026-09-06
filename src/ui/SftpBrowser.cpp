@@ -4,6 +4,7 @@
 
 #include "../platform/Notify.h"
 #include "../ssh/SftpClient.h"
+#include "../ssh/DownloadPlan.h"
 #include "../ssh/RemoteName.h"
 #include "../ssh/SyncPlan.h"
 #include "../utility/Hash.h"
@@ -1261,92 +1262,94 @@ void Browser::RunTransfer(Tab& t, std::shared_ptr<Transfer> x)
     });
 }
 
-// The download root for the walk below: the directory the user picked. Every
-// path the walk produces is checked against it, so a name that somehow got
-// past CheckRemoteName still cannot put a write outside this directory.
+// Every local path this download will write is decided before any of them is
+// opened, by PlanDownload (src/ssh/DownloadPlan.h). The gate used to live
+// inline in the walk below, which made it correct and unreachable: nothing
+// could ask "given this listing, where would you write?" without a server.
+// Now the planner answers that, the tests drive the planner, and this is the
+// part that moves bytes.
 void Browser::QueueDownload(Tab& t, const SftpEntry& e, const std::wstring& localDir)
 {
-    // The name the server sent decides where this is written. Refuse anything
-    // that is not one plain filename before it touches a local path.
-    const amber::NameCheck nc = amber::CheckRemoteName(e.name);
-    if (nc != amber::NameCheck::Ok)
+    amber::RemoteEntry top;
+    top.name = e.name;
+    top.dir = e.dir;
+    top.link = e.link;
+    top.size = e.size;
+
+    if (!e.dir)
     {
-        SetStatusText(L"Refused \"" + Widen(e.name) + L"\": " +
-                      Widen(amber::NameCheckReason(nc)));
+        // A single file needs no listing, so it is planned and queued here
+        // rather than costing a round trip to the worker.
+        const amber::DownloadPlan p =
+            amber::PlanDownload(t.rcwd, localDir, top, [](const std::string&,
+                                                          std::vector<amber::RemoteEntry>&) { return false; });
+        if (!p.refused.empty())
+        {
+            SetStatusText(L"Refused \"" + Widen(e.name) + L"\": " +
+                          Widen(p.refused[0].reason));
+            return;
+        }
+        if (p.files.empty())
+            return;
+        auto x = std::make_shared<Transfer>();
+        x->download = true; x->remote = p.files[0].remote; x->local = p.files[0].local;
+        x->name = Widen(e.name); x->total = p.files[0].size; x->refreshLocal = true;
+        x->verifyRequested = t.verifyTransfers;
+        { std::lock_guard<std::mutex> lk(t.xmx); x->id = t.nextXfer++; t.xfers.push_back(x); }
+        RunTransfer(t, x);
         return;
     }
-    std::string remote = SftpJoin(t.rcwd, e.name);
-    if (e.dir)
-    {
-        // Enumerate on the worker, then queue every file (creating local dirs).
-        Worker* w = t.worker.get();
-        Tab* tp = &t;
-        std::wstring ldir = LocalJoin(localDir, Widen(e.name));
-        std::wstring root = localDir;
-        w->Post([this, tp, w, remote, ldir, root](SftpClient& c) {
-            size_t refused = 0;
-            std::function<void(const std::string&, const std::wstring&)> walk =
-                [&](const std::string& rdir, const std::wstring& ld) {
-                if (!amber::PathWithin(root, ld))   // cannot happen; cheap to prove
-                {
-                    ++refused;
-                    return;
-                }
-                CreateDirectoryW(ld.c_str(), nullptr);
-                std::vector<SftpEntry> kids; std::string err;
-                if (!c.List(rdir, kids, err)) return;
+
+    // A directory: the listing has to happen on the worker, so the plan is
+    // built there and the queue filled from it.
+    Worker* w = t.worker.get();
+    Tab* tp = &t;
+    const std::string rcwd = t.rcwd;
+    const std::wstring root = localDir;
+    w->Post([this, tp, w, rcwd, root, top](SftpClient& c) {
+        const amber::DownloadPlan plan = amber::PlanDownload(
+            rcwd, root, top,
+            [&c](const std::string& dir, std::vector<amber::RemoteEntry>& out) {
+                std::vector<SftpEntry> kids;
+                std::string err;
+                if (!c.List(dir, kids, err))
+                    return false;
+                out.reserve(kids.size());
                 for (const SftpEntry& k : kids)
-                {
-                    if (amber::CheckRemoteName(k.name) != amber::NameCheck::Ok)
-                    {
-                        ++refused;
-                        continue;
-                    }
-                    // A symlink is not descended. Following one on a recursive
-                    // download is a loop at best and a way out of the tree at
-                    // worst, and the server chooses where it points.
-                    if (k.dir)
-                    {
-                        if (!k.link)
-                            walk(SftpJoin(rdir, k.name), LocalJoin(ld, Widen(k.name)));
-                        else
-                            ++refused;
-                        continue;
-                    }
-                    const std::wstring local = LocalJoin(ld, Widen(k.name));
-                    if (!amber::PathWithin(root, local))
-                    {
-                        ++refused;
-                        continue;
-                    }
-                    auto x = std::make_shared<Transfer>();
-                    x->download = true; x->remote = SftpJoin(rdir, k.name);
-                    x->local = local; x->name = Widen(k.name);
-                    x->total = k.size; x->refreshLocal = true;
-                    x->verifyRequested = tp->verifyTransfers;
-                    { std::lock_guard<std::mutex> lk(tp->xmx); x->id = tp->nextXfer++; tp->xfers.push_back(x); }
-                    RunTransfer(*tp, x);
-                }
-            };
-            walk(remote, ldir);
-            if (refused)
-                w->SetStatus(std::to_string(refused) +
-                             " entries refused: unsafe name, or a symlinked directory", false);
-        });
-        return;
-    }
-    const std::wstring local = LocalJoin(localDir, Widen(e.name));
-    if (!amber::PathWithin(localDir, local))
-    {
-        SetStatusText(L"Refused \"" + Widen(e.name) + L"\": it resolves outside the download folder");
-        return;
-    }
-    auto x = std::make_shared<Transfer>();
-    x->download = true; x->remote = remote; x->local = local;
-    x->name = Widen(e.name); x->total = e.size; x->refreshLocal = true;
-    x->verifyRequested = t.verifyTransfers;
-    { std::lock_guard<std::mutex> lk(t.xmx); x->id = t.nextXfer++; t.xfers.push_back(x); }
-    RunTransfer(t, x);
+                    out.push_back({ k.name, k.dir, k.link, k.size });
+                return true;
+            });
+
+        // Parents before children, so every file's directory exists by the
+        // time its transfer starts.
+        for (const std::wstring& d : plan.dirs)
+            CreateDirectoryW(d.c_str(), nullptr);
+
+        for (const amber::PlannedFile& f : plan.files)
+        {
+            auto x = std::make_shared<Transfer>();
+            x->download = true;
+            x->remote = f.remote;
+            x->local = f.local;
+            const size_t slash = f.local.find_last_of(L"\\/");
+            x->name = slash == std::wstring::npos ? f.local : f.local.substr(slash + 1);
+            x->total = f.size;
+            x->refreshLocal = true;
+            x->verifyRequested = tp->verifyTransfers;
+            { std::lock_guard<std::mutex> lk(tp->xmx); x->id = tp->nextXfer++; tp->xfers.push_back(x); }
+            RunTransfer(*tp, x);
+        }
+
+        if (!plan.refused.empty() || plan.truncated)
+        {
+            std::string msg = std::to_string(plan.refused.size()) + " entries refused";
+            if (!plan.refused.empty())
+                msg += " (" + plan.refused.front().reason + ")";
+            if (plan.truncated)
+                msg += "; the tree was larger than this download will follow";
+            w->SetStatus(msg, false);
+        }
+    });
 }
 
 void Browser::QueueUpload(Tab& t, const std::wstring& localPath, const std::string& remoteDir)

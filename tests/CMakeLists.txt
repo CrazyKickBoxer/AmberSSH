@@ -24,6 +24,7 @@ add_executable(AmberTests
     RemoteNameTests.cpp
     RemoteInputFuzzTests.cpp
     HostKeyDecisionTests.cpp
+    DownloadPlanTests.cpp
     CredentialStoreTests.cpp
     ContrastTests.cpp
     HostSigilTests.cpp
@@ -60,6 +61,7 @@ add_executable(AmberTests
     ${CMAKE_SOURCE_DIR}/src/ssh/SyncPlan.cpp
     ${CMAKE_SOURCE_DIR}/src/ssh/RemoteName.cpp
     ${CMAKE_SOURCE_DIR}/src/ssh/HostKeyDecision.cpp
+    ${CMAKE_SOURCE_DIR}/src/ssh/DownloadPlan.cpp
     ${CMAKE_SOURCE_DIR}/src/platform/Paths.cpp
     ${CMAKE_SOURCE_DIR}/src/platform/CredentialStore.cpp
     ${CMAKE_SOURCE_DIR}/src/platform/ConPty.cpp
