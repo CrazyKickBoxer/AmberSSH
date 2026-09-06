@@ -566,6 +566,9 @@ private:
     std::vector<std::wstring> m_fontDirs;
     bool m_symbolsFetchStarted = false;   // one nerd-symbols fetch per run
     int m_themeId = 0;                 // index into kThemes; last = Custom
+    // How far faint text (SGR 2) is dimmed. Recomputed per theme in
+    // ApplyTheme so it never drops below WCAG AA (src/ui/Contrast.h).
+    float m_dimFactor = 0.55f;
     // Per-host theme rules from settings ("hostThemes": "prod*=5,*.dev=0"):
     // a connecting session whose host matches a pattern gets that theme while
     // it is the active tab — production boxes glow different on sight.

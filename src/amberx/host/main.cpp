@@ -207,6 +207,10 @@ LONG WINAPI CrashLine(EXCEPTION_POINTERS* ep)
         // Most of the ways this server can die end in somebody walking off the
         // end of a window's pixel buffer, and the address alone never says
         // whose or by how much.
+        // DescribeAddress lives in WinBackend.cpp, which is only in this
+        // target when the X core is built. Without it there are no frames to
+        // attribute an address to, and the call does not link.
+#ifdef AMBERX_HAVE_SERVER
         if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2)
         {
             char where[256];
@@ -214,6 +218,7 @@ LONG WINAPI CrashLine(EXCEPTION_POINTERS* ep)
                                                where, static_cast<int>(sizeof where)) > 0)
                 fprintf(stderr, "AmberXHost: address is %s\n", where);
         }
+#endif
 
         // The stack, as module-relative offsets. An address alone says where
         // the process died; the chain says which path got it there, and with

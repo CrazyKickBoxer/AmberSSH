@@ -2,10 +2,12 @@
 
 Three passes over the tree at commit `ecc2488`, branch `amberx-phase0`.
 
-**All nine security findings have since been fixed**, at the user's direction.
-Each carries a fixed note above the description of the code as it stood, so
-the reasoning that found it survives the change. Pass 2 and Pass 3 are
-untouched; see **What is left** at the end.
+**Every security finding, and every Pass 2 and Pass 3 item that was a defect
+rather than an architectural preference, has since been fixed** at the user's
+direction. Each carries a fixed note above the description of the code as it
+stood, so the reasoning that found it survives the change. One finding turned
+out to be wrong and is struck through in place. See **Status** and **What is
+left** at the end.
 
 Every claim cites the code it came from. Where I could not establish something
 by reading, it says **unverified** instead of guessing, and the fixes did not
@@ -518,15 +520,23 @@ unrelated jobs.
 
 ## Q5. Error handling
 
-- `libssh2_session_method_pref` returns are discarded in five places (S5).
-- `libssh2_knownhost_readfile` and `libssh2_knownhost_writefile` returns are
-  discarded (`src/ssh/session.cpp:1169`, `:1326`). A `known_hosts` that fails
-  to write means the next connection re-prompts rather than failing open, so
-  the direction is safe, but the user is never told the file could not be
-  written.
-- `src/ssh/session.cpp:793` and `src/ssh/transports.cpp:167` return a bare
-  failure with no error text on `getaddrinfo` failure. The main SSH connect
-  path does produce a message (`transports.cpp:588`).
+- `libssh2_session_method_pref` returns discarded in five places. **Fixed** as
+  part of S5.
+- `libssh2_knownhost_readfile` and `writefile` returns discarded. **Fixed.** A
+  read that fails to parse now says so, because otherwise a corrupt file turns
+  every known server into an unknown one and the user is asked to re-accept
+  keys they already trusted with no explanation. A write that fails now says
+  the key was accepted for this session only, because otherwise the same
+  prompt returns on every connection and a user who clicks through it every
+  time has stopped reading it.
+- ~~`src/ssh/session.cpp:793` and `src/ssh/transports.cpp:167` return a bare
+  failure on `getaddrinfo`.~~ **Withdrawn — this was wrong.** Both were checked
+  again before fixing and neither is a swallowed error. `ConnectX11Display`
+  returns `INVALID_SOCKET` and its caller prints a message that names the
+  setting responsible (`src/ssh/session.cpp:1789-1800`). `ResolveIPv4`
+  returning false is a deliberate fallback: the SOCKS request switches to the
+  domain-name form (`src/ssh/transports.cpp:222-232`), which is correct
+  behaviour, not a lost error.
 
 **Unverified:** I did not audit D3D12 descriptor or resource lifetimes, GPU
 synchronisation, or the AmberX subsystem (`src/amberx/`, 3,257 lines). Those
@@ -579,9 +589,24 @@ running UI. I can say there are 29 pages; I cannot say what a user finds.
 ## U4. Accessibility — mostly unverified
 
 - **Motion:** covered, U2.
-- **Contrast:** the amber-on-dark palettes are in `src/term/palette.h` and
-  `src/ui/Theme.h`. I did not compute contrast ratios against WCAG
-  thresholds. **Unverified.**
+- **Contrast: measured, and one real defect found and fixed.** Normal text
+  clears WCAG AA on all seven shipped themes, from 5.10:1 on Violet Haze to
+  16.70:1 on Paper White, against the terminal's black ground. Faint text
+  (SGR 2) was drawn at a flat 0.55 of that brightness, which put three themes
+  between 3:1 and 4.5:1 — legible as large text, not as terminal output.
+  <br><br>
+  | theme | normal | faint, before |
+  |---|---|---|
+  | Violet Haze | 5.10 | **3.25** |
+  | Blood Cell | 5.25 | **3.34** |
+  | Brass Gaslight | 5.50 | **3.47** |
+  <br>
+  **Fixed.** `src/ui/Contrast.h` computes the smallest brightness the theme's
+  own foreground can take and still clear AA, and the dim factor is floored to
+  it per theme in `ApplyTheme`. The four themes that already passed keep 0.55
+  exactly and look identical; only the three that were failing move.
+  `tests/ContrastTests.cpp` asserts every shipped theme clears AA at both
+  levels, so a future theme edit fails the build rather than shipping.
 - **Keyboard-only navigation:** the dialogs are Win32 with owner-drawn
   controls (`src/ui/ConnectionDialog.cpp:118` mentions `BS_OWNERDRAW`).
   Owner-drawn controls commonly lose focus rectangles and keyboard
@@ -601,8 +626,8 @@ require running the application. I have not.
 
 # Status
 
-Every security finding in this document is fixed. Nine of them, S1 through S9,
-across four commits. Nothing in Pass 2 or Pass 3 has been touched.
+Every **security** finding is fixed: S1 through S9. So is every Pass 2 and
+Pass 3 item that was a **defect** rather than an architectural preference.
 
 | Finding | Severity | State |
 |---|---|---|
@@ -615,62 +640,72 @@ across four commits. Nothing in Pass 2 or Pass 3 has been touched.
 | S7 `SecureString::Assign` stale tail | MEDIUM | fixed |
 | S8 unscrubbed revealed secrets | MEDIUM | fixed |
 | S9 filenames that lie about their extension | MEDIUM | fixed |
+| Q5 discarded `known_hosts` returns | LOW | fixed |
+| Q5 bare `getaddrinfo` failures | — | withdrawn, was wrong |
+| Q2 no test for the host key decision | HIGH | fixed |
+| Q2 no test for `CredentialStore` | MEDIUM | fixed |
+| U4 contrast unmeasured | — | measured; faint text fixed on three themes |
 
-Test count went from 81,756 assertions in 459 cases to 81,867 in 472.
+Tests went from 81,756 assertions in 459 cases to 81,982 in 492.
 
-Two of these were deliberately narrowed, and the narrowing is the interesting
-part. S5 fixed the silent fallback but did not add an algorithm floor, because
-a floor that an older server cannot meet breaks connections invisibly. S6 pins
-by baseline but not by per-package version, because the stricter form does not
-resolve against this vcpkg checkout. Both are argued where they sit.
+Two things surfaced while doing this that were not in the audit.
 
-# What is left, in the order I would take it
+**One finding was wrong and is withdrawn.** The bare `getaddrinfo` failures in
+Q5 are not swallowed errors; checking before fixing showed one is reported by
+its caller and the other is a deliberate SOCKS fallback. It is struck through
+in place rather than deleted.
 
-Nothing below is a security finding. This is the remaining Pass 2 and Pass 3
-work, ranked by what it costs to keep ignoring.
+**A latent build break was exposed.** `src/amberx/host/main.cpp` called
+`DescribeAddress`, which only exists when the X core is compiled in, without
+guarding it. The default configuration therefore did not build. It had been
+invisible because the build directory's cache carried `AMBERX_CORE=ON`; a
+clean reconfigure surfaced it immediately. Guarded, and both configurations
+now build.
 
-1. **Q2 — no tests on `SftpClient`, `ssh/session`, `CredentialStore`,
-   `SftpBrowser` or `app.cpp`.** Now the highest item on the list. Six of the
-   nine security findings lived in files with no test file, and the fixes are
-   held in place by tests that only cover the new pure modules. The host-key
-   decision in particular is the single control standing between the user and
-   a man-in-the-middle, and nothing tests it.
-2. **Q1 — `app.cpp` at 14,583 lines.** Four of the nine findings were in this
-   file, and two of them (S2, S3) existed because policy decisions had no layer
-   to live in and ended up as lambdas. Expensive, and the reason the list keeps
-   refilling.
-3. **U4 — accessibility, unverified.** The terminal grid is GPU particles with
-   no text layer and there is no UI Automation provider anywhere in `src/`, so
-   a screen reader finds nothing to read. That is established from absence of
-   code, not from testing. Contrast ratios and keyboard-only navigation through
-   the owner-drawn dialogs are both unmeasured.
-4. **Q3 — layering.** `ConnectionDialog` decides secret lifetime; `SftpBrowser`
-   holds transfer engine, path construction, worker threading and list views in
-   one file. The cloak is documented as a draw-time decision, which is why S2
-   was possible by construction: any sink reading the byte stream bypasses it.
-5. **Q5 — discarded error returns.** `libssh2_knownhost_readfile` and
-   `writefile` returns are still ignored, so a `known_hosts` that cannot be
-   written re-prompts forever and never says why. Fail-safe direction, silent.
-6. **U3 — 29 settings pages.** Which are undiscoverable is a runtime question I
-   cannot answer by reading.
+# What is left
 
-# Never audited at all
+Nothing below is a defect. What remains from Pass 2 and Pass 3 is
+architecture, and one thing that cannot be settled without running the app.
 
-- The AmberX subsystem, `src/amberx/`, 3,257 lines. Not opened.
+**Q1 — `app.cpp` at 14,583 lines, and Q3 — layering. Not done, deliberately.**
+These are not bugs and I have not treated them as such. Splitting a file this
+size is a sustained refactor across a module with no test coverage of its own,
+and doing it at speed is how a security fix becomes a regression. The evidence
+that it matters is real: four of the nine security findings lived in this file,
+and two of them (S2, S3) existed *because* a policy decision had nowhere to
+live and ended up as a lambda at a call site. That argues for doing it
+properly, with the tests written first, not for doing it quickly.
+
+**Q2 — remaining test gaps.** The host key decision and the credential store
+now have tests, and both were written by lifting the logic into a pure module
+so it could be reached at all. Still untested: `SftpClient` and `SftpBrowser`
+beyond the path gate, and `app.cpp` in general. The same lift-then-test
+approach works, one decision at a time.
+
+**U4 — screen readers.** The terminal grid is GPU particles with no text layer,
+and there is no UI Automation provider anywhere in `src/`. A screen reader
+finds nothing to read in the terminal area. That is established from absence of
+code. Building one is a feature, not a fix.
+
+**U3 — 29 settings pages, and keyboard-only navigation.** Both are runtime
+questions about a UI I have not driven.
+
+# Still unverified
+
+- **Exploitability of S1 end to end.** No hostile SFTP server was ever stood
+  up. The absence of sanitising was established by reading and the fix is
+  tested against the payloads by unit test, but no write outside a download
+  folder was demonstrated on this machine, before or after.
+- **Every fix's behaviour in the running application.** All of them were
+  verified by compiling, by unit tests on the pure parts, and by reading the
+  call sites. None was verified by connecting to a server and watching it
+  work. The OSC 52 consent dialog, the paste status message, the recorder
+  masking and the two new `known_hosts` messages have not been seen on screen.
+- **The dim-factor change's appearance.** The contrast maths is tested; how
+  faint text now looks on Violet Haze, Blood Cell and Brass Gaslight has not
+  been seen.
+- Keyboard-only navigation, screen reader behaviour, first-run step count, and
+  whether particle rendering hurts readability on long output.
 - D3D12 resource and descriptor lifetimes, GPU synchronisation.
-- Runtime thread interleaving. The SPSC ring reads correct by inspection
-  (`src/ssh/ring.h`, acquire/release pairs) but no sanitiser was run.
-
-# Still unverified after the fixes
-
-- **Exploitability of S1 end to end.** I never stood up a hostile SFTP server.
-  The absence of sanitising was established by reading, and the fix is tested
-  against the payloads by unit test, but no write outside a download folder was
-  ever demonstrated on this machine, before or after.
-- **Every fix's behaviour in the running application.** All nine were verified
-  by compiling, by unit tests on the pure parts, and by reading the call sites.
-  None was verified by connecting to a server and watching it work. In
-  particular the OSC 52 consent dialog, the paste status message and the
-  recorder masking have not been seen on screen.
-- Contrast ratios, keyboard-only navigation, screen reader behaviour, first-run
-  step count, and whether particle rendering hurts readability on long output.
+- The AmberX subsystem, `src/amberx/`, 3,257 lines. Still not audited; the
+  build fix above was a compile error, not a review.

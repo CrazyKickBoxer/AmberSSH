@@ -22,6 +22,7 @@
 #include "platform/ConPty.h"
 #include "ui/ConnectionDialog.h"
 #include "ui/SftpPanel.h"
+#include "ui/Contrast.h"
 #include "ui/Theme.h"
 #include "platform/CredentialStore.h"
 #include "platform/Paths.h"
@@ -2505,7 +2506,7 @@ void App::BuildVisualsFromGrid()
                 if ((cell.attr & AttrBold) && S.profile.boldStyle != amber::BoldStyle::Font)
                     b = std::min(1.30f, b * 1.30f + 0.05f);   // Colours: bold = brighter
                 if (cell.attr & AttrDim)
-                    b *= 0.55f;
+                    b *= m_dimFactor;
                 if (cell.attr & AttrBlink)
                     b *= static_cast<float>(blinkPhase);
                 b = std::max(b, 0.05f);
@@ -2577,7 +2578,7 @@ void App::BuildVisualsFromGrid()
                 else
                 {
                     float boost = ((cell.attr & AttrBold) && S.profile.boldStyle != amber::BoldStyle::Font) ? 1.18f : 1.0f;
-                    float dimf = (cell.attr & AttrDim) ? 0.55f : 1.0f;
+                    float dimf = (cell.attr & AttrDim) ? m_dimFactor : 1.0f;
                     for (float& v : cg.rgb)
                         v *= boost * dimf;
                     if (light)
@@ -5629,6 +5630,14 @@ void App::ApplyTheme()
         }
         gThemeSrgb[i] = stops[i];   // dialogs derive their palette from these
     }
+
+    // Faint text (SGR 2) is the foreground at a fraction of its brightness.
+    // 0.55 reads well on most of these ramps and lands under WCAG AA on
+    // Violet Haze, Blood Cell and Brass Gaslight, whose foregrounds start
+    // dimmer. The floor is per theme, so the ones that already pass keep the
+    // look they had and only the failing ones move. Measured against the
+    // terminal's own ground rather than the chrome's.
+    m_dimFactor = amber::DimFactorFor(stops[2], 0x000000);
 
     // Menu chrome straight from the sRGB stops.
     auto cr = [](uint32_t c) {

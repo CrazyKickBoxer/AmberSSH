@@ -1,5 +1,7 @@
 #include "session.h"
 
+#include "HostKeyDecision.h"
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -1181,8 +1183,19 @@ void SshSession::ThreadMain(SshConfig cfg)
     const std::string khName = cfg.logicalHost.empty() ? cfg.host : cfg.logicalHost;
     kh = libssh2_knownhost_init(session);
     if (kh)
-        libssh2_knownhost_readfile(kh, khPath.c_str(),
-                                   LIBSSH2_KNOWNHOST_FILE_OPENSSH);
+    {
+        // A negative return is a parse failure, not an absent file: libssh2
+        // reports a missing known_hosts as zero hosts read. Saying nothing
+        // here is how a corrupt file turns every known server into an
+        // unknown one, and the user is asked to re-accept keys they already
+        // trusted without ever being told why.
+        const int read = libssh2_knownhost_readfile(kh, khPath.c_str(),
+                                                    LIBSSH2_KNOWNHOST_FILE_OPENSSH);
+        if (read < 0 && read != LIBSSH2_ERROR_FILE)
+            PostEvent(SshEventType::Status,
+                      "known_hosts could not be read (" + khPath +
+                          ") — every host will look unknown until it is fixed");
+    }
 
     if (!cfg.hostKeyPref.empty())
     {
@@ -1264,40 +1277,30 @@ void SshSession::ThreadMain(SshConfig cfg)
             LIBSSH2_KNOWNHOST_TYPE_PLAIN | LIBSSH2_KNOWNHOST_KEYENC_RAW,
             &found);
 
-    // Manually configured host keys (SSH > Host keys): when any are listed
-    // they are the whole trust store for this session - a listed
-    // fingerprint is accepted without a prompt, anything else is refused.
-    if (!cfg.manualHostKeys.empty())
+    // The decision itself lives in HostKeyDecision.h, where it can be tested
+    // without a server. Everything from here down is carrying it out and
+    // wording the messages; the branching is not repeated.
+    amber::KnownHostResult lookup = amber::KnownHostResult::Failure;
+    switch (checkResult)
     {
-        std::string fpBare = fingerprint.rfind("SHA256:", 0) == 0 ? fingerprint.substr(7)
-                                                                    : fingerprint;
-        bool listed = false;
-        for (std::string k : cfg.manualHostKeys)
-        {
-            size_t a = k.find_first_not_of(" \t\r\n");
-            size_t b = k.find_last_not_of(" \t\r\n");
-            if (a == std::string::npos)
-                continue;
-            k = k.substr(a, b - a + 1);
-            if (k.rfind("SHA256:", 0) == 0)
-                k = k.substr(7);
-            if (_stricmp(k.c_str(), fpBare.c_str()) == 0)
-            {
-                listed = true;
-                break;
-            }
-        }
-        if (!listed)
-        {
-            fail("host key is not in the configured list. Fingerprint: " +
-                 std::string(typeName) + " " + fingerprint);
-            return;
-        }
-        checkResult = LIBSSH2_KNOWNHOST_CHECK_MATCH;
-        PostEvent(SshEventType::Status, "host key matched the configured fingerprint");
+    case LIBSSH2_KNOWNHOST_CHECK_MATCH:    lookup = amber::KnownHostResult::Match;    break;
+    case LIBSSH2_KNOWNHOST_CHECK_MISMATCH: lookup = amber::KnownHostResult::Mismatch; break;
+    case LIBSSH2_KNOWNHOST_CHECK_NOTFOUND: lookup = amber::KnownHostResult::NotFound; break;
+    default:                               lookup = amber::KnownHostResult::Failure;  break;
     }
+    const amber::HostKeyVerdict verdict =
+        amber::DecideHostKey(lookup, fingerprint, cfg.manualHostKeys);
 
-    if (checkResult == LIBSSH2_KNOWNHOST_CHECK_MISMATCH)
+    if (verdict.action == amber::HostKeyAction::RefuseNotListed)
+    {
+        fail("host key is not in the configured list. Fingerprint: " +
+             std::string(typeName) + " " + fingerprint);
+        return;
+    }
+    if (verdict.action == amber::HostKeyAction::Accept && !cfg.manualHostKeys.empty())
+        PostEvent(SshEventType::Status, "host key matched the configured fingerprint");
+
+    if (verdict.action == amber::HostKeyAction::RefuseMismatch)
     {
         // Name the stored key's type as well as the one that arrived. A
         // mismatch between two keys of the SAME type is the alarming case;
@@ -1314,7 +1317,7 @@ void SshSession::ThreadMain(SshConfig cfg)
         return;
     }
 
-    if (checkResult != LIBSSH2_KNOWNHOST_CHECK_MATCH)
+    if (verdict.action == amber::HostKeyAction::Prompt)
     {
         // Unknown host: surface the fingerprint and wait for explicit accept.
         PostEvent(SshEventType::HostKeyPrompt,
@@ -1329,17 +1332,27 @@ void SshSession::ThreadMain(SshConfig cfg)
         }
         lk.unlock();
 
-        if (kh && khKeyBit != LIBSSH2_KNOWNHOST_KEY_UNKNOWN)
+        if (verdict.persist && kh && khKeyBit != LIBSSH2_KNOWNHOST_KEY_UNKNOWN)
         {
-            libssh2_knownhost_addc(
+            const int added = libssh2_knownhost_addc(
                 kh, khName.c_str(), nullptr, hostKey, keyLen,
                 "added by AmberSSH", 18,
                 LIBSSH2_KNOWNHOST_TYPE_PLAIN | LIBSSH2_KNOWNHOST_KEYENC_RAW |
                     khKeyBit,
                 nullptr);
             CreateDirectoryW((std::wstring(profileW) + L"\\.ssh").c_str(), nullptr);
-            libssh2_knownhost_writefile(kh, khPath.c_str(),
-                                        LIBSSH2_KNOWNHOST_FILE_OPENSSH);
+            const int wrote = (added == 0)
+                                  ? libssh2_knownhost_writefile(kh, khPath.c_str(),
+                                                                LIBSSH2_KNOWNHOST_FILE_OPENSSH)
+                                  : added;
+            // Accepting a key that is then not written means the same prompt
+            // on the next connection, and a user who clicks through it every
+            // time stops reading it — which is the whole value of the prompt.
+            // Say so rather than let it look like it worked.
+            if (wrote != 0)
+                PostEvent(SshEventType::Status,
+                          "this key was accepted for this session only: "
+                          "known_hosts could not be written (" + khPath + ")");
         }
     }
 
