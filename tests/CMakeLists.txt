@@ -22,6 +22,7 @@ add_executable(AmberTests
     PaneLayoutTests.cpp
     SyncPlanTests.cpp
     RemoteNameTests.cpp
+    RemoteInputFuzzTests.cpp
     HostKeyDecisionTests.cpp
     CredentialStoreTests.cpp
     ContrastTests.cpp

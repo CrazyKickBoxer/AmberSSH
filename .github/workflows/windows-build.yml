@@ -10,6 +10,20 @@ jobs:
   build:
     runs-on: windows-2022
 
+    # Both configurations, because both exist. The transport-only build is the
+    # default and was broken for two days without anyone noticing, because the
+    # only machine building it had a cache pinning the other one.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: transport-only
+            amberx_core: 'OFF'
+          - name: with-x-core
+            amberx_core: 'ON'
+
+    name: build (${{ matrix.name }})
+
     env:
       VCPKG_DEFAULT_TRIPLET: x64-windows
       VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
@@ -24,16 +38,26 @@ jobs:
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
-      - name: Set up vcpkg
+      # vcpkg is checked out AT THE BASELINE vcpkg.json pins, not at HEAD.
+      # A shallow clone of HEAD cannot resolve a baseline commit it does not
+      # contain, and cloning HEAD anyway would make the pin decorative: the
+      # whole point is that two machines resolve the same versions.
+      - name: Set up vcpkg at the pinned baseline
+        shell: pwsh
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:RUNNER_TEMP\vcpkg"
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          if (-not $baseline) { throw 'vcpkg.json has no builtin-baseline; refusing to build against an unpinned registry.' }
+          Write-Host "vcpkg baseline: $baseline"
+          git clone https://github.com/microsoft/vcpkg.git "$env:RUNNER_TEMP\vcpkg"
+          git -C "$env:RUNNER_TEMP\vcpkg" checkout --detach $baseline
           & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
           echo "VCPKG_ROOT=$env:RUNNER_TEMP\vcpkg" >> $env:GITHUB_ENV
 
       - name: Configure
         run: |
           cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
-            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            "-DAMBERX_CORE=${{ matrix.amberx_core }}"
 
       # HLSL is compiled by DXC as part of this step; a shader error fails the build.
       - name: Build Release
@@ -42,12 +66,28 @@ jobs:
       - name: Run unit tests
         run: .\build\tests\Release\AmberTests.exe --reporter console
 
+      # Which crypto actually went in. Printed rather than asserted, so the
+      # log answers "what was this built against" without a second guess.
+      - name: Record dependency versions
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse -Filter vcpkg.spdx.json build/vcpkg_installed -EA SilentlyContinue |
+            ForEach-Object {
+              $j = Get-Content $_.FullName -Raw | ConvertFrom-Json
+              "{0}  {1}" -f $j.packages[0].name, $j.packages[0].versionInfo
+            } | Sort-Object
+
+      # Packaging runs on one leg only: it is the same output either way and
+      # the runner has no signing certificate, so it will report UNSIGNED.
+      # That is correct and it should stay visible rather than be hidden.
       - name: Package
+        if: matrix.amberx_core == 'OFF'
         run: .\package.ps1 -SkipBuild
         shell: pwsh
 
       - name: Upload portable package
-        if: success()
+        if: success() && matrix.amberx_core == 'OFF'
         uses: actions/upload-artifact@v4
         with:
           name: AmberSSH-windows-x64
@@ -59,7 +99,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs
+          name: build-logs-${{ matrix.name }}
           path: |
             build/**/*.log
             build/CMakeFiles/CMakeConfigureLog.yaml
