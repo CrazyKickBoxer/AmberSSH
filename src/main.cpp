@@ -1,6 +1,7 @@
 // main.cpp — WinMain, window class, dark title bar, message loop.
 #include "common.h"
 #include "app.h"
+#include "platform/CrashReport.h"
 #include "platform/JumpList.h"
 #include "amberx/AmberXController.h"
 #include "resource.h"
@@ -95,6 +96,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR lpCmdLine, int nCmdSho
     // from, and what does it not do" without starting anything.
     if (lpCmdLine && wcsstr(lpCmdLine, L"--amberx-report"))
         return amber::amberx::WriteReport();
+    amber::InstallCrashHandler();
     amber::InitAppUserModelId();
 
     WNDCLASSEXW wc = {};

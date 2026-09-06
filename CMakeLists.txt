@@ -12,6 +12,7 @@ endif()
 set(AMBER_CORE_SOURCES
     src/utility/SecureString.h   src/utility/SecureString.cpp
     src/platform/Paths.h         src/platform/Paths.cpp
+    src/platform/CrashReport.h   src/platform/CrashReport.cpp
     src/platform/CredentialStore.h src/platform/CredentialStore.cpp
     src/profiles/ConnectionProfile.h
     src/profiles/ProfileStore.h   src/profiles/ProfileStore.cpp
@@ -137,6 +138,7 @@ target_link_libraries(AmberSSH PRIVATE
     d3d12 dxgi dxguid dwrite dwmapi
     nlohmann_json::nlohmann_json
     ws2_32 crypt32 user32 gdi32 shell32 ole32 advapi32 bcrypt comctl32 shlwapi
+    dbghelp psapi
 )
 
 # ------------------------------------------------------- build-time DXC shaders
