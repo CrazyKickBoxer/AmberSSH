@@ -1,10 +1,15 @@
 # AmberSSH audit
 
 Three passes over the tree at commit `ecc2488`, branch `amberx-phase0`.
-Only S1 has been fixed since, at the user's direction; everything else stands
-as written. Every claim below cites the code it came from; where I
-could not establish something by reading, it says **unverified** instead of
-guessing.
+
+**All nine security findings have since been fixed**, at the user's direction.
+Each carries a fixed note above the description of the code as it stood, so
+the reasoning that found it survives the change. Pass 2 and Pass 3 are
+untouched; see **What is left** at the end.
+
+Every claim cites the code it came from. Where I could not establish something
+by reading, it says **unverified** instead of guessing, and the fixes did not
+change that: what is still unverified is listed at the end too.
 
 ## Corrections to the brief
 
@@ -29,7 +34,7 @@ subject. It is not "clean"; it is absent.
 
 ## S1. SFTP download writes wherever the remote server says — CRITICAL — FIXED
 
-> **Fixed** in the commit that follows this audit. `src/ssh/RemoteName.{h,cpp}`
+> **Fixed.** `src/ssh/RemoteName.{h,cpp}`
 > is a pure gate: `CheckRemoteName` refuses any server-supplied component that
 > is not one plain filename, `CheckRemotePath` applies that per component to a
 > relative path, and `PathWithin` is a lexical containment check applied to
@@ -94,7 +99,20 @@ not depend on the user doing anything unusual.
 demonstrated the write end to end. The absence of any sanitising step is
 established by reading; exploitability is inferred from it.
 
-## S2. The asciinema recorder is the one output sink that does not mask — HIGH
+## S2. The asciinema recorder is the one output sink that does not mask — HIGH — FIXED
+
+> **Fixed.** `RecordCast` runs the stream through the cloak now, line-buffered
+> like the log so a secret split across two socket reads cannot pass in halves.
+> It uses a new `MaskTerminalLine` (`src/security/PrivacyCloak.cpp`) that masks
+> only the printable runs and copies escape sequences out untouched, because a
+> detector matching across a colour change would corrupt the replay. The header
+> states the resulting weakness plainly: a secret split by an escape sequence is
+> two shorter runs and may not match a detector that would have matched the
+> whole. Masking a recording is weaker than masking a log, and neither is a
+> guarantee.
+
+The description below is of the code as it stood.
+
 
 `src/app.cpp:1310-1325`, one function, two sinks:
 
@@ -123,7 +141,16 @@ file the user cats, and any credential a server prints.
 believes it covers recording. A `.cast` file is made specifically to be
 shared. The gap is silent.
 
-## S3. A remote server can silently replace the local clipboard — HIGH
+## S3. A remote server can silently replace the local clipboard — HIGH — FIXED
+
+> **Fixed.** `allowRemoteClipboard` on the profile, on the same numeric scale
+> `vncClipboard` uses and reusing the same `ShowClipboardDialog` consent box.
+> It defaults to asking rather than allowing, because a silent replacement is
+> pasted into whatever the user opens next. Three options on the Features page
+> beside the title setting, since only remote-to-local exists over OSC 52.
+
+The description below is of the code as it stood.
+
 
 `src/term/vtparser.cpp:504-514`:
 
@@ -156,7 +183,17 @@ The lower-impact capability has a switch; the higher-impact one does not.
 a password field, a different terminal. This is the standard clipboard-hijack
 primitive and most terminals gate it.
 
-## S4. Pasted text is wrapped in bracketed-paste markers without sanitising it — HIGH
+## S4. Pasted text is wrapped in bracketed-paste markers without sanitising it — HIGH — FIXED
+
+> **Fixed.** `PasteWithoutEscapes` strips every ESC from the payload before it
+> is wrapped, in both bracketed and unbracketed mode, and the status line says
+> how many were removed. `PasteNeedsConfirm` also fires on an escape now, so a
+> payload with no line break and no length still gets previewed. ESC is dropped
+> rather than escaped: no shell reads a literal ESC as text, so passing one
+> through is never what the person pasting wanted.
+
+The description below is of the code as it stood.
+
 
 `src/app.cpp:5459-5462`:
 
@@ -192,7 +229,20 @@ which is a separate control that is simply absent.
 command from a web page is the canonical case), and the guard that exists is
 the thing the user is trusting.
 
-## S5. No hardened algorithm baseline, and a rejected preference fails open — MEDIUM
+## S5. No hardened algorithm baseline, and a rejected preference fails open — MEDIUM — FIXED
+
+> **Fixed.** Every `libssh2_session_method_pref` return is checked, and a list
+> that cannot be honoured fails the connection with the list quoted back rather
+> than silently reverting to the default order. MAC preference was added
+> (`macPref`, on the SSH page) because it did not exist at all.
+>
+> **Not done, deliberately:** no hard-coded algorithm floor. A floor that this
+> libssh2 build or an older server cannot meet breaks connections with no way
+> for the user to see why, and libssh2 1.11.1's defaults were not the reason
+> this was rated MEDIUM. The silent fallback was, and that is gone.
+
+The description below is of the code as it stood.
+
 
 `src/ssh/session.cpp:1139-1147`:
 
@@ -228,7 +278,16 @@ exploiting a weak negotiated algorithm needs an active network position. It is
 MEDIUM because the failure mode is silent and the control that looks like it
 protects you does not.
 
-## S6. Dependencies are unpinned — MEDIUM
+## S6. Dependencies are unpinned — MEDIUM — FIXED
+
+> **Fixed.** `builtin-baseline` pins the registry commit, which resolves to the
+> versions named below. Per-package `version>=` floors were tried first and
+> removed: they put vcpkg into a resolution mode this registry checkout cannot
+> serve, and configure fails outright. Verified by reconfiguring from scratch
+> and confirming the installed versions did not move.
+
+The description below is of the code as it stood.
+
 
 `vcpkg.json` in full:
 
@@ -247,7 +306,12 @@ differently with nothing recording the change.
 do not know which crypto library a build contains" is a real defect, but it is
 a process failure rather than a live vulnerability.
 
-## S7. `SecureString::Assign` leaves the tail of the previous secret — MEDIUM
+## S7. `SecureString::Assign` leaves the tail of the previous secret — MEDIUM — FIXED
+
+> **Fixed.** The buffer-reuse path zeroes the whole block before copying.
+
+The description below is of the code as it stood.
+
 
 `src/utility/SecureString.cpp:63-72`:
 
@@ -276,7 +340,16 @@ recoverable from process memory, and this is the one path that widens it.
 bad day. But this is the mitigation's own failure, in the mitigation's own
 code.
 
-## S8. Four call sites materialise secrets and never scrub them — MEDIUM
+## S8. Four call sites materialise secrets and never scrub them — MEDIUM — FIXED
+
+> **Fixed.** All four, and the pattern that produced them: `RevealedSecret` and
+> `RevealedWide` (`src/utility/SecureString.h`) are scoped types that zero on
+> destruction, so the correct thing is now the shorter thing to write. They
+> bound our copy only. If a callee keeps one of its own, no wrapper here can
+> reach it.
+
+The description below is of the code as it stood.
+
 
 `Reveal()` is documented at `src/utility/SecureString.h:35-37` as handing
 responsibility to the caller. Some callers take it:
@@ -294,6 +367,30 @@ Four do not:
 **Why MEDIUM:** same reasoning as S7. Noted separately because the fix is
 different — S7 is one function, this is a discipline that is applied on some
 paths and not others, which is how it will regress again.
+
+## S9. Server-supplied filenames could lie about their extension — MEDIUM — FIXED
+
+Found while fixing S1, not during the audit passes. Unicode has invisible
+directional overrides; U+202E reverses everything after it. A file actually
+named `evil<U+202E>gnp.exe` displays in the browser's file list as
+`evilexe.png`, because `gnp.exe` reversed reads as `exe.png`. Windows decides
+what a file is from the bytes, which still end in `.exe`. The open path
+downloads and hands the file to `ShellExecute`, so the user double-clicks what
+they read as an image and runs an executable.
+
+S1's checks did not catch it. `CheckRemoteName` rejected control characters
+with `c < 0x20 || c == 0x7F`, and U+202E encodes in UTF-8 as `E2 80 AE`, all
+above `0x7F`. By every other rule it was an ordinary filename.
+
+> **Fixed.** `NameCheck::BidiOverride` refuses U+202A through U+202E and U+2066
+> through U+2069. Those are explicit overrides; Arabic and Hebrew carry their
+> own inherent direction and do not need them, so refusing them costs nothing
+> legitimate. Tested both ways, including that Arabic and Hebrew filenames and
+> the neighbouring code points stay legal.
+
+**Why MEDIUM, not HIGH:** it deceives rather than executes on its own. The user
+still has to open the file. It is above LOW because the open path ends in
+`ShellExecute` and the deception is total — there is no visual cue at all.
 
 ## Checked and found sound
 
@@ -502,45 +599,78 @@ require running the application. I have not.
 
 ---
 
-# Top 10, ordered by severity × likelihood of getting burned
+# Status
 
-1. **S1 — SFTP path traversal. FIXED.** Was the only CRITICAL on the list: a
-   file write outside the chosen directory, driven by a filename, in a feature
-   whose normal use triggers it. Gated at all seven sites by
-   `src/ssh/RemoteName.{h,cpp}`, and symlinked directories are no longer
-   descended.
-2. **S3 — unconditional OSC 52 clipboard writes.** Cheapest fix on the list:
-   the gate already exists for titles, one profile field away.
-3. **S4 — unsanitised paste payload.** Strip `\x1b[201~` (and bare ESC) from
-   `norm` before wrapping. The guard cannot be the only control because it
-   does not fire on the payload that matters.
-4. **S2 — unmasked `.cast` recordings.** One argument to add at
-   `src/app.cpp:1325`, and a test that enumerates persistent sinks so the next
-   one cannot forget.
-5. **Q2 — no tests on `SftpClient`, `session`, `CredentialStore`.** Ranked
-   this high because it is why 1 through 4 are all still here, and it is what
-   stops number 11 from arriving.
-6. **S5 — silent algorithm-preference fallback.** Check the return, tell the
-   user, and set a floor rather than inheriting libssh2's order.
-7. **S8 — unscrubbed `Reveal()` sites.** Four known; the pattern will recur
-   until `Reveal()` returns something self-scrubbing.
-8. **S7 — `SecureString::Assign` tail.** Three lines. Fix with 5 and 7.
-9. **S6 — unpinned dependencies.** Add `builtin-baseline`. No user-visible
-   effect until the day it has a large one.
-10. **Q1 — `app.cpp` at 14,583 lines.** Last because it is the most expensive
-    and the least urgent, and first because everything above it is a symptom.
+Every security finding in this document is fixed. Nine of them, S1 through S9,
+across four commits. Nothing in Pass 2 or Pass 3 has been touched.
 
-# What could not be verified without running the app
+| Finding | Severity | State |
+|---|---|---|
+| S1 SFTP path traversal | CRITICAL | fixed |
+| S2 unmasked recordings | HIGH | fixed |
+| S3 ungated OSC 52 clipboard writes | HIGH | fixed |
+| S4 unsanitised paste payload | HIGH | fixed |
+| S5 silent algorithm-preference fallback | MEDIUM | fixed |
+| S6 unpinned dependencies | MEDIUM | fixed |
+| S7 `SecureString::Assign` stale tail | MEDIUM | fixed |
+| S8 unscrubbed revealed secrets | MEDIUM | fixed |
+| S9 filenames that lie about their extension | MEDIUM | fixed |
 
-- Exploitability of S1 end to end (needs a hostile SFTP server; the absence of
-  sanitising is established by reading, the write is not demonstrated).
-- Contrast ratios on any skin.
-- Keyboard-only navigation through the owner-drawn dialogs.
-- Screen reader behaviour — the *cause* is established (no UI Automation
-  provider exists in `src/`), the effect is not measured.
-- First-run step count.
-- Whether particle rendering degrades readability on long output.
+Test count went from 81,756 assertions in 459 cases to 81,867 in 472.
+
+Two of these were deliberately narrowed, and the narrowing is the interesting
+part. S5 fixed the silent fallback but did not add an algorithm floor, because
+a floor that an older server cannot meet breaks connections invisibly. S6 pins
+by baseline but not by per-package version, because the stricter form does not
+resolve against this vcpkg checkout. Both are argued where they sit.
+
+# What is left, in the order I would take it
+
+Nothing below is a security finding. This is the remaining Pass 2 and Pass 3
+work, ranked by what it costs to keep ignoring.
+
+1. **Q2 — no tests on `SftpClient`, `ssh/session`, `CredentialStore`,
+   `SftpBrowser` or `app.cpp`.** Now the highest item on the list. Six of the
+   nine security findings lived in files with no test file, and the fixes are
+   held in place by tests that only cover the new pure modules. The host-key
+   decision in particular is the single control standing between the user and
+   a man-in-the-middle, and nothing tests it.
+2. **Q1 — `app.cpp` at 14,583 lines.** Four of the nine findings were in this
+   file, and two of them (S2, S3) existed because policy decisions had no layer
+   to live in and ended up as lambdas. Expensive, and the reason the list keeps
+   refilling.
+3. **U4 — accessibility, unverified.** The terminal grid is GPU particles with
+   no text layer and there is no UI Automation provider anywhere in `src/`, so
+   a screen reader finds nothing to read. That is established from absence of
+   code, not from testing. Contrast ratios and keyboard-only navigation through
+   the owner-drawn dialogs are both unmeasured.
+4. **Q3 — layering.** `ConnectionDialog` decides secret lifetime; `SftpBrowser`
+   holds transfer engine, path construction, worker threading and list views in
+   one file. The cloak is documented as a draw-time decision, which is why S2
+   was possible by construction: any sink reading the byte stream bypasses it.
+5. **Q5 — discarded error returns.** `libssh2_knownhost_readfile` and
+   `writefile` returns are still ignored, so a `known_hosts` that cannot be
+   written re-prompts forever and never says why. Fail-safe direction, silent.
+6. **U3 — 29 settings pages.** Which are undiscoverable is a runtime question I
+   cannot answer by reading.
+
+# Never audited at all
+
+- The AmberX subsystem, `src/amberx/`, 3,257 lines. Not opened.
 - D3D12 resource and descriptor lifetimes, GPU synchronisation.
-- The AmberX subsystem (`src/amberx/`, 3,257 lines) — not audited at all.
-- Runtime thread interleaving. The SPSC ring is correct by inspection
-  (`src/ssh/ring.h`, acquire/release pairs) but I ran no sanitiser.
+- Runtime thread interleaving. The SPSC ring reads correct by inspection
+  (`src/ssh/ring.h`, acquire/release pairs) but no sanitiser was run.
+
+# Still unverified after the fixes
+
+- **Exploitability of S1 end to end.** I never stood up a hostile SFTP server.
+  The absence of sanitising was established by reading, and the fix is tested
+  against the payloads by unit test, but no write outside a download folder was
+  ever demonstrated on this machine, before or after.
+- **Every fix's behaviour in the running application.** All nine were verified
+  by compiling, by unit tests on the pure parts, and by reading the call sites.
+  None was verified by connecting to a server and watching it work. In
+  particular the OSC 52 consent dialog, the paste status message and the
+  recorder masking have not been seen on screen.
+- Contrast ratios, keyboard-only navigation, screen reader behaviour, first-run
+  step count, and whether particle rendering hurts readability on long output.

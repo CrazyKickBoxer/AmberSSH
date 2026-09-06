@@ -30,6 +30,13 @@ enum class NameCheck
     Reserved,         // CON, PRN, AUX, NUL, COM1..9, LPT1..9
     TrailingDotSpace, // Windows strips these silently, so two names collide
     TooLong,
+    // A Unicode directional override or isolate. These are invisible and
+    // reverse the text after them, so "evil‮gnp.exe" is displayed as
+    // "evilexe.png": the extension the reader sees is not the extension the
+    // system acts on. Arabic and Hebrew names do not need them — those
+    // scripts carry their own direction — so refusing the explicit overrides
+    // costs nothing legitimate.
+    BidiOverride,
 };
 
 // One path component, exactly as the server sent it (UTF-8). Nothing is

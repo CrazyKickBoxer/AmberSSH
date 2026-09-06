@@ -137,6 +137,21 @@ NameCheck CheckRemoteName(const std::string& name)
             return NameCheck::Wildcard;
     }
 
+    // U+202A..U+202E (LRE, RLE, PDF, LRO, RLO) and U+2066..U+2069 (LRI, RLI,
+    // FSI, PDI). In UTF-8 these are E2 80 AA..AE and E2 81 A6..A9.
+    for (size_t i = 0; i + 2 < name.size(); ++i)
+    {
+        const unsigned char a = static_cast<unsigned char>(name[i]);
+        const unsigned char b = static_cast<unsigned char>(name[i + 1]);
+        const unsigned char c = static_cast<unsigned char>(name[i + 2]);
+        if (a != 0xE2)
+            continue;
+        if (b == 0x80 && c >= 0xAA && c <= 0xAE)
+            return NameCheck::BidiOverride;
+        if (b == 0x81 && c >= 0xA6 && c <= 0xA9)
+            return NameCheck::BidiOverride;
+    }
+
     if (name.back() == '.' || name.back() == ' ')
         return NameCheck::TrailingDotSpace;
 
@@ -195,6 +210,7 @@ const char* NameCheckReason(NameCheck c)
     case NameCheck::Reserved:         return "the name is a reserved device name";
     case NameCheck::TrailingDotSpace: return "the name ends in a dot or a space";
     case NameCheck::TooLong:          return "the name is longer than 255 bytes";
+    case NameCheck::BidiOverride:     return "the name contains a text-direction override";
     }
     return "refused";
 }

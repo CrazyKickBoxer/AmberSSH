@@ -90,6 +90,7 @@ TEST_CASE("every refusal has a reason string", "[remotename]")
         NameCheck::Ok, NameCheck::Empty, NameCheck::Dot, NameCheck::Separator,
         NameCheck::DriveOrStream, NameCheck::Wildcard, NameCheck::Control,
         NameCheck::Reserved, NameCheck::TrailingDotSpace, NameCheck::TooLong,
+        NameCheck::BidiOverride,
     };
     for (NameCheck c : all)
     {
@@ -128,4 +129,24 @@ TEST_CASE("PathWithin handles UNC roots", "[remotename]")
     REQUIRE(PathWithin(L"\\\\srv\\share\\dl", L"\\\\srv\\share\\dl\\a.txt"));
     REQUIRE_FALSE(PathWithin(L"\\\\srv\\share\\dl", L"\\\\srv\\share\\other\\a.txt"));
     REQUIRE_FALSE(PathWithin(L"\\\\srv\\share\\dl", L"\\\\srv\\share\\dl\\..\\..\\evil"));
+}
+
+TEST_CASE("text-direction overrides are refused", "[remotename]")
+{
+    // "evil" + U+202E + "gnp.exe" displays as "evilexe.png": the extension the
+    // reader sees is not the extension Windows acts on.
+    REQUIRE(CheckRemoteName("evil\xE2\x80\xAE" "gnp.exe") == NameCheck::BidiOverride);
+    REQUIRE(CheckRemoteName("\xE2\x80\xAA" "a") == NameCheck::BidiOverride);   // U+202A LRE
+    REQUIRE(CheckRemoteName("a\xE2\x80\xAD" "b") == NameCheck::BidiOverride);  // U+202D LRO
+    REQUIRE(CheckRemoteName("a\xE2\x81\xA6" "b") == NameCheck::BidiOverride);  // U+2066 LRI
+    REQUIRE(CheckRemoteName("a\xE2\x81\xA9" "b") == NameCheck::BidiOverride);  // U+2069 PDI
+    REQUIRE(amber::CheckRemotePath("ok/evil\xE2\x80\xAE" "gnp.exe") == NameCheck::BidiOverride);
+
+    // Neighbouring code points are ordinary characters and stay legal, as do
+    // Arabic and Hebrew names, which carry their own direction and need no
+    // override to render correctly.
+    REQUIRE(CheckRemoteName("a\xE2\x80\xA9" "b") == NameCheck::Ok);   // U+2029
+    REQUIRE(CheckRemoteName("a\xE2\x81\xAA" "b") == NameCheck::Ok);   // U+206A
+    REQUIRE(CheckRemoteName("\xD9\x85\xD9\x84\xD9\x81.txt") == NameCheck::Ok);
+    REQUIRE(CheckRemoteName("\xD7\xA7\xD7\x95\xD7\xA8\xD7\x90.txt") == NameCheck::Ok);
 }

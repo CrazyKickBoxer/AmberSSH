@@ -16,6 +16,13 @@ void ScrubString(std::string& value) noexcept
     value.clear();
 }
 
+void ScrubWString(std::wstring& value) noexcept
+{
+    if (!value.empty())
+        SecureZeroMemory(value.data(), value.size() * sizeof(wchar_t));
+    value.clear();
+}
+
 SecureString::SecureString(std::string_view text) { Assign(text); }
 
 SecureString::SecureString(const SecureString& other) { Assign(other.View()); }
@@ -68,6 +75,14 @@ void SecureString::Assign(std::string_view text)
     }
     if (m_capacity < text.size() + 1)
         Allocate(text.size());
+    else
+    {
+        // Reusing the buffer: zero it first. Copying a shorter secret over a
+        // longer one otherwise leaves the tail of the old one in the block,
+        // hidden from Size() but not from a memory dump, which is exactly the
+        // window this class exists to close.
+        SecureZeroMemory(m_data, m_capacity);
+    }
     std::copy(text.begin(), text.end(), m_data);
     m_data[text.size()] = '\0';
     m_size = text.size();

@@ -70,7 +70,7 @@ struct SshConfig
     std::string remoteCommand;     // exec instead of a shell
     bool noShell = false;          // tunnels only, no channel
     bool compression = false;
-    std::string cipherPref, kexPref, hostKeyPref;   // comma lists
+    std::string cipherPref, kexPref, hostKeyPref, macPref;   // comma lists
     std::vector<std::string> manualHostKeys;        // fingerprints to accept
     bool agentForward = false;
     bool x11Forward = false;

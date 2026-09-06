@@ -1136,15 +1136,30 @@ void SshSession::ThreadMain(SshConfig cfg)
     libssh2_session_set_timeout(session, std::max(5, cfg.connectTimeoutSeconds) * 1000);
     if (cfg.compression)
         libssh2_session_flag(session, LIBSSH2_FLAG_COMPRESS, 1);
-    // Algorithm preferences (comma lists, PuTTY-style). A list libssh2
-    // cannot honour leaves its default order in place.
-    if (!cfg.cipherPref.empty())
+    // Algorithm preferences (comma lists, PuTTY-style).
+    //
+    // A rejected list used to leave libssh2's default order in place and say
+    // nothing, so a user who narrowed the ciphers for a reason got the wide
+    // default instead and no way to know. A security setting that silently
+    // reverts to a weaker one is worse than not offering it, so a preference
+    // that cannot be honoured now fails the connection.
+    auto setPref = [&](int method, const std::string& list, const char* what) -> bool
     {
-        libssh2_session_method_pref(session, LIBSSH2_METHOD_CRYPT_CS, cfg.cipherPref.c_str());
-        libssh2_session_method_pref(session, LIBSSH2_METHOD_CRYPT_SC, cfg.cipherPref.c_str());
-    }
-    if (!cfg.kexPref.empty())
-        libssh2_session_method_pref(session, LIBSSH2_METHOD_KEX, cfg.kexPref.c_str());
+        if (list.empty())
+            return true;
+        if (libssh2_session_method_pref(session, method, list.c_str()) == 0)
+            return true;
+        fail(std::string("the ") + what + " list \"" + list +
+             "\" was refused: no algorithm in it is supported by this build. "
+             "Clear it to use the defaults, or name algorithms that exist.");
+        return false;
+    };
+    if (!setPref(LIBSSH2_METHOD_CRYPT_CS, cfg.cipherPref, "cipher") ||
+        !setPref(LIBSSH2_METHOD_CRYPT_SC, cfg.cipherPref, "cipher") ||
+        !setPref(LIBSSH2_METHOD_KEX, cfg.kexPref, "key exchange") ||
+        !setPref(LIBSSH2_METHOD_MAC_CS, cfg.macPref, "MAC") ||
+        !setPref(LIBSSH2_METHOD_MAC_SC, cfg.macPref, "MAC"))
+        return;
     // ---- known_hosts, loaded BEFORE the handshake ------------------------
     // The file has to be read first so the handshake can ask for the host-key
     // algorithm this machine already trusts. Reading it afterwards, as this

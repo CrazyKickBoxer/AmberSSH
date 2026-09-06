@@ -5457,10 +5457,18 @@ void App::SendPasteText(const std::string& norm)
             return;
         }
     }
+    // The payload is stripped of escapes whichever mode we are in. Under
+    // bracketed paste an ESC closes the bracket early and the rest is typed
+    // input; without it an ESC is interpreted by whatever is on the far end.
+    // Neither is what someone pasting text asked for.
+    const std::string safe = amber::PasteWithoutEscapes(norm);
+    if (safe.size() != norm.size())
+        SetStatus("Paste: removed " + std::to_string(norm.size() - safe.size()) +
+                  " escape character(s)", 6.0);
     if (Cur().parser.Modes().bracketedPaste)
-        SendToShell("\x1b[200~" + norm + "\x1b[201~");
+        SendToShell("\x1b[200~" + safe + "\x1b[201~");
     else
-        SendToShell(norm);
+        SendToShell(safe);
 }
 
 void App::ToggleFullscreen()
@@ -10260,8 +10268,9 @@ void App::SyncVitals()
     }
     if (m_vitals.Running() && m_vitals.ProfileId() == Cur().profile.id)
         return;
-    m_vitals.Start(Cur().profile, Cur().savedPassword.Reveal(),
-                   Cur().savedPassphrase.Reveal());
+    const amber::RevealedSecret vpw(Cur().savedPassword);
+    const amber::RevealedSecret vpp(Cur().savedPassphrase);
+    m_vitals.Start(Cur().profile, vpw.Get(), vpp.Get());
 }
 
 void App::DrawVitals(float rightEdgeX)
@@ -10641,6 +10650,42 @@ void App::ToggleRecording()
 }
 
 void App::RecordCast(amber::Session& s, const uint8_t* d, size_t n)
+{
+    // A recording is a file that gets shared, so it goes under the cloak like
+    // the session log does. It used to be the one persistent sink that did
+    // not, which meant a user with masking on still handed out an unmasked
+    // .cast. Line-buffered for the same reason the log is: a secret split
+    // across two socket reads must not slip through in halves.
+    if (m_cloak.enabled)
+    {
+        s.castMaskBuf.append(reinterpret_cast<const char*>(d), n);
+        size_t at = 0;
+        std::string masked;
+        for (;;)
+        {
+            const size_t nl = s.castMaskBuf.find('\n', at);
+            if (nl == std::string::npos)
+                break;
+            masked += amber::MaskTerminalLine(s.castMaskBuf.substr(at, nl - at + 1), m_cloak);
+            at = nl + 1;
+        }
+        s.castMaskBuf.erase(0, at);
+        // A line that never ends must not grow without bound, and must not be
+        // written unmasked to make room.
+        if (s.castMaskBuf.size() > 64 * 1024)
+        {
+            masked += amber::MaskTerminalLine(s.castMaskBuf, m_cloak);
+            s.castMaskBuf.clear();
+        }
+        if (masked.empty())
+            return;
+        RecordCastRaw(s, reinterpret_cast<const uint8_t*>(masked.data()), masked.size());
+        return;
+    }
+    RecordCastRaw(s, d, n);
+}
+
+void App::RecordCastRaw(amber::Session& s, const uint8_t* d, size_t n)
 {
     // One "o" event per drained chunk, JSON-escaped.
     std::string esc;
@@ -11390,6 +11435,7 @@ void App::BuildSshConfig(const amber::ConnectionProfile& p, SshConfig& cfg) cons
     cfg.cipherPref = p.cipherPref;
     cfg.kexPref = p.kexPref;
     cfg.hostKeyPref = p.hostKeyPref;
+    cfg.macPref = p.macPref;
     cfg.manualHostKeys.clear();
     {
         size_t pos = 0;
@@ -11869,11 +11915,29 @@ void App::BindSessionSinks(amber::Session& s)
         if (HasSession() && &Cur() == raw)
             SetWindowTextW(m_hwnd, WideFromUtf8(TitleFor(*raw)).c_str());
     });
-    raw->parser.SetClipboardSink([this](const std::string& b64)
+    raw->parser.SetClipboardSink([this, raw](const std::string& b64)
     {
         std::string text = DecodeBase64(b64);
         if (text.empty())
             return;
+        // OSC 52 replaces the clipboard of the whole machine, and the next
+        // paste may well be into a browser or a password field rather than
+        // into this terminal. It goes under the same policy the VNC side
+        // uses, and asks by default. A read query never reaches here — the
+        // parser refuses it.
+        const int mode = raw->profile.allowRemoteClipboard;
+        bool allow = mode == 2 || mode == 4;
+        if (mode == 1)
+            allow = amber::ShowClipboardDialog(m_hwnd, raw->profile.host.empty()
+                                                           ? raw->Caption()
+                                                           : raw->profile.host,
+                                               false, text.size());
+        if (!allow)
+        {
+            SetStatus("Remote clipboard write refused", 4.0);
+            amber::ScrubString(text);
+            return;
+        }
         SetClipboardText(text);
         char msg[64];
         snprintf(msg, sizeof(msg), "Remote copied %zu characters", text.size());

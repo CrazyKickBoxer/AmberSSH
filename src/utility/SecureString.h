@@ -46,5 +46,46 @@ private:
 
 // Zeroes a std::string's buffer in place before clearing it.
 void ScrubString(std::string& value) noexcept;
+void ScrubWString(std::wstring& value) noexcept;
+
+// A revealed secret that scrubs itself at the end of the scope.
+//
+// Reveal() hands a plain std::string to code that cannot take a SecureString:
+// the libssh2 boundary, a Win32 control, a worker's config struct. Every one
+// of those call sites is then responsible for zeroing the copy, and the audit
+// found four that did not. This makes the correct thing the short thing.
+//
+// It bounds OUR copy. If the callee keeps one of its own, that copy is the
+// callee's problem and no wrapper here can reach it.
+class RevealedSecret
+{
+public:
+    explicit RevealedSecret(const SecureString& s) : m_value(s.Reveal()) {}
+    ~RevealedSecret() { ScrubString(m_value); }
+    RevealedSecret(const RevealedSecret&) = delete;
+    RevealedSecret& operator=(const RevealedSecret&) = delete;
+
+    const std::string& Get() const noexcept { return m_value; }
+    operator const std::string&() const noexcept { return m_value; }
+
+private:
+    std::string m_value;
+};
+
+// The same for the wide copy a Win32 control needs.
+class RevealedWide
+{
+public:
+    explicit RevealedWide(std::wstring&& w) : m_value(std::move(w)) {}
+    ~RevealedWide() { ScrubWString(m_value); }
+    RevealedWide(const RevealedWide&) = delete;
+    RevealedWide& operator=(const RevealedWide&) = delete;
+
+    const wchar_t* c_str() const noexcept { return m_value.c_str(); }
+    const std::wstring& Get() const noexcept { return m_value; }
+
+private:
+    std::wstring m_value;
+};
 
 } // namespace amber

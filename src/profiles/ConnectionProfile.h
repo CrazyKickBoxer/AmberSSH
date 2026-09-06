@@ -158,6 +158,13 @@ struct ConnectionProfile
     bool        allowAltScreen = true;
     bool        allowRemoteTitle = true;
     bool        allowScrollbackClear = true;
+    // OSC 52: what a remote host may do to this machine's clipboard. Same
+    // scale as vncClipboard, and the same default: 0 disabled, 1 ask each
+    // time, 2 remote -> local, 4 both. Only the remote -> local direction
+    // exists over OSC 52 — a read query is refused outright by the parser.
+    // It defaults to asking because a silent clipboard replacement is pasted
+    // into whatever the user opens next, not just into this terminal.
+    int         allowRemoteClipboard = 1;
 
     // ---- Window -----------------------------------------------------------
     int         cols = 80;
@@ -260,6 +267,7 @@ struct ConnectionProfile
     std::string cipherPref;          // comma list, empty = libssh2 default
     std::string kexPref;
     std::string hostKeyPref;
+    std::string macPref;             // comma list, empty = libssh2 default
     bool        agentForward = false;
     bool        x11Forward = false;
     std::string x11Display = "localhost:0";

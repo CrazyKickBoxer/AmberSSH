@@ -345,3 +345,33 @@ TEST_CASE("The token length threshold is respected", "[cloak]")
     o.minTokenLength = 6;
     CHECK(Contains(MaskLine("id A1b2C3", o), "[redacted]"));
 }
+
+// ---- recordings ------------------------------------------------------------
+// A .cast has to replay, so escapes cannot be stripped the way a plain-text
+// log strips them, and they must not be masked either — a detector matching
+// across "\x1b[32m" would cut a colour change in half.
+TEST_CASE("terminal masking leaves escape sequences intact", "[cloak]")
+{
+    amber::CloakOptions o;
+    o.enabled = true;
+
+    // No secret: the line comes back byte for byte.
+    const std::string plain = "\x1b[32mhello\x1b[0m world\r\n";
+    REQUIRE(amber::MaskTerminalLine(plain, o) == plain);
+
+    // A secret between two escape sequences is masked; both sequences survive.
+    const std::string withSecret = "\x1b[32mexport AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCY\x1b[0m";
+    const std::string masked = amber::MaskTerminalLine(withSecret, o);
+    REQUIRE(masked.find("wJalrXUtnFEMIK7MDENGbPxRfiCY") == std::string::npos);
+    REQUIRE(masked.find("\x1b[32m") != std::string::npos);
+    REQUIRE(masked.find("\x1b[0m") != std::string::npos);
+
+    // An OSC string runs to its terminator and is copied out whole.
+    const std::string osc = "\x1b]0;a title\x07text";
+    REQUIRE(amber::MaskTerminalLine(osc, o).find("\x1b]0;a title\x07") == 0);
+
+    // A two-character escape, and an unterminated one at the end of the line.
+    REQUIRE(amber::MaskTerminalLine("\x1b(Babc", o) == "\x1b(Babc");
+    REQUIRE(amber::MaskTerminalLine("abc\x1b", o) == "abc\x1b");
+    REQUIRE(amber::MaskTerminalLine("", o) == "");
+}

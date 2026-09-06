@@ -591,6 +591,73 @@ std::string MaskLine(const std::string& line, const CloakOptions& o)
     return ApplySpans(line, FindSecrets(line, o));
 }
 
+std::string MaskTerminalLine(const std::string& line, const CloakOptions& o)
+{
+    std::string out;
+    out.reserve(line.size());
+    std::string run;                 // printable text since the last escape
+    size_t i = 0;
+    auto flush = [&] {
+        if (!run.empty())
+        {
+            out += MaskLine(run, o);
+            run.clear();
+        }
+    };
+    while (i < line.size())
+    {
+        if (static_cast<unsigned char>(line[i]) != 0x1B)
+        {
+            run.push_back(line[i++]);
+            continue;
+        }
+        flush();
+        // Copy the escape sequence verbatim. CSI and OSC run to a terminator;
+        // anything else is the two-character form.
+        const size_t start = i;
+        ++i;                                     // ESC
+        if (i < line.size() && line[i] == '[')   // CSI: ends at 0x40..0x7E
+        {
+            ++i;
+            while (i < line.size() &&
+                   !(static_cast<unsigned char>(line[i]) >= 0x40 &&
+                     static_cast<unsigned char>(line[i]) <= 0x7E))
+                ++i;
+            if (i < line.size())
+                ++i;
+        }
+        else if (i < line.size() && (line[i] == ']' || line[i] == 'P' || line[i] == '_'))
+        {
+            // OSC / DCS / APC: ends at BEL or ST. A string that never ends
+            // runs to the end of the line, which is the safe direction — it
+            // is copied out, not masked, and a line is not the whole stream.
+            ++i;
+            while (i < line.size())
+            {
+                if (static_cast<unsigned char>(line[i]) == 0x07)
+                {
+                    ++i;
+                    break;
+                }
+                if (static_cast<unsigned char>(line[i]) == 0x1B &&
+                    i + 1 < line.size() && line[i + 1] == '\\')
+                {
+                    i += 2;
+                    break;
+                }
+                ++i;
+            }
+        }
+        else if (i < line.size())
+        {
+            ++i;                                 // two-character escape
+        }
+        out.append(line, start, i - start);
+    }
+    flush();
+    return out;
+}
+
 const char* CloakStatusText()
 {
     // The one place this claim is made, and it is deliberately the weaker,

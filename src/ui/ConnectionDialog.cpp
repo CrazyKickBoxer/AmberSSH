@@ -1030,6 +1030,10 @@ void ConnectionDialog::DefineFields()
     chk(Page::Features, &P::allowRemoteResize, L"Allow remote-controlled terminal resizing");
     chk(Page::Features, &P::allowAltScreen, L"Allow switching to the alternate terminal screen");
     chk(Page::Features, &P::allowRemoteTitle, L"Allow remote-controlled window title changing");
+    // Only the remote-to-local direction exists over OSC 52, so this is three
+    // options on the same numeric scale vncClipboard uses rather than five.
+    choice(Page::Features, Kind::Combo, &P::allowRemoteClipboard, L"Remote clipboard (OSC 52)",
+           { L"Disabled", L"Ask each time", L"Always allow" }, 0, 200);
     chk(Page::Features, &P::allowScrollbackClear, L"Allow remote-controlled clearing of scrollback");
 
     // ---- Window ----------------------------------------------------------
@@ -1184,6 +1188,9 @@ void ConnectionDialog::DefineFields()
     str(Page::Ssh, &P::cipherPref, L"Cipher preference (comma list, blank = default: aes256-gcm@openssh.com,aes256-ctr,...)");
     str(Page::Ssh, &P::kexPref, L"Key exchange preference (blank = default: curve25519-sha256,ecdh-sha2-nistp256,...)");
     str(Page::Ssh, &P::hostKeyPref, L"Host key algorithm preference (blank = default: ssh-ed25519,ecdsa-sha2-nistp256,...)");
+    str(Page::Ssh, &P::macPref, L"MAC preference (blank = default: hmac-sha2-256,hmac-sha2-512,...)");
+    note(Page::Ssh, L"A list none of whose algorithms this build supports refuses the connection\r\n"
+                    L"rather than quietly falling back to the defaults.");
 
     // ---- SSH > Auth ------------------------------------------------------
     choice(Page::SshAuth, Kind::RadioRow, &P::auth, L"Authentication method",
@@ -1994,20 +2001,32 @@ void ConnectionDialog::LoadSelectedProfile()
     {
         SecureString pw;
         if (CredentialStore::Load(p.id, SecretKind::Password, pw))
-            SetText(GetDlgItem(m_dlg, p.protocol == Protocol::Vnc ? IdVncPassword : IdPassword),
-                    Widen(pw.Reveal()));
+        {
+            const RevealedSecret r(pw);
+            const RevealedWide w(Widen(r.Get()));
+            SetWindowTextW(GetDlgItem(m_dlg, p.protocol == Protocol::Vnc ? IdVncPassword : IdPassword),
+                           w.c_str());
+        }
     }
     if (p.rememberPassphrase)
     {
         SecureString pp;
         if (CredentialStore::Load(p.id, SecretKind::KeyPassphrase, pp))
-            SetText(GetDlgItem(m_dlg, IdPassphrase), Widen(pp.Reveal()));
+        {
+            const RevealedSecret r(pp);
+            const RevealedWide w(Widen(r.Get()));
+            SetWindowTextW(GetDlgItem(m_dlg, IdPassphrase), w.c_str());
+        }
     }
     if (p.rememberProxyPassword)
     {
         SecureString pp;
         if (CredentialStore::Load(p.id, SecretKind::ProxyPassword, pp))
-            SetText(GetDlgItem(m_dlg, IdProxyPassword), Widen(pp.Reveal()));
+        {
+            const RevealedSecret r(pp);
+            const RevealedWide w(Widen(r.Get()));
+            SetWindowTextW(GetDlgItem(m_dlg, IdProxyPassword), w.c_str());
+        }
     }
 
     SyncAuthEnabled();

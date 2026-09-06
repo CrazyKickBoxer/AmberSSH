@@ -2,6 +2,17 @@
   "name": "amberssh-native",
   "version": "1.0.0",
   "description": "GPU particle SSH terminal for Windows 11 (DirectX 12, nixie-amber aesthetic)",
+  "$comment": [
+    "builtin-baseline pins the vcpkg registry commit every dependency resolves",
+    "against. Without it the versions are whatever the local registry checkout",
+    "happens to hold, which for an application whose job is transport security",
+    "means not knowing which crypto a build contains. This baseline resolves to",
+    "libssh2 1.11.1 and OpenSSL 3.6.3. Move it deliberately, not by side effect.",
+    "Per-package version>= constraints were tried and removed: they put vcpkg",
+    "into a resolution mode this registry checkout cannot serve (read-tree of",
+    "the version trees fails), so the baseline is the pin that actually works."
+  ],
+  "builtin-baseline": "ea1a7396b05637a53bf23c078647ecc0edee4b80",
   "dependencies": [
     "libssh2",
     "openssl",

@@ -2314,7 +2314,8 @@ void SftpBrowser::OpenTab(HWND owner, const ConnectionProfile& profile,
 {
     Browser& b = Browser::Get();
     b.EnsureWindow(owner);
-    b.AddTab(profile, password.Reveal(), passphrase.Reveal(), initialDir);
+    const amber::RevealedSecret pw(password), pp(passphrase);
+    b.AddTab(profile, pw.Get(), pp.Get(), initialDir);
 }
 
 void SftpBrowser::OpenRemoteFile(HWND owner, const ConnectionProfile& profile,
@@ -2330,7 +2331,10 @@ void SftpBrowser::OpenRemoteFile(HWND owner, const ConnectionProfile& profile,
         if (b.tabList[i]->profile.id == profile.id) { idx = (int)i; break; }
     std::string dir = SftpParent(remotePath);
     if (idx < 0)
-        idx = b.AddTab(profile, password.Reveal(), passphrase.Reveal(), dir);
+    {
+        const amber::RevealedSecret pw(password), pp(passphrase);
+        idx = b.AddTab(profile, pw.Get(), pp.Get(), dir);
+    }
     else
     {
         b.SwitchTab(idx);

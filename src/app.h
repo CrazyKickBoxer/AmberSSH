@@ -613,6 +613,7 @@ private:
     // asciinema v2 recording / playback.
     void ToggleRecording();
     void RecordCast(amber::Session& s, const uint8_t* d, size_t n);
+    void RecordCastRaw(amber::Session& s, const uint8_t* d, size_t n);
     void PlayRecording();
 
     // Remote vitals (title-bar sparklines), port forwarding, quake mode.

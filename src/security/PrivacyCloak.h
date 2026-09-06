@@ -86,6 +86,21 @@ std::vector<SecretSpan> FindSecrets(const std::string& line, const CloakOptions&
 std::string MaskLine(const std::string& line, const CloakOptions& o);
 std::string ApplySpans(const std::string& line, const std::vector<SecretSpan>& spans);
 
+// The same, for a line that still has its terminal escape sequences in it.
+//
+// A session recording is a byte stream that has to replay, so the escapes
+// cannot be stripped the way a plain-text log strips them, and they must not
+// be masked either: a detector matching across "\x1b[32m" would cut a colour
+// change in half and corrupt everything after it. This masks only the
+// printable runs between escape sequences and passes the sequences through
+// untouched.
+//
+// The consequence, stated because it matters: a secret split across an escape
+// sequence is two shorter runs and may not match a detector that would have
+// matched the whole. Masking a recording is therefore weaker than masking a
+// log, and neither is a guarantee.
+std::string MaskTerminalLine(const std::string& line, const CloakOptions& o);
+
 // True when the line begins or continues a PEM private-key block. A key is
 // many lines, so a caller masking a stream has to carry this state.
 struct PemState

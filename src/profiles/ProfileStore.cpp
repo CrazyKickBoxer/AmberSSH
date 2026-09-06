@@ -124,6 +124,7 @@ json ToJson(const ConnectionProfile& p)
         {"allowRemoteResize", p.allowRemoteResize},
         {"allowAltScreen", p.allowAltScreen},
         {"allowRemoteTitle", p.allowRemoteTitle},
+        {"allowRemoteClipboard", p.allowRemoteClipboard},
         {"allowScrollbackClear", p.allowScrollbackClear},
         // Window
         {"cols", p.cols},
@@ -206,6 +207,7 @@ json ToJson(const ConnectionProfile& p)
         {"cipherPref", p.cipherPref},
         {"kexPref", p.kexPref},
         {"hostKeyPref", p.hostKeyPref},
+        {"macPref", p.macPref},
         {"agentForward", p.agentForward},
         {"x11Forward", p.x11Forward},
         {"x11Display", p.x11Display},
@@ -316,6 +318,7 @@ bool FromJson(const json& j, ConnectionProfile& out)
     out.allowRemoteResize = Get<bool>(j, "allowRemoteResize", true);
     out.allowAltScreen = Get<bool>(j, "allowAltScreen", true);
     out.allowRemoteTitle = Get<bool>(j, "allowRemoteTitle", true);
+    out.allowRemoteClipboard = std::clamp(Get<int>(j, "allowRemoteClipboard", 1), 0, 4);
     out.allowScrollbackClear = Get<bool>(j, "allowScrollbackClear", true);
     // Window
     out.cols = Get<int>(j, "cols", 80);
@@ -402,6 +405,7 @@ bool FromJson(const json& j, ConnectionProfile& out)
     out.cipherPref = Get<std::string>(j, "cipherPref", std::string());
     out.kexPref = Get<std::string>(j, "kexPref", std::string());
     out.hostKeyPref = Get<std::string>(j, "hostKeyPref", std::string());
+    out.macPref = Get<std::string>(j, "macPref", std::string());
     out.agentForward = Get<bool>(j, "agentForward", false);
     out.x11Forward = Get<bool>(j, "x11Forward", false);
     out.x11Display = Get<std::string>(j, "x11Display", d.x11Display);

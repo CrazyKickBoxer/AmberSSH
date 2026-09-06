@@ -498,7 +498,8 @@ void SftpPanel::Open(HWND owner, const ConnectionProfile& profile,
     }
 
     Worker worker;
-    worker.Start(profile, password.Reveal(), passphrase.Reveal());
+    const amber::RevealedSecret pw(password), pp(passphrase);
+    worker.Start(profile, pw.Get(), pp.Get());
 
     Ui ui;
     ui.worker = &worker;

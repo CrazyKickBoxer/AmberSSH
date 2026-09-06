@@ -152,6 +152,7 @@ struct Session
     // split across two socket reads waits here for its newline rather than
     // being written in halves that each look innocent.
     std::string logMaskBuf;
+    std::string castMaskBuf;   // the same, for the asciinema recording
 
     // --- privacy cloak ---------------------------------------------------------
     // One byte per visible cell: 1 = covered at draw time. Rebuilt only when
