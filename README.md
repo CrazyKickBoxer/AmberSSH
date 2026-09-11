@@ -50,6 +50,15 @@ No Electron · no browser · no Qt · no third-party terminal widget · no CPU-r
   the Windows Credential Manager; `profiles.json` holds only a boolean saying
   one exists.
 
+<div align="center">
+
+![A remote Linux desktop opening over VNC, its file manager window materialising with a bright shockwave burst, entirely rendered in particles](docs/media/amberssh-vnc-demo.gif)
+
+*The VNC client, live — a real Linux desktop opening over RFB, drawn by the same
+particle engine as the terminal, not screenshotted.*
+
+</div>
+
 ## 🎨 The look
 
 Pure black ground and `#FFB000` amber glyphs by default. Seven other colour
