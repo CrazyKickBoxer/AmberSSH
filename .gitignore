@@ -11,6 +11,13 @@ dist/
 *.log
 AmberSSH.live-*.exe
 
+# Signing material never belongs in the tree, defensively, even though
+# nothing currently exports a certificate to a file here.
+*.pfx
+*.p12
+*.pem
+*.key
+
 # AmberX upstream imports: re-fetched from pinned tags by docs/amberx/SOURCE-PROVENANCE.md, never vendored
 third_party/amberx/upstream/
 third_party/amberx/probe-out/

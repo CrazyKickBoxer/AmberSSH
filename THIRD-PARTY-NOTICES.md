@@ -14,10 +14,6 @@ JSON parsing for profile and settings storage. MIT.
 ## Catch2
 Unit-test framework (test binary only, not shipped in the runtime package). BSL-1.0.
 
-## Dear ImGui
-Debug overlay. MIT.
-*Being phased out: the primary user interface is native Win32.*
-
 ## DirectX Shader Compiler (DXC)
 Compiles the HLSL shaders at build time. LLVM Release License / MIT.
 

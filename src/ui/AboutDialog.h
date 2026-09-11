@@ -30,7 +30,7 @@ inline constexpr wchar_t kProductVersion[] = L"1.0.0";
 // hands off to whatever is installed, which is why the GPL on VcXsrv and the
 // terms on current Xming never apply to it. See docs/REMOTE-DISPLAY.md.
 inline constexpr wchar_t kProductCredits[] =
-    L"libssh2 \x00B7 OpenSSL \x00B7 nlohmann/json \x00B7 Dear ImGui \x00B7 "
+    L"libssh2 \x00B7 OpenSSL \x00B7 nlohmann/json \x00B7 "
     L"DirectX Shader Compiler \x00B7 eleven fonts under the SIL Open Font, "
     L"Ubuntu Font and Hack licences.\nFull terms in THIRD-PARTY-NOTICES.md "
     L"and fonts\\LICENSES.md.";
