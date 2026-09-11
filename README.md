@@ -1,17 +1,26 @@
-# AmberSSH
+<div align="center">
 
-A native Windows 11 terminal and remote-desktop client where every character
-in the viewport is drawn as a constellation of glowing GPU particles — amber
+# 🟠 AmberSSH
+
+**A native Windows 11 terminal and remote-desktop client where every character
+in the viewport is drawn as a constellation of glowing GPU particles** — amber
 phosphor, nixie glow, black glass — with a familiar PuTTY-style connection
 workflow.
 
-C++20 · Win32 · DirectX 12 · HLSL compute · DirectWrite · libssh2. No Electron,
-no browser, no Qt, no third-party terminal widget, no CPU-rendered viewport.
+C++20 · Win32 · DirectX 12 · HLSL compute · DirectWrite · libssh2
+No Electron · no browser · no Qt · no third-party terminal widget · no CPU-rendered viewport
 
 ![status](https://img.shields.io/badge/build-passing-brightgreen)
 ![tests](https://img.shields.io/badge/tests-passing-brightgreen)
+![platform](https://img.shields.io/badge/platform-Windows%2011-0078D6)
 
-## What it does
+![A live SSH session mid file-transfer, its progress bars and directory listing dissolving into a swirl of amber and white particles under the Cyclone motion style](docs/media/amberssh-demo.gif)
+
+*A real SFTP transfer, mid-redraw, under the **Cyclone** motion style — captured live, not composited.*
+
+</div>
+
+## ✨ What it does
 
 - **Six protocols in one client**: SSH, Telnet, Rlogin, Raw, Serial, and a
   local shell (PowerShell / cmd / WSL) — plus a seventh that isn't a terminal
@@ -41,7 +50,7 @@ no browser, no Qt, no third-party terminal widget, no CPU-rendered viewport.
   the Windows Credential Manager; `profiles.json` holds only a boolean saying
   one exists.
 
-## The look
+## 🎨 The look
 
 Pure black ground and `#FFB000` amber glyphs by default. Seven other colour
 themes ship alongside it — Emerald CRT, Ice Cathode, Violet Haze, Blood Cell,
@@ -58,7 +67,7 @@ of the 23 motion styles is active. Selected text switches to a drifting
 Effects are subtle by default and every one can be turned off. The terminal has
 to stay readable; that is the whole point.
 
-## Build
+## 🛠️ Build
 
 ```powershell
 .\build.ps1                       # Release
@@ -77,7 +86,7 @@ certificate for testing — it is tamper-evident, not publicly trusted, and
 Windows will still warn on it. Public distribution needs a certificate from a
 CA already in the Windows trust store.
 
-## Using it
+## 🖱️ Using it
 
 The connection manager opens first: a category tree on the left, settings on
 the right, and a Saved Sessions list with Load / Save / Delete. Pick a
@@ -90,13 +99,13 @@ status line says how much. Right-click pastes. `Ctrl+Shift+T` opens another
 session, `Ctrl+Tab` cycles tabs, `Alt`+drag pushes the particles around without
 disturbing the text. Full list: [docs/KEYBOARD_AND_MOUSE.md](docs/KEYBOARD_AND_MOUSE.md).
 
-### Private keys
+### 🔑 Private keys
 
 OpenSSH-format keys, of the types your libssh2 build supports. PuTTY `.ppk`
 files are **not** loaded directly — the dialog tells you to convert them rather
 than failing with something cryptic.
 
-## Security
+## 🔒 Security
 
 Host keys are verified and require an explicit decision on first contact. A
 changed key is treated as a serious failure, never a silent continue. No
@@ -114,7 +123,7 @@ host-key handling specifically; [docs/MANUAL-VERIFICATION.md](docs/MANUAL-VERIFI
 is the checklist for the parts that need a person and a screen rather than a
 test.
 
-## Known limitations
+## ⚠️ Known limitations
 
 Stated plainly rather than left implicit:
 
@@ -136,7 +145,7 @@ A dated, fully-superseded early snapshot from before VNC or AmberX existed is
 kept for history at [docs/VALIDATION_REPORT.md](docs/VALIDATION_REPORT.md) —
 it says plainly at the top that it is not current.
 
-## Documentation
+## 📚 Documentation
 
 | Document | Contents |
 |---|---|
@@ -152,7 +161,7 @@ it says plainly at the top that it is not current.
 | [AUDIT.md](AUDIT.md) | the security audit: findings, fixes, and what remains unverified |
 | [docs/MANUAL-VERIFICATION.md](docs/MANUAL-VERIFICATION.md) | the checklist for what needs a person and a screen |
 
-## Credits
+## 🙏 Credits
 
 The four-layer particle model, dual-sine brightness animation, pointer force
 field and shockwave follow the design of
