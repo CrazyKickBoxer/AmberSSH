@@ -34,7 +34,7 @@ constexpr wchar_t kClassName[] = L"AmberSSHConnectionDialog";
 int Dpi(int value, UINT dpi);
 
 // Live theme palette — refreshed from amber::gThemeSrgb at each Show() so the
-// connection manager always matches the active theme (amber, emerald, iceâ¦).
+// connection manager always matches the active theme (amber, emerald, ice…).
 COLORREF kBg, kField, kText, kTextDim, kTextDis, kBorder, kBorderHot, kAccent,
     kAccentTx, kSelBg, kSelText, kBanner, kBanner2;
 
@@ -2496,7 +2496,7 @@ void ConnectionDialog::PaintChrome(HDC dc)
         RECT rule = { pad, dy - Dpi(2, m_dpi), x1, dy };
         amber::skin::AppliedIndex(dc, rule, RGB(0xE6, 0xE8, 0xEB), RGB(0x7E, 0x82, 0x87));
         RECT plate = { x1 - Dpi(260, m_dpi), pad, x1 - Dpi(6, m_dpi), pad + Dpi(18, m_dpi) };
-        amber::skin::Engrave(dc, plate, L"AMBER SSH  Â·  MODEL 1.0", m_tagFont, kTextDim,
+        amber::skin::Engrave(dc, plate, L"AMBER SSH  ·  MODEL 1.0", m_tagFont, kTextDim,
                              RGB(0xE6, 0xE8, 0xEB),
                              DT_RIGHT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
     }
