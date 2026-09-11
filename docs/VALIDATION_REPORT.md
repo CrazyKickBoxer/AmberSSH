@@ -1,5 +1,12 @@
 # AmberSSH — Validation Report
 
+> **Superseded.** This is a snapshot from 2026-08-30 — before VNC, before
+> AmberX, before most of what the project is today (the 637 KB exe and 12
+> shaders below date it precisely). It is kept for history, not currency.
+> For what is actually verified as of the current commit, see
+> [AUDIT.md](../AUDIT.md) and [MANUAL-VERIFICATION.md](MANUAL-VERIFICATION.md)
+> at the repository root and in this folder respectively.
+
 Generated 2026-08-30. **Every figure below was measured on this machine.**
 Anything not actually exercised is listed under "Not validated" rather than
 being reported as a pass.
