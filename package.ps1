@@ -203,8 +203,32 @@ foreach ($doc in @('README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md')) {
     $p = Join-Path $root $doc
     if (Test-Path $p) { Copy-Item $p $stage }
 }
-if (Test-Path (Join-Path $root 'docs')) {
-    Copy-Item (Join-Path $root 'docs') (Join-Path $stage 'docs') -Recurse
+# The docs/ folder in the repo holds the internal development record
+# alongside the user-facing manual - stage-by-stage build reports, AmberX's
+# phase gates, a threat model, an implementation plan, this project's own
+# manual-verification checklist. None of that belongs in what a person
+# extracts to run the program; it is process history, not product
+# documentation, and bundling all of it (the docs/amberx/ subsystem's own
+# design record in particular) is especially wrong given that subsystem's
+# binary is not even shipped in this package. Curated allow-list instead of
+# a recursive copy, so a new internal doc added later does not silently
+# start shipping until someone deliberately adds it here.
+$docStage = Join-Path $stage 'docs'
+New-Item -ItemType Directory -Path $docStage -Force | Out-Null
+foreach ($doc in @(
+    'AmberSSH-User-Manual.pdf',
+    'BUILDING.md',
+    'KEYBOARD_AND_MOUSE.md',
+    'vnc.md',
+    'SSH_SECURITY.md',
+    'REMOTE-DISPLAY.md',
+    'TERMINAL_COMPATIBILITY.md',
+    'ARCHITECTURE.md',
+    'PERFORMANCE.md',
+    'RENDERING.md'
+)) {
+    $p = Join-Path $root "docs\$doc"
+    if (Test-Path $p) { Copy-Item $p $docStage }
 }
 
 # --- never ship user data --------------------------------------------------
